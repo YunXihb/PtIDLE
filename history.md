@@ -55,4 +55,28 @@
 
 ---
 
+## 2026-03-10 - 任务：数据库设计与 Redis 配置（T003, T004）
+
+### Prompt
+用户要求执行实施计划的第2步：
+- T003: PostgreSQL 数据库设计（创建表结构、初始数据）
+- T004: Redis 配置
+
+用户要求测试通过后再提交到远端仓库。
+
+### 思考
+创建了完整的数据库架构：
+- 11张数据库表：users, players, characters, card_templates, player_cards, character_deck, gathering_skills, processing_recipes, crafting_recipes, professions, battles
+- 初始数据：3个职业、3种采集技能、3种加工配方、7种基础卡牌、8种制造配方
+- Redis 客户端配置，使用 docker-compose 统一管理
+
+### 意外
+1. Docker 端口映射问题：docker-compose 挂载到默认网络导致无法从 localhost 访问，改用 -P 随机端口解决
+2. PostgreSQL 认证问题：密码认证一直失败，最终使用 trust 认证模式解决
+3. 需要手动运行 docker 命令创建数据库和执行迁移脚本
+4. **WSL2 网络问题**：Node.js 无法连接到 Docker 容器的 PostgreSQL（WSL2 与 Docker 网络隔离）
+5. **最终方案**：改用本地安装的 PostgreSQL (5433) 和 Redis (6379)，Docker 仅用于生产打包
+
+---
+
 *日志持续更新中...*

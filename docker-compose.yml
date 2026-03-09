@@ -1,0 +1,15 @@
+# 开发环境使用本地 PostgreSQL (端口 5433) 和本地 Redis (端口 6379)
+# 生产环境可使用 Docker 容器部署
+
+services:
+  # PostgreSQL (生产用)
+  # postgres:
+  #   image: postgres:16
+  #   ports:
+  #     - "5432:5432"
+
+  # Redis (生产用)
+  # redis:
+  #   image: redis:7-alpine
+  #   ports:
+  #     - "6379:6379"

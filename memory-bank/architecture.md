@@ -41,9 +41,40 @@ backend/
 
 ---
 
+## 数据库表结构
+
+| 表名 | 说明 |
+|------|------|
+| `users` | 用户账户表 |
+| `players` | 玩家数据（资源、材料、装备、挂机队列） |
+| `characters` | 棋子（职业、属性、位置） |
+| `card_templates` | 卡牌模板 |
+| `player_cards` | 玩家卡牌 |
+| `character_deck` | 棋子牌库分配 |
+| `gathering_skills` | 采集技能 |
+| `processing_recipes` | 加工配方 |
+| `crafting_recipes` | 制造配方 |
+| `professions` | 职业属性 |
+| `battles` | 对战记录 |
+
+## 配置文件说明
+
+| 文件路径 | 作用 |
+|----------|------|
+| `src/config/database.ts` | PostgreSQL 连接池，封装 query/execute 方法 |
+| `src/config/redis.ts` | Redis 客户端连接 |
+| `src/index.ts` | 应用入口，初始化数据库/Redis 连接 |
+
+## Docker 配置
+
+| 文件 | 说明 |
+|------|------|
+| `docker-compose.yml` | PostgreSQL + Redis 容器编排 |
+
 ## 当前状态
 
 - T001, T002 已完成：项目初始化 + TypeScript + ESLint 配置
+- T003, T004 已完成：数据库设计 + Redis 配置
 
 ---
 
