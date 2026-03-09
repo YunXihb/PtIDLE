@@ -35,4 +35,24 @@
 
 ---
 
+## 2026-03-10 - 任务：后端基础架构搭建（T001, T002）
+
+### Prompt
+用户要求我执行 implementation-plan.md 中的阶段1第1步：
+- 初始化 Node.js 项目结构（创建目录、package.json、安装依赖）
+- 配置 TypeScript 和 ESLint
+- 写代码前必须阅读 architecture.md 和 specs.md
+- 每完成里程碑必须更新 architecture.md
+
+### 思考
+按照 tech-stack.md 中的技术选型，创建了完整的后端项目骨架：
+- 使用 TypeScript + Express + Socket.io + PostgreSQL + Redis
+- 配置了 ESLint 代码规范
+- 创建了 src/ 下的模块化目录结构（controllers, models, services, middleware, routes, socket）
+
+### 意外
+无。TypeScript 初始检查因为没有源文件而报错，添加 index.ts 后通过。
+
+---
+
 *日志持续更新中...*
