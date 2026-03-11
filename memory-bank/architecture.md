@@ -17,14 +17,14 @@ backend/
     ├── index.ts             # 应用入口，启动 Express 服务器
     ├── config/              # 配置文件目录
     │   ├── database.ts      # PostgreSQL 数据库连接配置
-    │   ├── redis.ts         # Redis 客户端配置
-    │   └── env.ts           # 环境变量加载
+    │   ├── redis.ts        # Redis 客户端配置
+    │   └── env.ts          # 环境变量加载
     ├── controllers/         # 控制器目录（处理请求）
     ├── models/              # 数据模型目录（数据库表映射）
-    ├── services/            # 业务逻辑目录
+    ├── services/           # 业务逻辑目录
     ├── middleware/          # 中间件目录（JWT 认证等）
-    ├── routes/              # 路由目录
-    └── socket/              # WebSocket 处理器目录
+    ├── routes/             # 路由目录
+    └── socket/             # WebSocket 处理器目录
 ```
 
 ---
@@ -71,10 +71,11 @@ backend/
 |----------|------|
 | `src/services/authService.ts` | 用户注册/登录服务：验证输入、密码加密 (bcryptjs)、JWT token 生成、玩家初始化 |
 | `src/services/playerService.ts` | 玩家服务：初始化玩家数据（创建玩家记录和棋子） |
+| `src/services/offlineService.ts` | 离线收益计算服务：计算离线产出、应用仓储上限 |
 | `src/controllers/authController.ts` | 认证控制器：处理注册/登录请求、错误响应 |
 | `src/routes/auth.ts` | 认证路由：POST /api/auth/register, POST /api/auth/login |
+| `src/routes/player.ts` | 玩家路由：GET /api/player/profile, POST /api/player/offline-claim |
 | `src/middleware/auth.ts` | JWT 认证中间件：验证 token、解析用户信息到请求对象 |
-| `src/routes/player.ts` | 玩家路由示例：GET /api/player/profile（受保护） |
 
 ## Docker 配置
 
@@ -91,8 +92,44 @@ backend/
 - T007 已完成：JWT 认证中间件（含单元测试，受保护路由示例）
 - T008 已完成：玩家初始化逻辑（注册时自动创建玩家和棋子）
 - T009 已完成：获取玩家数据 API（返回完整玩家资料）
+- T010 已完成：离线收益计算服务（支持24小时最大离线时间）
+- T011 已完成：离线收益结算 API（POST /api/player/offline-claim）
+
+## 离线收益系统
+
+### 资源产出速率
+
+| 资源 | 速率（个/分钟） |
+|------|----------------|
+| iron_ore | 1 |
+| coal | 0.5 |
+| wood | 1 |
+| sap | 0.5 |
+| herb | 1 |
+| mushroom | 0.5 |
+
+### 配置参数
+
+- 最大离线时间：24小时（1440分钟）
+- 默认仓储上限：1000
+
+### API 响应格式
+
+```typescript
+// POST /api/player/offline-claim 响应
+{
+  success: true,
+  data: {
+    offlineTime: 120,           // 离线分钟数
+    earned: { iron_ore: 60, ... }, // 原本应得
+    stored: { iron_ore: 40, ... }, // 实际存入（考虑上限）
+    overflowed: { iron_ore: 20, ... }, // 超仓储溢出
+    lastOffline: "2026-03-11T10:00:00Z"
+  }
+}
+```
 
 ---
 
-*文档版本：v1.1*
+*文档版本：v1.2*
 *最后更新：2026-03-11*

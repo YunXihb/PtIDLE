@@ -113,6 +113,75 @@ export async function getPlayerIdByUserId(userId: string): Promise<string | null
 }
 
 /**
+ * 更新玩家资源
+ * @param userId 用户 ID
+ * @param resourcesToAdd 要添加的资源（将合并到现有资源）
+ * @returns 更新后的资源
+ */
+export async function updateResources(
+  userId: string,
+  resourcesToAdd: Record<string, number>
+): Promise<Record<string, number> | null> {
+  // 1. 获取当前玩家资源
+  const playerResult = await query<{ resources: Record<string, number> }>(
+    'SELECT resources FROM players WHERE user_id = $1',
+    [userId]
+  );
+
+  if (playerResult.length === 0) {
+    return null;
+  }
+
+  const currentResources = playerResult[0].resources || {};
+
+  // 2. 合并资源
+  const updatedResources: Record<string, number> = { ...currentResources };
+  for (const [key, value] of Object.entries(resourcesToAdd)) {
+    updatedResources[key] = (updatedResources[key] || 0) + value;
+  }
+
+  // 3. 更新数据库
+  await execute(
+    'UPDATE players SET resources = $1, updated_at = NOW() WHERE user_id = $2',
+    [JSON.stringify(updatedResources), userId]
+  );
+
+  return updatedResources;
+}
+
+/**
+ * 更新玩家离线时间
+ * @param userId 用户 ID
+ */
+export async function updateLastOffline(userId: string): Promise<void> {
+  await execute(
+    'UPDATE players SET last_offline = NOW(), updated_at = NOW() WHERE user_id = $1',
+    [userId]
+  );
+}
+
+/**
+ * 获取玩家基础信息（资源、仓储上限、离线时间）
+ * @param userId 用户 ID
+ */
+export async function getPlayerBaseInfo(userId: string): Promise<{
+  resources: Record<string, number>;
+  warehouse_limits: Record<string, number>;
+  last_offline: Date | null;
+} | null> {
+  const result = await query<{
+    resources: Record<string, number>;
+    warehouse_limits: Record<string, number>;
+    last_offline: Date | null;
+  }>(
+    'SELECT resources, warehouse_limits, last_offline FROM players WHERE user_id = $1',
+    [userId]
+  );
+
+  return result.length > 0 ? result[0] : null;
+}
+
+/**
  * 获取玩家完整资料
  * @param userId 用户 ID
  * @returns 玩家完整数据，包含资源、材料、棋子列表等
