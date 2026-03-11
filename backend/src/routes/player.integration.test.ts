@@ -3,6 +3,12 @@ import request from 'supertest';
 import express from 'express';
 import jwt from 'jsonwebtoken';
 import playerRoutes from '../routes/player';
+import * as playerService from '../services/playerService';
+
+// Mock the playerService
+jest.mock('../services/playerService');
+
+const mockedGetPlayerProfile = playerService.getPlayerProfile as jest.MockedFunction<typeof playerService.getPlayerProfile>;
 
 const app = express();
 app.use(express.json());
@@ -16,6 +22,10 @@ describe('Player API Integration Tests', () => {
 
   // Generate a valid token for testing
   const validToken = jwt.sign({ userId: testUserId, username: testUsername }, jwtSecret);
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
 
   describe('GET /api/player/profile', () => {
     it('should return 401 when no token provided', async () => {
@@ -53,15 +63,57 @@ describe('Player API Integration Tests', () => {
       expect(response.body.error).toBe('No token provided');
     });
 
-    it('should return 200 and user info for valid token', async () => {
+    it('should return 200 and player profile for valid token', async () => {
+      const mockProfile = {
+        id: 'player-123',
+        user_id: testUserId,
+        username: testUsername,
+        resources: { iron_ore: 10, coal: 5 },
+        materials: { iron_ingot: 3 },
+        production_gear: {},
+        warehouse_limits: { resource: 1000, material: 500 },
+        idle_queue: [],
+        last_offline: new Date('2026-01-01'),
+        characters: [
+          {
+            id: 'char-1',
+            name: '棋子1',
+            profession: 'warrior',
+            health: 20,
+            max_health: 20,
+            movement: 2,
+            energy: 3,
+            max_energy: 3,
+            position_x: null,
+            position_y: null,
+            is_alive: true,
+          },
+        ],
+      };
+
+      mockedGetPlayerProfile.mockResolvedValue(mockProfile);
+
       const response = await request(app)
         .get('/api/player/profile')
         .set('Authorization', `Bearer ${validToken}`);
 
       expect(response.status).toBe(200);
-      expect(response.body.userId).toBe(testUserId);
+      expect(response.body.id).toBe('player-123');
       expect(response.body.username).toBe(testUsername);
-      expect(response.body.message).toBe('This is a protected route');
+      expect(response.body.resources).toEqual({ iron_ore: 10, coal: 5 });
+      expect(response.body.characters).toHaveLength(1);
+      expect(response.body.characters[0].profession).toBe('warrior');
+    });
+
+    it('should return 404 when player not found', async () => {
+      mockedGetPlayerProfile.mockResolvedValue(null);
+
+      const response = await request(app)
+        .get('/api/player/profile')
+        .set('Authorization', `Bearer ${validToken}`);
+
+      expect(response.status).toBe(404);
+      expect(response.body.error).toBe('Player not found');
     });
 
     it('should return 401 for expired token', async () => {

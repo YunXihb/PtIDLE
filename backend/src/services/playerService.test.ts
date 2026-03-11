@@ -118,4 +118,113 @@ describe('playerService', () => {
       expect(result).toBeNull();
     });
   });
+
+  describe('getPlayerProfile', () => {
+    const userId = 'user-123';
+    const playerId = 'player-456';
+
+    it('should return player profile with all required fields', async () => {
+      mockedQuery
+        .mockResolvedValueOnce([
+          {
+            id: playerId,
+            user_id: userId,
+            username: 'testuser',
+            resources: { iron_ore: 10, coal: 5 },
+            materials: { iron_ingot: 3 },
+            production_gear: { pickaxe: { bonus: 0.5 } },
+            warehouse_limits: { resource: 1000, material: 500 },
+            idle_queue: [],
+            last_offline: new Date('2026-01-01'),
+          },
+        ] as any)
+        .mockResolvedValueOnce([
+          {
+            id: 'char-1',
+            name: '棋子1',
+            profession: 'warrior',
+            health: 20,
+            max_health: 20,
+            movement: 2,
+            energy: 3,
+            max_energy: 3,
+            position_x: null,
+            position_y: null,
+            is_alive: true,
+          },
+          {
+            id: 'char-2',
+            name: '棋子2',
+            profession: 'ranger',
+            health: 15,
+            max_health: 15,
+            movement: 3,
+            energy: 3,
+            max_energy: 3,
+            position_x: null,
+            position_y: null,
+            is_alive: true,
+          },
+          {
+            id: 'char-3',
+            name: '棋子3',
+            profession: 'mage',
+            health: 12,
+            max_health: 12,
+            movement: 2,
+            energy: 3,
+            max_energy: 3,
+            position_x: null,
+            position_y: null,
+            is_alive: true,
+          },
+        ] as any);
+
+      const result = await playerService.getPlayerProfile(userId);
+
+      expect(result).not.toBeNull();
+      expect(result!.id).toBe(playerId);
+      expect(result!.user_id).toBe(userId);
+      expect(result!.username).toBe('testuser');
+      expect(result!.resources).toEqual({ iron_ore: 10, coal: 5 });
+      expect(result!.materials).toEqual({ iron_ingot: 3 });
+      expect(result!.production_gear).toEqual({ pickaxe: { bonus: 0.5 } });
+      expect(result!.warehouse_limits).toEqual({ resource: 1000, material: 500 });
+      expect(result!.characters).toHaveLength(3);
+      expect(result!.characters[0].profession).toBe('warrior');
+      expect(result!.characters[1].profession).toBe('ranger');
+      expect(result!.characters[2].profession).toBe('mage');
+    });
+
+    it('should return null when player does not exist', async () => {
+      mockedQuery.mockResolvedValueOnce([]);
+
+      const result = await playerService.getPlayerProfile('nonexistent-user');
+
+      expect(result).toBeNull();
+    });
+
+    it('should return empty characters array when player has no characters', async () => {
+      mockedQuery
+        .mockResolvedValueOnce([
+          {
+            id: playerId,
+            user_id: userId,
+            username: 'testuser',
+            resources: {},
+            materials: {},
+            production_gear: {},
+            warehouse_limits: {},
+            idle_queue: [],
+            last_offline: null,
+          },
+        ] as any)
+        .mockResolvedValueOnce([]);
+
+      const result = await playerService.getPlayerProfile(userId);
+
+      expect(result).not.toBeNull();
+      expect(result!.characters).toHaveLength(0);
+    });
+  });
 });

@@ -1,6 +1,31 @@
 import { query, execute } from '../config/database';
 import { v4 as uuidv4 } from 'uuid';
 
+interface PlayerProfile {
+  id: string;
+  user_id: string;
+  username: string;
+  resources: Record<string, number>;
+  materials: Record<string, number>;
+  production_gear: Record<string, any>;
+  warehouse_limits: Record<string, number>;
+  idle_queue: any[];
+  last_offline: Date | null;
+  characters: Array<{
+    id: string;
+    name: string;
+    profession: string;
+    health: number;
+    max_health: number;
+    movement: number;
+    energy: number;
+    max_energy: number;
+    position_x: number | null;
+    position_y: number | null;
+    is_alive: boolean;
+  }>;
+}
+
 interface Profession {
   name: string;
   base_health: number;
@@ -85,4 +110,84 @@ export async function getPlayerIdByUserId(userId: string): Promise<string | null
   );
 
   return result.length > 0 ? result[0].id : null;
+}
+
+/**
+ * 获取玩家完整资料
+ * @param userId 用户 ID
+ * @returns 玩家完整数据，包含资源、材料、棋子列表等
+ */
+export async function getPlayerProfile(userId: string): Promise<PlayerProfile | null> {
+  // 1. 查询玩家基本信息
+  const playerResult = await query<{
+    id: string;
+    user_id: string;
+    username: string;
+    resources: Record<string, number>;
+    materials: Record<string, number>;
+    production_gear: Record<string, any>;
+    warehouse_limits: Record<string, number>;
+    idle_queue: any[];
+    last_offline: Date | null;
+  }>(
+    `SELECT p.id, p.user_id, u.username, p.resources, p.materials, p.production_gear,
+            p.warehouse_limits, p.idle_queue, p.last_offline
+     FROM players p
+     JOIN users u ON p.user_id = u.id
+     WHERE p.user_id = $1`,
+    [userId]
+  );
+
+  if (playerResult.length === 0) {
+    return null;
+  }
+
+  const player = playerResult[0];
+
+  // 2. 查询棋子列表
+  const charactersResult = await query<{
+    id: string;
+    name: string;
+    profession: string;
+    health: number;
+    max_health: number;
+    movement: number;
+    energy: number;
+    max_energy: number;
+    position_x: number | null;
+    position_y: number | null;
+    is_alive: boolean;
+  }>(
+    `SELECT id, name, profession, health, max_health, movement, energy, max_energy,
+            position_x, position_y, is_alive
+     FROM characters
+     WHERE player_id = $1`,
+    [player.id]
+  );
+
+  // 3. 组装返回数据
+  return {
+    id: player.id,
+    user_id: player.user_id,
+    username: player.username,
+    resources: player.resources,
+    materials: player.materials,
+    production_gear: player.production_gear,
+    warehouse_limits: player.warehouse_limits,
+    idle_queue: player.idle_queue,
+    last_offline: player.last_offline,
+    characters: charactersResult.map(char => ({
+      id: char.id,
+      name: char.name,
+      profession: char.profession,
+      health: char.health,
+      max_health: char.max_health,
+      movement: char.movement,
+      energy: char.energy,
+      max_energy: char.max_energy,
+      position_x: char.position_x,
+      position_y: char.position_y,
+      is_alive: char.is_alive,
+    })),
+  };
 }

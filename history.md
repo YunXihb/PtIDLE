@@ -225,4 +225,32 @@
 
 ---
 
+## 2026-03-11 - 任务：获取玩家数据 API（T009）
+
+### Prompt
+用户要求实现获取玩家完整数据的 API：
+- API: GET /api/player/profile
+- 返回玩家完整数据：资源、材料、仓储上限、生产装备、挂机队列、棋子列表等
+
+### 思考
+在 playerService.ts 中添加了 getPlayerProfile(userId) 方法：
+- 查询 players 表获取玩家基础信息和资源
+- 查询 characters 表获取棋子列表
+- 组装完整的 PlayerProfile 返回
+
+修改 routes/player.ts：
+- 使用 authMiddleware 保护路由
+- 调用 playerService 获取数据
+- 返回完整玩家资料或 404 错误
+
+### 意外
+无。69 个测试全部通过。
+
+### 测试结果
+- playerService 单元测试：10 个测试用例全部通过
+- player 集成测试：7 个测试用例全部通过
+- 覆盖场景：有效 token、玩家不存在、认证失败等
+
+---
+
 *日志持续更新中...*
