@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import { testConnection as testDb } from './config/database';
 import { connectRedis } from './config/redis';
 import authRoutes from './routes/auth';
+import playerRoutes from './routes/player';
 
 dotenv.config();
 
@@ -16,6 +17,7 @@ app.use(express.json());
 
 // Routes
 app.use('/api/auth', authRoutes);
+app.use('/api/player', playerRoutes);
 
 // Health check
 app.get('/health', async (_req, res) => {

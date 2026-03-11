@@ -145,4 +145,29 @@
 
 ---
 
+## 2026-03-11 - 任务：JWT 认证中间件（T007）
+
+### Prompt
+用户要求实现 JWT 认证中间件，用于保护需要登录才能访问的 API 路由：
+- 创建 authMiddleware.ts（验证 JWT token，解析用户信息到请求对象）
+- 创建 player.ts 受保护路由示例（GET /api/player/profile）
+- 修改 index.ts 注册新路由
+- 编写单元测试
+
+### 思考
+实现了完整的 JWT 认证中间件：
+- 从 Authorization header 提取 Bearer token
+- 使用 jwt.verify 验证 token 有效性
+- 解析 token 中的 userId 和 username 到 req.user
+- 无效 token 返回 401 错误
+
+### 意外
+无。4 个单元测试全部通过，TypeScript 编译成功。
+
+### 测试结果
+- 单元测试：4 个测试全部通过
+- 测试覆盖场景：无 token、无效 token、有效 token
+
+---
+
 *日志持续更新中...*

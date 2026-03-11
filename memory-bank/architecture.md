@@ -22,7 +22,7 @@ backend/
     ├── controllers/         # 控制器目录（处理请求）
     ├── models/              # 数据模型目录（数据库表映射）
     ├── services/            # 业务逻辑目录
-    ├── middleware/          # 中间件目录
+    ├── middleware/          # 中间件目录（JWT 认证等）
     ├── routes/              # 路由目录
     └── socket/              # WebSocket 处理器目录
 ```
@@ -72,6 +72,8 @@ backend/
 | `src/services/authService.ts` | 用户注册/登录服务：验证输入、密码加密 (bcryptjs)、JWT token 生成 |
 | `src/controllers/authController.ts` | 认证控制器：处理注册/登录请求、错误响应 |
 | `src/routes/auth.ts` | 认证路由：POST /api/auth/register, POST /api/auth/login |
+| `src/middleware/auth.ts` | JWT 认证中间件：验证 token、解析用户信息到请求对象 |
+| `src/routes/player.ts` | 玩家路由示例：GET /api/player/profile（受保护） |
 
 ## Docker 配置
 
@@ -85,6 +87,7 @@ backend/
 - T003, T004 已完成：数据库设计 + Redis 配置
 - T005 已完成：用户注册 API（含单元测试和集成测试）
 - T006 已完成：用户登录 API（含单元测试，JWT token 认证）
+- T007 已完成：JWT 认证中间件（含单元测试，受保护路由示例）
 
 ---
 
