@@ -69,7 +69,8 @@ backend/
 
 | 文件路径 | 作用 |
 |----------|------|
-| `src/services/authService.ts` | 用户注册/登录服务：验证输入、密码加密 (bcryptjs)、JWT token 生成 |
+| `src/services/authService.ts` | 用户注册/登录服务：验证输入、密码加密 (bcryptjs)、JWT token 生成、玩家初始化 |
+| `src/services/playerService.ts` | 玩家服务：初始化玩家数据（创建玩家记录和棋子） |
 | `src/controllers/authController.ts` | 认证控制器：处理注册/登录请求、错误响应 |
 | `src/routes/auth.ts` | 认证路由：POST /api/auth/register, POST /api/auth/login |
 | `src/middleware/auth.ts` | JWT 认证中间件：验证 token、解析用户信息到请求对象 |
@@ -88,6 +89,7 @@ backend/
 - T005 已完成：用户注册 API（含单元测试和集成测试）
 - T006 已完成：用户登录 API（含单元测试，JWT token 认证）
 - T007 已完成：JWT 认证中间件（含单元测试，受保护路由示例）
+- T008 已完成：玩家初始化逻辑（注册时自动创建玩家和棋子）
 
 ---
 

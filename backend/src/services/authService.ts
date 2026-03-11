@@ -2,6 +2,7 @@ import { query, execute } from '../config/database';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
+import { initializePlayer } from './playerService';
 
 export interface User {
   id: string;
@@ -72,6 +73,9 @@ export async function createUser(input: CreateUserInput): Promise<Omit<User, 'pa
      VALUES ($1, $2, $3, $4, NULL)`,
     [userId, input.username.trim(), passwordHash, now]
   );
+
+  // 初始化玩家数据（创建玩家记录和棋子）
+  await initializePlayer(userId);
 
   return {
     id: userId,
