@@ -253,4 +253,50 @@
 
 ---
 
+## 2026-03-11 - 任务：采集系统（T013-T015）
+
+### Prompt
+用户要求实现采集系统：
+- T013: POST /api/gathering/start - 开始采集任务
+- T014: GET /api/gathering/status - 查询采集状态
+- T015: 采集完成与收益计算（含定时任务自动完成）
+
+### 思考
+创建了完整的采集系统：
+1. `gatheringService.ts` - 核心业务逻辑：
+   - startGathering() - 开始采集任务
+   - getGatheringStatus() - 查询采集进度
+   - completeGathering() - 完成采集并计算产出
+   - cancelGathering() - 取消采集任务
+   - calculateGatheringYield() - 计算产出（考虑装备加成和仓储上限）
+
+2. `gatheringController.ts` - HTTP 请求处理
+
+3. `gathering.ts` - 路由定义：
+   - POST /api/gathering/start
+   - GET /api/gathering/status
+   - POST /api/gathering/complete
+   - POST /api/gathering/cancel
+
+4. 在 index.ts 中添加定时任务：
+   - 每10秒检查所有玩家的采集任务
+   - 任务到期后自动计算产出并更新资源
+
+采集配置：
+- 采矿: iron_ore 1/分钟, coal 30%副产物
+- 伐木: wood 1/分钟, sap 20%副产物
+- 草药学: herb 1/分钟, mushroom 30%副产物
+
+### 意外
+1. TypeScript 类型错误：GatheringTask 接口缺少 progress 字段（用于查询状态时返回进度）
+2. 编译警告：定时任务可能导致 Jest 测试无法正常退出（添加了 unref 相关的警告说明）
+
+### 测试结果
+- 采集服务单元测试：7 个测试用例
+- 采集集成测试：9 个测试用例
+- 所有 106 个测试全部通过
+- 测试覆盖：开始采集、查询状态、取消任务、错误处理
+
+---
+
 *日志持续更新中...*

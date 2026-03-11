@@ -94,6 +94,9 @@ backend/
 - T009 已完成：获取玩家数据 API（返回完整玩家资料）
 - T010 已完成：离线收益计算服务（支持24小时最大离线时间）
 - T011 已完成：离线收益结算 API（POST /api/player/offline-claim）
+- T013 已完成：采集 API（POST /api/gathering/start）
+- T014 已完成：采集进度查询 API（GET /api/gathering/status）
+- T015 已完成：采集完成与收益计算（含定时任务自动完成）
 
 ## 离线收益系统
 
@@ -129,7 +132,77 @@ backend/
 }
 ```
 
+## 采集系统
+
+### 采集 API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | /api/gathering/start | 开始采集任务 |
+| GET | /api/gathering/status | 查询采集状态 |
+| POST | /api/gathering/complete | 手动完成采集（通常由定时任务调用） |
+| POST | /api/gathering/cancel | 取消采集任务 |
+
+### 采集技能配置
+
+| 技能 | 主产物 | 基础产出 | 副产物概率 |
+|------|--------|---------|-----------|
+| mining | iron_ore | 1/分钟 | coal: 30% |
+| woodcutting | wood | 1/分钟 | sap: 20% |
+| herbalism | herb | 1/分钟 | mushroom: 30% |
+
+### 产出计算公式
+
+```
+实际产出 = 基础产出 × (1 + 装备加成)
+装备加成 = sum(各装备.bonus)
+最大产出 = min(实际产出, 仓储上限 - 当前资源)
+溢出 = max(0, 实际产出 - 最大产出)
+```
+
+### 定时任务
+
+- 服务器启动时自动运行采集任务检查器
+- 每10秒检查一次所有玩家的采集任务
+- 任务到期后自动计算产出并更新玩家资源
+
+### API 请求/响应示例
+
+```typescript
+// POST /api/gathering/start 请求
+{
+  skillType: "mining",  // 或 "woodcutting" | "herbalism"
+  characterId?: "uuid"  // 可选，用于装备加成
+}
+
+// POST /api/gathering/start 响应
+{
+  success: true,
+  data: {
+    id: "gathering_123456789_abc",
+    skillType: "mining",
+    startedAt: "2026-03-11T12:00:00Z",
+    duration: 60,
+    status: "active"
+  }
+}
+
+// GET /api/gathering/status 响应
+{
+  success: true,
+  data: {
+    id: "gathering_123456789_abc",
+    skillType: "mining",
+    startedAt: "2026-03-11T12:00:00Z",
+    duration: 60,
+    status: "active",
+    progress: 0.5,
+    elapsedSeconds: 30
+  }
+}
+```
+
 ---
 
-*文档版本：v1.2*
+*文档版本：v1.3*
 *最后更新：2026-03-11*
