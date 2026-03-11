@@ -79,4 +79,35 @@
 
 ---
 
+## 2026-03-11 - 任务：用户注册 API（T005）
+
+### Prompt
+用户要求实现用户注册 API，包括：
+- 创建 authService.ts（验证输入、密码加密、数据库插入）
+- 创建 authController.ts（处理请求和响应）
+- 创建 authRoutes.ts（POST /api/auth/register）
+- 修改 index.ts 挂载路由
+
+用户要求自行进行单元测试和集成测试。
+
+### 思考
+实现了完整的注册功能：
+- 验证用户名（不能为空）和密码（至少6字符）
+- 使用 bcryptjs 加密密码
+- 查询数据库检查用户名是否已存在
+- 返回用户信息（不含密码哈希）
+
+测试策略：
+- 安装 Jest + ts-jest + supertest
+- 单元测试：验证 authService 各类错误场景
+- 集成测试：使用 supertest 测试完整的 HTTP 请求/响应流程
+- 验证数据库中密码已正确加密存储
+
+### 意外
+1. Jest 配置缺少 test 脚本，添加到 package.json
+2. 测试中 bcrypt 模拟类型错误，调整 mock 方式解决
+3. 所有 13 个测试用例全部通过
+
+---
+
 *日志持续更新中...*

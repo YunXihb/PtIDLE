@@ -65,6 +65,14 @@ backend/
 | `src/config/redis.ts` | Redis 客户端连接 |
 | `src/index.ts` | 应用入口，初始化数据库/Redis 连接 |
 
+## 认证模块
+
+| 文件路径 | 作用 |
+|----------|------|
+| `src/services/authService.ts` | 用户注册服务：验证输入、密码加密 (bcryptjs)、数据库插入 |
+| `src/controllers/authController.ts` | 注册控制器：处理请求、错误响应 |
+| `src/routes/auth.ts` | 认证路由：POST /api/auth/register |
+
 ## Docker 配置
 
 | 文件 | 说明 |
@@ -75,8 +83,9 @@ backend/
 
 - T001, T002 已完成：项目初始化 + TypeScript + ESLint 配置
 - T003, T004 已完成：数据库设计 + Redis 配置
+- T005 已完成：用户注册 API（含单元测试和集成测试）
 
 ---
 
-*文档版本：v1.0*
-*最后更新：2026-03-10*
+*文档版本：v1.1*
+*最后更新：2026-03-11*

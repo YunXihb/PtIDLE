@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import { testConnection as testDb } from './config/database';
 import { connectRedis } from './config/redis';
+import authRoutes from './routes/auth';
 
 dotenv.config();
 
@@ -12,6 +13,9 @@ const PORT = process.env.PORT || 3000;
 // Middleware
 app.use(cors());
 app.use(express.json());
+
+// Routes
+app.use('/api/auth', authRoutes);
 
 // Health check
 app.get('/health', async (_req, res) => {
