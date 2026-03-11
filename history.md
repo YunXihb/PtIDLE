@@ -110,4 +110,39 @@
 
 ---
 
+## 2026-03-11 - 任务：用户登录 API（T006）
+
+### Prompt
+用户要求实现用户登录 API，包括：
+- 在 authService.ts 中添加 login() 函数（验证密码、生成 JWT、更新 last_login）
+- 在 authController.ts 中添加 handleLogin() 控制器
+- 在 authRoutes.ts 中添加 POST /api/auth/login 路由
+- 添加单元测试和集成测试
+
+### 思考
+实现了完整的登录功能：
+- 验证用户名和密码输入
+- 使用 bcrypt.compare 验证密码
+- 使用 jsonwebtoken 生成 JWT token
+- 更新用户 last_login 时间戳
+- 返回 token 和用户信息（不含密码哈希）
+
+测试策略：
+- 添加 7 个登录相关的单元测试用例
+- 添加 8 个登录相关的集成测试用例
+- 端到端测试：手动 curl 测试注册、登录、错误密码、不存在用户等场景
+
+### 意外
+1. TypeScript 编译错误：jwt.sign 的 expiresIn 参数类型不匹配，使用类型断言解决
+2. 单元测试 mock 问题：需要同时 mock bcryptjs.compare 和 jsonwebtoken
+3. 数据库连接问题：密码认证失败，后确认 .env 中密码正确（your_password）
+4. 数据库不存在：需要手动创建 ptdidle 数据库并运行迁移脚本
+
+### 测试结果
+- 单元测试 + 集成测试：28 个测试全部通过
+- 端到端测试：注册、登录、错误处理均正常工作
+- 测试覆盖率：authService 100%, authController 92%
+
+---
+
 *日志持续更新中...*

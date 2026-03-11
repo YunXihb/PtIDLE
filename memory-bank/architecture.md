@@ -69,9 +69,9 @@ backend/
 
 | 文件路径 | 作用 |
 |----------|------|
-| `src/services/authService.ts` | 用户注册服务：验证输入、密码加密 (bcryptjs)、数据库插入 |
-| `src/controllers/authController.ts` | 注册控制器：处理请求、错误响应 |
-| `src/routes/auth.ts` | 认证路由：POST /api/auth/register |
+| `src/services/authService.ts` | 用户注册/登录服务：验证输入、密码加密 (bcryptjs)、JWT token 生成 |
+| `src/controllers/authController.ts` | 认证控制器：处理注册/登录请求、错误响应 |
+| `src/routes/auth.ts` | 认证路由：POST /api/auth/register, POST /api/auth/login |
 
 ## Docker 配置
 
@@ -84,6 +84,7 @@ backend/
 - T001, T002 已完成：项目初始化 + TypeScript + ESLint 配置
 - T003, T004 已完成：数据库设计 + Redis 配置
 - T005 已完成：用户注册 API（含单元测试和集成测试）
+- T006 已完成：用户登录 API（含单元测试，JWT token 认证）
 
 ---
 

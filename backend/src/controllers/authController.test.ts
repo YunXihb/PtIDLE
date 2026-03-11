@@ -106,4 +106,114 @@ describe('Auth API Integration Tests', () => {
       expect(response.body.success).toBe(false);
     });
   });
+
+  describe('POST /api/auth/login', () => {
+    const loginUsername = `logintest_${Date.now()}`;
+    const loginPassword = 'password123';
+
+    beforeAll(async () => {
+      // Create a user for login tests
+      await request(app)
+        .post('/api/auth/register')
+        .send({
+          username: loginUsername,
+          password: loginPassword
+        });
+    });
+
+    it('should login successfully with correct credentials', async () => {
+      const response = await request(app)
+        .post('/api/auth/login')
+        .send({
+          username: loginUsername,
+          password: loginPassword
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.data).toHaveProperty('token');
+      expect(response.body.data.user.username).toBe(loginUsername);
+      expect(response.body.data.user).not.toHaveProperty('password_hash');
+    });
+
+    it('should return 401 with incorrect password', async () => {
+      const response = await request(app)
+        .post('/api/auth/login')
+        .send({
+          username: loginUsername,
+          password: 'wrongpassword'
+        });
+
+      expect(response.status).toBe(401);
+      expect(response.body.success).toBe(false);
+      expect(response.body.error).toContain('Invalid username or password');
+    });
+
+    it('should return 401 with non-existent username', async () => {
+      const response = await request(app)
+        .post('/api/auth/login')
+        .send({
+          username: 'nonexistent_user_12345',
+          password: 'password123'
+        });
+
+      expect(response.status).toBe(401);
+      expect(response.body.success).toBe(false);
+    });
+
+    it('should return 400 when username is empty', async () => {
+      const response = await request(app)
+        .post('/api/auth/login')
+        .send({
+          username: '',
+          password: loginPassword
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.success).toBe(false);
+    });
+
+    it('should return 400 when password is empty', async () => {
+      const response = await request(app)
+        .post('/api/auth/login')
+        .send({
+          username: loginUsername,
+          password: ''
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.success).toBe(false);
+    });
+
+    it('should return 400 when username is missing', async () => {
+      const response = await request(app)
+        .post('/api/auth/login')
+        .send({
+          password: loginPassword
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.success).toBe(false);
+    });
+
+    it('should return 400 when password is missing', async () => {
+      const response = await request(app)
+        .post('/api/auth/login')
+        .send({
+          username: loginUsername
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.success).toBe(false);
+    });
+
+    it('should return 400 when request body is empty', async () => {
+      const response = await request(app)
+        .post('/api/auth/login')
+        .send({});
+
+      expect(response.status).toBe(400);
+      expect(response.body.success).toBe(false);
+    });
+  });
 });
