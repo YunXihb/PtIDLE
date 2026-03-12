@@ -100,3 +100,23 @@
 
 ### 意外
 集成测试需要 mock skillService，否则会因数据库连接问题失败
+
+---
+
+## 2026-03-12 - 任务：加工配方数据模型与服务层 (T016)
+
+### Prompt
+实现 T016 加工配方数据模型和服务层：
+- 创建 processingService.ts（从 processing_recipes 表读取配方，5分钟缓存）
+- 创建 processing.ts 路由（GET /api/processing/recipes, GET /api/processing/recipes/:type, POST /api/processing/process）
+- 在 index.ts 注册路由
+- 单元测试覆盖
+
+### 思考
+- 参考 skillService.ts 的实现模式
+- processing_recipes 表包含 type (smelting/carpentry/grinding)、input、output、efficiency 字段
+- POST /api/process 需要认证，检查输入材料是否足够，扣除输入并添加输出到 materials
+- 初始配方：冶炼(iron_ore+coal→iron_ingot)、木工(wood→plank)、研磨(herb→herb_powder)
+
+### 意外
+修复了 AuthRequest.userId 类型错误（应为 req.user?.userId）

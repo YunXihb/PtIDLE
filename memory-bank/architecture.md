@@ -223,5 +223,65 @@ backend/
 
 ---
 
-*文档版本：v1.4*
+### 加工系统
+
+加工配方从 `processing_recipes` 数据库表读取，包含 5 分钟内存缓存：
+
+| 文件 | 说明 |
+|------|------|
+| `src/services/processingService.ts` | 加工配方查询服务 |
+| `src/routes/processing.ts` | 加工 API 路由 |
+
+#### 加工 API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | /api/processing/recipes | 获取所有加工配方 |
+| GET | /api/processing/recipes/:type | 获取单个配方 |
+| POST | /api/processing/process | 执行加工操作 |
+
+#### 加工配方配置
+
+| 类型 | 名称 | 输入 | 输出 | 效率 |
+|------|------|------|------|------|
+| smelting | 冶炼 | iron_ore:2, coal:1 | iron_ingot:1 | 1.0 |
+| carpentry | 木工 | wood:2 | plank:1 | 1.0 |
+| grinding | 研磨 | herb:2 | herb_powder:1 | 1.0 |
+
+#### API 响应示例
+
+```typescript
+// GET /api/processing/recipes 响应
+{
+  success: true,
+  data: [
+    { id: "...", name: "冶炼", type: "smelting", input: {...}, output: {...}, efficiency: 1.0 },
+    { id: "...", name: "木工", type: "carpentry", input: {...}, output: {...}, efficiency: 1.0 },
+    { id: "...", name: "研磨", type: "grinding", input: {...}, output: {...}, efficiency: 1.0 }
+  ]
+}
+
+// POST /api/processing/process 请求
+{
+  recipeType: "smelting",  // 必填：smelting | carpentry | grinding
+  quantity: 1              // 可选：默认1
+}
+
+// POST /api/processing/process 响应
+{
+  success: true,
+  data: {
+    recipe: "冶炼",
+    type: "smelting",
+    quantity: 1,
+    input: { iron_ore: 2, coal: 1 },
+    output: { iron_ingot: 1 },
+    materials: { iron_ore: 0, coal: 0, iron_ingot: 1, ... }
+  }
+}
+```
+
+---
+
+*文档版本：v1.5*
 *最后更新：2026-03-12*
