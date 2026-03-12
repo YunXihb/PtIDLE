@@ -299,4 +299,43 @@
 
 ---
 
+## 2026-03-12 - 任务：仓库资源查询 API（T018）
+
+### Prompt
+用户要求实施 T018 仓库资源查询 API：
+- GET /api/warehouse - 获取玩家所有资源和材料
+
+### 思考
+创建了完整的仓库系统：
+1. `warehouseService.ts` - 仓库数据查询服务：
+   - getWarehouseData(userId) - 查询玩家仓库数据
+   - 返回资源、材料、生产装备、仓储上限
+
+2. `warehouse.ts` - 路由定义：
+   - GET /api/warehouse - 获取玩家仓库数据
+   - 使用 authMiddleware 保护路由
+
+3. 在 index.ts 中注册 warehouseRoutes
+
+响应格式：
+```typescript
+{
+  success: true,
+  data: {
+    resources: { iron_ore: 100, wood: 50, ... },
+    materials: { iron_ingot: 10, plank: 5, ... },
+    storageLimits: { resource: 1000, material: 500, ... }
+  }
+}
+```
+
+### 意外
+无。测试全部通过。
+
+### 测试结果
+- warehouseService 单元测试：4 个测试用例全部通过
+- TypeScript 编译成功
+
+---
+
 *日志持续更新中...*

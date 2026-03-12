@@ -8,6 +8,7 @@ import playerRoutes from './routes/player';
 import gatheringRoutes from './routes/gathering';
 import skillsRoutes from './routes/skills';
 import processingRoutes from './routes/processing';
+import warehouseRoutes from './routes/warehouse';
 import { query } from './config/database';
 import { checkAndCompleteGathering, initializeGatheringConfig } from './services/gatheringService';
 
@@ -26,6 +27,7 @@ app.use('/api/player', playerRoutes);
 app.use('/api/gathering', gatheringRoutes);
 app.use('/api/skills', skillsRoutes);
 app.use('/api/processing', processingRoutes);
+app.use('/api/warehouse', warehouseRoutes);
 
 // Health check
 app.get('/health', async (_req, res) => {

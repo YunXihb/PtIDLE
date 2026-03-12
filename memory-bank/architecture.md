@@ -283,5 +283,42 @@ backend/
 
 ---
 
-*文档版本：v1.5*
+### 仓库系统
+
+| 文件 | 说明 |
+|------|------|
+| `src/services/warehouseService.ts` | 仓库数据查询服务 |
+| `src/routes/warehouse.ts` | 仓库 API 路由 |
+
+#### 仓库 API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | /api/warehouse | 获取玩家仓库数据 |
+
+#### API 响应示例
+
+```typescript
+// GET /api/warehouse 响应
+{
+  success: true,
+  data: {
+    resources: { iron_ore: 100, wood: 50, ... },
+    materials: { iron_ingot: 10, plank: 5, ... },
+    storageLimits: { resource: 1000, material: 500, ... }
+  }
+}
+```
+
+---
+
+### 当前状态
+
+- T001-T016 已完成
+- **T018 已完成**：仓库资源查询 API (GET /api/warehouse)
+- T019-T025 待开发
+
+---
+
+*文档版本：v1.6*
 *最后更新：2026-03-12*
