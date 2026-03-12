@@ -1,4 +1,5 @@
 import { query, execute } from '../config/database';
+import { getGatheringConfig, getGatheringSkillByType, clearSkillsCache } from './skillService';
 
 export type SkillType = 'mining' | 'woodcutting' | 'herbalism';
 
@@ -18,32 +19,35 @@ export interface GatheringTask {
   elapsedSeconds?: number;
 }
 
-// 采集技能配置
-const GATHERING_CONFIG: Record<SkillType, {
+// 采集技能配置（从数据库加载）
+let GATHERING_CONFIG: Record<SkillType, {
   primaryResource: string;
   baseRate: number; // per minute
   byproduct: string;
   byproductChance: number;
-}> = {
-  mining: {
-    primaryResource: 'iron_ore',
-    baseRate: 1,
-    byproduct: 'coal',
-    byproductChance: 0.3,
-  },
-  woodcutting: {
-    primaryResource: 'wood',
-    baseRate: 1,
-    byproduct: 'sap',
-    byproductChance: 0.2,
-  },
-  herbalism: {
-    primaryResource: 'herb',
-    baseRate: 1,
-    byproduct: 'mushroom',
-    byproductChance: 0.3,
-  },
-};
+}> | null = null;
+
+/**
+ * 初始化采集配置（从数据库加载）
+ */
+export async function initializeGatheringConfig(): Promise<void> {
+  GATHERING_CONFIG = await getGatheringConfig() as Record<SkillType, any>;
+}
+
+/**
+ * 获取当前配置（自动初始化如果未初始化）
+ */
+async function getConfig(): Promise<Record<SkillType, {
+  primaryResource: string;
+  baseRate: number;
+  byproduct: string;
+  byproductChance: number;
+}>> {
+  if (!GATHERING_CONFIG) {
+    await initializeGatheringConfig();
+  }
+  return GATHERING_CONFIG!;
+}
 
 // 默认采集时长（秒）
 const DEFAULT_GATHERING_DURATION = 60; // 1 minute for testing
@@ -84,7 +88,7 @@ export async function startGathering(
   }
 
   // 3. 创建新采集任务
-  const config = GATHERING_CONFIG[skillType];
+  const config = (await getConfig())[skillType];
   const now = new Date();
   const task: GatheringTask = {
     id: `gathering_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
@@ -149,11 +153,11 @@ export async function getGatheringStatus(
  * @param task 采集任务
  * @param productionGear 生产装备加成
  */
-function calculateGatheringYield(
+async function calculateGatheringYield(
   task: GatheringTask,
   productionGear: Record<string, any>
-): { resources: Record<string, number>; overflowed: Record<string, number> } {
-  const config = GATHERING_CONFIG[task.skillType];
+): Promise<{ resources: Record<string, number>; overflowed: Record<string, number> }> {
+  const config = (await getConfig())[task.skillType];
 
   // 计算采集时长（分钟）
   const durationMinutes = task.duration / 60;
@@ -224,7 +228,7 @@ export async function completeGathering(userId: string): Promise<GatheringTask |
   }
 
   // 4. 计算产出
-  const { resources: earned, overflowed } = calculateGatheringYield(
+  const { resources: earned, overflowed } = await calculateGatheringYield(
     activeTask,
     player.production_gear || {}
   );

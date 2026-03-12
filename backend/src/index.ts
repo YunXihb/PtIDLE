@@ -6,8 +6,9 @@ import { connectRedis } from './config/redis';
 import authRoutes from './routes/auth';
 import playerRoutes from './routes/player';
 import gatheringRoutes from './routes/gathering';
+import skillsRoutes from './routes/skills';
 import { query } from './config/database';
-import { checkAndCompleteGathering } from './services/gatheringService';
+import { checkAndCompleteGathering, initializeGatheringConfig } from './services/gatheringService';
 
 dotenv.config();
 
@@ -22,6 +23,7 @@ app.use(express.json());
 app.use('/api/auth', authRoutes);
 app.use('/api/player', playerRoutes);
 app.use('/api/gathering', gatheringRoutes);
+app.use('/api/skills', skillsRoutes);
 
 // Health check
 app.get('/health', async (_req, res) => {
@@ -43,6 +45,9 @@ async function initializeApp() {
 
     // Connect to Redis
     await connectRedis();
+
+    // Initialize gathering config from database
+    await initializeGatheringConfig();
 
     // 启动采集任务检查定时器（每10秒检查一次）
     startGatheringChecker();

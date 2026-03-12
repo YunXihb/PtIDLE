@@ -94,6 +94,7 @@ backend/
 - T009 已完成：获取玩家数据 API（返回完整玩家资料）
 - T010 已完成：离线收益计算服务（支持24小时最大离线时间）
 - T011 已完成：离线收益结算 API（POST /api/player/offline-claim）
+- T012 已完成：采集技能数据模型（从数据库读取技能配置）
 - T013 已完成：采集 API（POST /api/gathering/start）
 - T014 已完成：采集进度查询 API（GET /api/gathering/status）
 - T015 已完成：采集完成与收益计算（含定时任务自动完成）
@@ -142,6 +143,13 @@ backend/
 | GET | /api/gathering/status | 查询采集状态 |
 | POST | /api/gathering/complete | 手动完成采集（通常由定时任务调用） |
 | POST | /api/gathering/cancel | 取消采集任务 |
+
+### 技能 API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | /api/skills/gathering | 获取所有采集技能 |
+| GET | /api/skills/gathering/:type | 获取单个采集技能 |
 
 ### 采集技能配置
 
@@ -204,5 +212,16 @@ backend/
 
 ---
 
-*文档版本：v1.3*
-*最后更新：2026-03-11*
+### 技能服务
+
+采集技能配置现在从 `gathering_skills` 数据库表读取，包含 5 分钟内存缓存：
+
+| 文件 | 说明 |
+|------|------|
+| `src/services/skillService.ts` | 技能查询服务（从数据库读取） |
+| `src/services/gatheringService.ts` | 修改为使用数据库配置 |
+
+---
+
+*文档版本：v1.4*
+*最后更新：2026-03-12*

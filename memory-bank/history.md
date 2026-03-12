@@ -80,3 +80,23 @@
 
 ### 意外
 无
+
+---
+
+## 2026-03-12 - 任务：采集技能数据模型 (T012)
+
+### Prompt
+实现采集技能数据模型，从数据库读取技能配置：
+- 创建 skillService.ts 从 gathering_skills 表读取技能
+- 修改 gatheringService.ts 使用数据库配置（带缓存）
+- 创建技能查询 API（GET /api/skills/gathering）
+- 单元测试覆盖
+
+### 思考
+- 技能配置存储在 gathering_skills 数据库表
+- 使用 5 分钟内存缓存避免频繁查询
+- gatheringService.getConfig() 改为异步，自动初始化配置
+- API 路由：GET /api/skills/gathering 和 /api/skills/gathering/:type
+
+### 意外
+集成测试需要 mock skillService，否则会因数据库连接问题失败

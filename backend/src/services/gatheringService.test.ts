@@ -8,6 +8,31 @@ jest.mock('../config/database', () => ({
   execute: jest.fn()
 }));
 
+// Mock skillService
+jest.mock('../services/skillService', () => ({
+  getGatheringConfig: jest.fn().mockResolvedValue({
+    mining: {
+      primaryResource: 'iron_ore',
+      baseRate: 1,
+      byproduct: 'coal',
+      byproductChance: 0.3,
+    },
+    woodcutting: {
+      primaryResource: 'wood',
+      baseRate: 1,
+      byproduct: 'sap',
+      byproductChance: 0.2,
+    },
+    herbalism: {
+      primaryResource: 'herb',
+      baseRate: 1,
+      byproduct: 'mushroom',
+      byproductChance: 0.3,
+    },
+  }),
+  clearSkillsCache: jest.fn(),
+}));
+
 const mockedQuery = query as jest.MockedFunction<typeof query>;
 const mockedExecute = execute as jest.MockedFunction<typeof execute>;
 

@@ -3,6 +3,7 @@ import request from 'supertest';
 import express from 'express';
 import gatheringRoutes from '../routes/gathering';
 import { query, execute } from '../config/database';
+import * as skillService from '../services/skillService';
 
 // Create test app
 const app = express();
@@ -22,6 +23,32 @@ jest.mock('../middleware/auth', () => ({
     next();
   },
   AuthRequest: {} as any
+}));
+
+// Mock skillService
+jest.mock('../services/skillService', () => ({
+  ...jest.requireActual('../services/skillService'),
+  getGatheringConfig: jest.fn().mockResolvedValue({
+    mining: {
+      primaryResource: 'iron_ore',
+      baseRate: 1,
+      byproduct: 'coal',
+      byproductChance: 0.3,
+    },
+    woodcutting: {
+      primaryResource: 'wood',
+      baseRate: 1,
+      byproduct: 'sap',
+      byproductChance: 0.2,
+    },
+    herbalism: {
+      primaryResource: 'herb',
+      baseRate: 1,
+      byproduct: 'mushroom',
+      byproductChance: 0.3,
+    },
+  }),
+  clearSkillsCache: jest.fn(),
 }));
 
 const mockedQuery = query as jest.MockedFunction<typeof query>;
