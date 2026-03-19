@@ -445,10 +445,17 @@ backend/
 ### 当前状态
 
 - T001-T016 已完成
+- T017 已完成：加工 API
 - **T018 已完成**：仓库资源查询 API (GET /api/warehouse)
-- T019-T025 已完成
+- T019 已完成：仓储上限管理
+- T020 已完成：制造配方数据模型
+- T021 已完成：卡牌制造 API (POST /api/crafting/card)
+- T022 已完成：装备制造 API (POST /api/crafting/gear)
+- T023 已完成：消耗品制造 API (POST /api/crafting/consumable)
+- T024 已完成：生产装备效率计算 (GET /api/gathering/efficiency)
+- T025 已完成：周期性挂机收益计算（Redis 工作队列）
 
 ---
 
-*文档版本：v1.10*
+*文档版本：v1.11*
 *最后更新：2026-03-19*
