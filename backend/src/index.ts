@@ -10,6 +10,7 @@ import skillsRoutes from './routes/skills';
 import processingRoutes from './routes/processing';
 import craftingRoutes from './routes/crafting';
 import warehouseRoutes from './routes/warehouse';
+import professionRoutes from './routes/professions';
 import { query } from './config/database';
 import { checkAndCompleteGathering, initializeGatheringConfig, processDueGatheringTasks } from './services/gatheringService';
 
@@ -30,6 +31,7 @@ app.use('/api/skills', skillsRoutes);
 app.use('/api/processing', processingRoutes);
 app.use('/api/crafting', craftingRoutes);
 app.use('/api/warehouse', warehouseRoutes);
+app.use('/api/professions', professionRoutes);
 
 // Health check
 app.get('/health', async (_req, res) => {

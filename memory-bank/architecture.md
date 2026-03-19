@@ -145,6 +145,21 @@ backend/
 | POST | /api/gathering/cancel | 取消采集任务 |
 | GET | /api/gathering/efficiency | 获取采集效率信息（含装备加成） |
 
+### 职业 API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | /api/professions | 获取所有职业 |
+| GET | /api/professions/:name | 获取单个职业 |
+
+#### 职业配置
+
+| 职业 | 基础血量 | 基础移动 | 基础能量 | 描述 |
+|------|---------|---------|---------|------|
+| warrior | 20 | 2 | 3 | 战士 - 高血量，近战坦克 |
+| ranger | 15 | 3 | 3 | 弓手 - 中等血量，远程单体 |
+| mage | 12 | 2 | 3 | 法师 - 低血量，远程AOE |
+
 ### 技能 API
 
 | 方法 | 路径 | 说明 |
@@ -454,8 +469,9 @@ backend/
 - T023 已完成：消耗品制造 API (POST /api/crafting/consumable)
 - T024 已完成：生产装备效率计算 (GET /api/gathering/efficiency)
 - T025 已完成：周期性挂机收益计算（Redis 工作队列）
+- T026 已完成：职业数据模型服务层 (GET /api/professions)
 
 ---
 
-*文档版本：v1.11*
+*文档版本：v1.12*
 *最后更新：2026-03-19*
