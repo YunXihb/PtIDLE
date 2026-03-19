@@ -1,4 +1,4 @@
-import { createCharacter, getCharactersByUserId } from '../services/characterService';
+import { createCharacter, getCharactersByUserId, updateCharacterName } from '../services/characterService';
 import { query, execute } from '../config/database';
 
 // Mock the database module
@@ -129,6 +129,61 @@ describe('characterService', () => {
 
       expect(characters).toHaveLength(1);
       expect(characters[0].name).toBe('Warrior1');
+    });
+  });
+
+  describe('updateCharacterName', () => {
+    it('should update character name successfully', async () => {
+      const { getPlayerIdByUserId } = require('../services/playerService');
+
+      getPlayerIdByUserId.mockResolvedValue('player-uuid');
+      mockQuery.mockResolvedValueOnce([
+        {
+          id: 'char-1',
+          player_id: 'player-uuid',
+          name: 'OldName',
+          profession: 'warrior',
+          health: 20,
+          max_health: 20,
+          movement: 2,
+          energy: 3,
+          max_energy: 3,
+          position_x: null,
+          position_y: null,
+          is_alive: true,
+          created_at: new Date(),
+        },
+      ] as any);
+      mockExecute.mockResolvedValueOnce(1 as any);
+
+      const result = await updateCharacterName('user-uuid', 'char-1', 'NewName');
+
+      expect(result.success).toBe(true);
+      expect(result.character).toBeDefined();
+      expect(result.character?.name).toBe('NewName');
+    });
+
+    it('should return error for player not found', async () => {
+      const { getPlayerIdByUserId } = require('../services/playerService');
+
+      getPlayerIdByUserId.mockResolvedValue(null);
+
+      const result = await updateCharacterName('user-uuid', 'char-1', 'NewName');
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Player not found');
+    });
+
+    it('should return error for character not found', async () => {
+      const { getPlayerIdByUserId } = require('../services/playerService');
+
+      getPlayerIdByUserId.mockResolvedValue('player-uuid');
+      mockQuery.mockResolvedValueOnce([] as any);
+
+      const result = await updateCharacterName('user-uuid', 'char-999', 'NewName');
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Character not found');
     });
   });
 });

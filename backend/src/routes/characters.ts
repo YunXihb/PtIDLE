@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
-import { createCharacter, getCharactersByUserId } from '../services/characterService';
+import { createCharacter, getCharactersByUserId, updateCharacterName } from '../services/characterService';
 
 const router = Router();
 
@@ -71,6 +71,45 @@ router.post('/', authMiddleware, async (req: AuthRequest, res) => {
   } catch (error) {
     console.error('Error creating character:', error);
     res.status(500).json({ error: 'Failed to create character' });
+  }
+});
+
+// 更新棋子名称
+router.put('/:id/name', authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user?.userId;
+    const characterId = req.params.id;
+    const { name } = req.body;
+
+    if (!userId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    // 验证输入
+    if (!name || typeof name !== 'string' || name.trim().length === 0) {
+      res.status(400).json({ error: 'Character name is required' });
+      return;
+    }
+
+    const result = await updateCharacterName(userId, characterId, name.trim());
+
+    if (!result.success) {
+      if (result.error === 'Character not found' || result.error === 'Player not found') {
+        res.status(404).json({ error: result.error });
+        return;
+      }
+      res.status(400).json({ error: result.error });
+      return;
+    }
+
+    res.json({
+      success: true,
+      data: result.character,
+    });
+  } catch (error) {
+    console.error('Error updating character name:', error);
+    res.status(500).json({ error: 'Failed to update character name' });
   }
 });
 

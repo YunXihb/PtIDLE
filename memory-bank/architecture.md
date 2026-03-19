@@ -166,6 +166,7 @@ backend/
 |------|------|------|------|
 | POST | /api/characters | JWT | 创建新棋子 |
 | GET | /api/characters | JWT | 获取玩家所有棋子 |
+| PUT | /api/characters/:id/name | JWT | 更新棋子名称 |
 
 #### 棋子创建请求/响应
 
@@ -505,8 +506,9 @@ backend/
 - T026 已完成：职业数据模型服务层 (GET /api/professions)
 - T027 已完成：棋子创建 API (POST /api/characters)
 - T028 已完成：棋子查询 API (GET /api/characters)
+- T029 已完成：棋子命名 API (PUT /api/characters/:id/name)
 
 ---
 
-*文档版本：v1.14*
+*文档版本：v1.15*
 *最后更新：2026-03-19*

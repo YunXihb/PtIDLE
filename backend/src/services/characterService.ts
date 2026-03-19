@@ -102,6 +102,55 @@ export async function createCharacter(
   return { success: true, character };
 }
 
+export interface UpdateCharacterNameResult {
+  success: boolean;
+  character?: Character;
+  error?: string;
+}
+
+/**
+ * 更新棋子名称
+ * @param userId 用户 ID
+ * @param characterId 棋子 ID
+ * @param newName 新名称
+ */
+export async function updateCharacterName(
+  userId: string,
+  characterId: string,
+  newName: string
+): Promise<UpdateCharacterNameResult> {
+  // 1. 获取玩家 ID
+  const playerId = await getPlayerIdByUserId(userId);
+  if (!playerId) {
+    return { success: false, error: 'Player not found' };
+  }
+
+  // 2. 验证棋子存在且属于该玩家
+  const characters = await query<Character>(
+    'SELECT * FROM characters WHERE id = $1 AND player_id = $2',
+    [characterId, playerId]
+  );
+
+  if (characters.length === 0) {
+    return { success: false, error: 'Character not found' };
+  }
+
+  // 3. 更新棋子名称
+  const now = new Date();
+  await execute(
+    'UPDATE characters SET name = $1, updated_at = $2 WHERE id = $3',
+    [newName, now, characterId]
+  );
+
+  // 4. 返回更新后的棋子
+  const updatedCharacter: Character = {
+    ...characters[0],
+    name: newName,
+  };
+
+  return { success: true, character: updatedCharacter };
+}
+
 /**
  * 获取玩家的所有棋子
  * @param userId 用户 ID
