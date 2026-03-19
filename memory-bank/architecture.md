@@ -160,6 +160,39 @@ backend/
 | ranger | 15 | 3 | 3 | 弓手 - 中等血量，远程单体 |
 | mage | 12 | 2 | 3 | 法师 - 低血量，远程AOE |
 
+### 棋子 API
+
+| 方法 | 路径 | 认证 | 说明 |
+|------|------|------|------|
+| POST | /api/characters | JWT | 创建新棋子 |
+| GET | /api/characters | JWT | 获取玩家所有棋子 |
+
+#### 棋子创建请求/响应
+
+```typescript
+// POST /api/characters 请求
+{
+  name: "新棋子",
+  profession: "warrior"  // warrior | ranger | mage
+}
+
+// POST /api/characters 响应
+{
+  success: true,
+  data: {
+    id: "uuid",
+    name: "新棋子",
+    profession: "warrior",
+    health: 20,
+    max_health: 20,
+    movement: 2,
+    energy: 3,
+    max_energy: 3,
+    is_alive: true
+  }
+}
+```
+
 ### 技能 API
 
 | 方法 | 路径 | 说明 |
@@ -470,8 +503,9 @@ backend/
 - T024 已完成：生产装备效率计算 (GET /api/gathering/efficiency)
 - T025 已完成：周期性挂机收益计算（Redis 工作队列）
 - T026 已完成：职业数据模型服务层 (GET /api/professions)
+- T027 已完成：棋子创建 API (POST /api/characters)
 
 ---
 
-*文档版本：v1.12*
+*文档版本：v1.13*
 *最后更新：2026-03-19*
