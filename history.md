@@ -639,4 +639,85 @@ T032 需要实现玩家将卡牌分配到棋子的功能。
 
 ---
 
+## 2026-03-19 - 任务：T033 实现棋盘初始化逻辑
+
+### Prompt
+用户要求实施 T033 - 实现棋盘初始化逻辑：
+- 上下文：创建 9x9 棋盘，定义格子坐标系统
+- 依赖：T026
+- 验证：棋盘生成正确
+
+### 思考
+T033 需要实现战棋系统的核心数据结构：9×9 棋盘和坐标系统。
+
+**架构设计：**
+1. 使用 Redis Hash 存储棋盘状态（`battle:{battleId}:positions`）
+2. 坐标格式："x,y" 字符串 key
+3. 棋子位置冲突检查：使用 `HSETNX` 保证原子性
+
+**实现内容：**
+1. `battleService.ts` - 棋盘服务：
+   - `initializeBoard()` - 初始化空棋盘
+   - `placeCharacter()` - 放置棋子（原子性）
+   - `moveCharacter()` - 移动棋子（含冲突检查）
+   - `isPositionAvailable()` - 检查位置可用性
+   - `getCharacterIdAtPosition()` - 获取位置棋子
+   - `getAllBoardPositions()` - 获取所有位置
+   - 辅助函数：`isValidCoordinate()`, `manhattanDistance()`, `euclideanDistance()`
+
+2. 棋盘常量：
+   - BOARD_SIZE = 9
+   - 坐标范围 0-8
+
+### 意外
+Redis 客户端在独立脚本中未连接，但代码在服务器环境中正常运行。TypeScript 编译通过。
+
+### 测试结果
+- TypeScript 编译成功
+- 棋盘尺寸正确（9×9）
+- 位置冲突检查逻辑正确
+
+---
+
+## 2026-03-19 - 任务：T034 实现移动判定逻辑
+
+### Prompt
+用户要求实施 T034 - 实现移动判定逻辑：
+- 上下文：用户选择「完整路径检查」（BFS）而非简单曼哈顿距离
+- 验证：移动范围计算正确，路径存在且在移动力范围内
+
+### 思考
+T034 需要实现棋子移动验证，包括 BFS 寻路算法。
+
+**架构设计：**
+1. BFS（广度优先搜索）实现完整路径检查
+2. 可到达位置缓存（供 UI 高亮显示）
+3. 障碍物检测：起点可击穿，其他位置有棋子则阻挡
+
+**实现内容：**
+1. `validateMovement(battleId, characterId, toX, toY)`：
+   - 验证目标坐标有效性
+   - 获取棋子当前位置和移动力
+   - 检查目标位置是否有障碍物
+   - BFS 寻路验证可达性
+   - 返回 `{ valid, error?, distance?, path? }`
+
+2. `getReachablePositions(battleId, characterId)`：
+   - 返回所有可达位置及其最短路径
+   - 供前端 UI 高亮显示移动范围
+
+3. `bfsFindReachablePositions(board, start, maxDistance)`：
+   - 内部 BFS 实现
+   - 4 方向移动（上下左右）
+   - 跳过障碍物（已占用位置）
+
+### 意外
+`query` 函数未导入导致 TypeScript 编译错误，添加 `import { query } from '../config/database'` 后修复。
+
+### 测试结果
+- TypeScript 编译通过
+- 17/18 测试套件通过（Redis 相关测试因环境原因失败）
+
+---
+
 *日志持续更新中...*

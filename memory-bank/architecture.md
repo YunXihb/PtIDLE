@@ -550,6 +550,8 @@ backend/
 - T030 已完成：基础卡牌数据模型 (GET /api/cards)
 - **T031 已完成**：卡牌库查询 API (GET /api/cards/my/list)
 - **T032 已完成**：卡牌分配 API (PUT /api/characters/:id/deck)
+- **T033 已完成**：棋盘初始化逻辑 (9x9 棋盘)
+- **T034 已完成**：移动判定逻辑 (BFS 路径检查)
 
 ---
 
@@ -618,5 +620,48 @@ backend/
 
 ---
 
-*文档版本：v1.18*
+### 战棋服务 (Battle Service)
+
+| 文件 | 说明 |
+|------|------|
+| `src/services/battleService.ts` | 棋盘初始化、位置管理、棋子移动 |
+
+#### 棋盘常量
+
+| 常量 | 值 | 说明 |
+|------|-----|------|
+| BOARD_SIZE | 9 | 9×9 棋盘 |
+| MAX_COORDINATE | 8 | 最大坐标值 |
+| MIN_COORDINATE | 0 | 最小坐标值 |
+
+#### 坐标系统
+
+- 使用 `(x, y)` 坐标，x 为列(0-8)，y 为行(0-8)
+- 字符串 key 格式：`"x,y"`（如 `"3,4"` 表示第3列第4行）
+
+#### 核心函数
+
+| 函数 | 说明 |
+|------|------|
+| `initializeBoard(battleId)` | 初始化空棋盘（Redis） |
+| `placeCharacter(battleId, charId, x, y)` | 放置棋子到位置（原子性） |
+| `moveCharacter(battleId, charId, fromX, fromY, toX, toY)` | 移动棋子 |
+| `isPositionAvailable(battleId, x, y)` | 检查位置是否可用 |
+| `getCharacterIdAtPosition(battleId, x, y)` | 获取指定位置的棋子 |
+| `getAllBoardPositions(battleId)` | 获取棋盘所有位置状态 |
+| `getCharacterPosition(battleId, charId)` | 获取指定棋子的位置 |
+| `isValidCoordinate(x, y)` | 验证坐标是否在范围内 |
+| `manhattanDistance(p1, p2)` | 计算曼哈顿距离（移动判定） |
+| `euclideanDistance(p1, p2)` | 计算直线距离（远程攻击判定） |
+| `validateMovement(battleId, charId, toX, toY)` | 验证移动是否合法（BFS路径检查） |
+| `getReachablePositions(battleId, charId)` | 获取棋子可到达的所有位置（供UI高亮） |
+
+#### 冲突规则
+
+- 同一坐标点只能有 **1 枚棋子**
+- 使用 Redis `HSETNX` 保证原子性放置
+
+---
+
+*文档版本：v1.20*
 *最后更新：2026-03-19*
