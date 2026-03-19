@@ -172,3 +172,188 @@ export async function getCharactersByUserId(userId: string): Promise<Character[]
 
   return result;
 }
+
+// ========================================
+// 棋子牌库分配
+// ========================================
+
+// 棋子卡牌上限：预设5张 + 灵活5张 = 最多10张
+const CHARACTER_DECK_MAX_SIZE = 10;
+
+export interface AssignCardResult {
+  success: boolean;
+  character_deck_id?: string;
+  error?: string;
+}
+
+/**
+ * 将卡牌分配到棋子牌库
+ * @param userId 用户 ID
+ * @param characterId 棋子 ID
+ * @param cardId 玩家卡牌 ID
+ */
+export async function assignCardToCharacter(
+  userId: string,
+  characterId: string,
+  cardId: string
+): Promise<AssignCardResult> {
+  try {
+    // 1. 获取玩家 ID
+    const playerId = await getPlayerIdByUserId(userId);
+    if (!playerId) {
+      return { success: false, error: 'Player not found' };
+    }
+
+    // 2. 验证棋子存在且属于该玩家
+    const characters = await query<Character>(
+      'SELECT * FROM characters WHERE id = $1 AND player_id = $2',
+      [characterId, playerId]
+    );
+
+    if (characters.length === 0) {
+      return { success: false, error: 'Character not found' };
+    }
+
+    // 3. 验证卡牌存在且属于该玩家
+    const cards = await query<{ id: string }>(
+      'SELECT id FROM player_cards WHERE id = $1 AND player_id = $2',
+      [cardId, playerId]
+    );
+
+    if (cards.length === 0) {
+      return { success: false, error: 'Card not found' };
+    }
+
+    // 4. 检查该卡牌是否已经分配给该棋子
+    const existingAssignment = await query<{ id: string }>(
+      'SELECT id FROM character_deck WHERE character_id = $1 AND player_card_id = $2',
+      [characterId, cardId]
+    );
+
+    if (existingAssignment.length > 0) {
+      return { success: false, error: 'Card already assigned to this character' };
+    }
+
+    // 5. 检查棋子牌库是否已满（≤10张）
+    const deckCount = await query<{ count: string }>(
+      'SELECT COUNT(*) as count FROM character_deck WHERE character_id = $1',
+      [characterId]
+    );
+
+    const currentCount = parseInt(deckCount[0]?.count || '0', 10);
+    if (currentCount >= CHARACTER_DECK_MAX_SIZE) {
+      return { success: false, error: `Character deck is full (max ${CHARACTER_DECK_MAX_SIZE} cards)` };
+    }
+
+    // 6. 分配卡牌到棋子牌库
+    const deckId = uuidv4();
+    await execute(
+      `INSERT INTO character_deck (id, character_id, player_card_id, created_at)
+       VALUES ($1, $2, $3, NOW())`,
+      [deckId, characterId, cardId]
+    );
+
+    return { success: true, character_deck_id: deckId };
+  } catch (error) {
+    console.error('Error assigning card to character:', error);
+    throw error;
+  }
+}
+
+/**
+ * 从棋子牌库移除卡牌
+ * @param userId 用户 ID
+ * @param characterId 棋子 ID
+ * @param cardId 玩家卡牌 ID
+ */
+export async function removeCardFromCharacter(
+  userId: string,
+  characterId: string,
+  cardId: string
+): Promise<AssignCardResult> {
+  try {
+    // 1. 获取玩家 ID
+    const playerId = await getPlayerIdByUserId(userId);
+    if (!playerId) {
+      return { success: false, error: 'Player not found' };
+    }
+
+    // 2. 验证棋子存在且属于该玩家
+    const characters = await query<Character>(
+      'SELECT * FROM characters WHERE id = $1 AND player_id = $2',
+      [characterId, playerId]
+    );
+
+    if (characters.length === 0) {
+      return { success: false, error: 'Character not found' };
+    }
+
+    // 3. 验证卡牌存在且属于该玩家
+    const cards = await query<{ id: string }>(
+      'SELECT id FROM player_cards WHERE id = $1 AND player_id = $2',
+      [cardId, playerId]
+    );
+
+    if (cards.length === 0) {
+      return { success: false, error: 'Card not found' };
+    }
+
+    // 4. 从牌库移除卡牌
+    const result = await execute(
+      'DELETE FROM character_deck WHERE character_id = $1 AND player_card_id = $2',
+      [characterId, cardId]
+    );
+
+    if (result === 0) {
+      return { success: false, error: 'Card not found in character deck' };
+    }
+
+    return { success: true };
+  } catch (error) {
+    console.error('Error removing card from character:', error);
+    throw error;
+  }
+}
+
+/**
+ * 获取棋子的牌库卡牌列表
+ * @param characterId 棋子 ID
+ */
+export async function getCharacterDeckCards(characterId: string) {
+  const result = await query<{
+    deck_id: string;
+    card_id: string;
+    name: string;
+    type: string;
+    cost: number;
+    effect: Record<string, unknown>;
+    template_no: number;
+    card_sequence: number;
+    assigned_at: Date;
+  }>(
+    `SELECT cd.id as deck_id, pc.id as card_id, pc.name, pc.type, pc.cost, pc.effect,
+            COALESCE(ct.template_no, 0) as template_no,
+            COALESCE(pc.card_sequence, 0) as card_sequence,
+            cd.created_at as assigned_at
+     FROM character_deck cd
+     JOIN player_cards pc ON cd.player_card_id = pc.id
+     LEFT JOIN card_templates ct ON pc.card_template_id = ct.id
+     WHERE cd.character_id = $1
+     ORDER BY ct.template_no ASC, pc.card_sequence ASC`,
+    [characterId]
+  );
+
+  return result;
+}
+
+/**
+ * 获取棋子的牌库卡牌数量
+ * @param characterId 棋子 ID
+ */
+export async function getCharacterDeckCount(characterId: string): Promise<number> {
+  const result = await query<{ count: string }>(
+    'SELECT COUNT(*) as count FROM character_deck WHERE character_id = $1',
+    [characterId]
+  );
+  return parseInt(result[0]?.count || '0', 10);
+}

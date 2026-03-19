@@ -3,13 +3,17 @@
 
 services:
   # PostgreSQL (生产用)
-  # postgres:
-  #   image: postgres:16
-  #   ports:
-  #     - "5432:5432"
+  postgres:
+    image: postgres:16
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: ptidle
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: your_password
 
   # Redis (生产用)
-  # redis:
-  #   image: redis:7-alpine
-  #   ports:
-  #     - "6379:6379"
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"

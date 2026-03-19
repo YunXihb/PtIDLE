@@ -1,6 +1,13 @@
 import { Router } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
-import { createCharacter, getCharactersByUserId, updateCharacterName } from '../services/characterService';
+import {
+  createCharacter,
+  getCharactersByUserId,
+  updateCharacterName,
+  assignCardToCharacter,
+  removeCardFromCharacter,
+  getCharacterDeckCards,
+} from '../services/characterService';
 
 const router = Router();
 
@@ -110,6 +117,81 @@ router.put('/:id/name', authMiddleware, async (req: AuthRequest, res) => {
   } catch (error) {
     console.error('Error updating character name:', error);
     res.status(500).json({ error: 'Failed to update character name' });
+  }
+});
+
+// 获取棋子牌库
+router.get('/:id/deck', authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user?.userId;
+    const characterId = req.params.id;
+
+    if (!userId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const cards = await getCharacterDeckCards(characterId);
+
+    res.json({
+      success: true,
+      data: cards,
+    });
+  } catch (error) {
+    console.error('Error fetching character deck:', error);
+    res.status(500).json({ error: 'Failed to fetch character deck' });
+  }
+});
+
+// 分配或移除卡牌
+router.put('/:id/deck', authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user?.userId;
+    const characterId = req.params.id;
+    const { cardId, action } = req.body;
+
+    if (!userId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    if (!cardId || typeof cardId !== 'string') {
+      res.status(400).json({ error: 'cardId is required' });
+      return;
+    }
+
+    if (!action || !['assign', 'remove'].includes(action)) {
+      res.status(400).json({ error: 'action must be "assign" or "remove"' });
+      return;
+    }
+
+    let result;
+    if (action === 'assign') {
+      result = await assignCardToCharacter(userId, characterId, cardId);
+    } else {
+      result = await removeCardFromCharacter(userId, characterId, cardId);
+    }
+
+    if (!result.success) {
+      if (result.error === 'Character not found' || result.error === 'Player not found' || result.error === 'Card not found') {
+        res.status(404).json({ error: result.error });
+        return;
+      }
+      if (result.error?.includes('already assigned') || result.error?.includes('full') || result.error?.includes('not found in')) {
+        res.status(400).json({ error: result.error });
+        return;
+      }
+      res.status(400).json({ error: result.error });
+      return;
+    }
+
+    res.json({
+      success: true,
+      data: { character_deck_id: result.character_deck_id },
+    });
+  } catch (error) {
+    console.error('Error updating character deck:', error);
+    res.status(500).json({ error: 'Failed to update character deck' });
   }
 });
 

@@ -553,4 +553,90 @@
 
 ---
 
+## 2026-03-19 - 任务：T031 实现卡牌库查询 API
+
+### Prompt
+用户要求实施 T031 - 实现卡牌库查询 API (GET /api/cards)：
+- 上下文：获取玩家拥有的所有卡牌
+- 依赖：T007
+- 验证：返回完整卡牌列表
+
+### 思考
+T031 需要实现玩家卡牌查询功能，区别于 T030 的卡牌模板查询。
+
+**架构设计：**
+1. 数据库层面：
+   - `card_templates.template_no` - 卡牌种类固定编码（No.1-7）
+   - `player_cards.card_sequence` - 玩家拥有该种卡牌的序号
+   - 新增索引支持 WHERE + ORDER BY 高效执行
+
+2. API 层面：
+   - 新增 `GET /api/cards/my/list`（JWT 认证）
+   - 支持分页（page, pageSize）
+   - 按 template_no + card_sequence 自动排列
+
+3. 额外功能：
+   - 用户要求添加 max_quantity（单组上限，默认5）
+   - 用户要求创建 T1000-deferred.md 记录搁置事项
+   - 用户选择"禁止制造"方案处理溢出（T1000-001）
+
+### 意外
+1. 实现过程中发现 `/api/cards` 已被 T030 占用，改为 `/api/cards/my/list`
+2. TypeScript 类型错误（parseInt 返回类型问题），使用 Number() 解决
+3. 数据库初始为空，需先运行 001 迁移再运行 002 迁移
+4. psql 客户端未安装，改用 docker exec 执行 SQL
+
+### 测试结果
+- TypeScript 编译成功
+- 迁移 001 + 002 执行成功
+- GET /api/cards（模板）：✅
+- GET /api/cards/my/list（玩家卡牌）：✅
+- JWT 认证拦截：✅
+- 分页功能：✅
+- 自动排列（template_no + card_sequence）：✅
+- 数量上限检查（max_quantity=5）：✅
+- 禁止超限制造（材料不消耗）：✅
+
+---
+
+## 2026-03-19 - 任务：T032 实现卡牌分配 API
+
+### Prompt
+用户要求实施 T032 - 实现卡牌分配 API (PUT /api/characters/:id/deck)：
+- 上下文：将卡牌分配到棋子牌库
+- 依赖：T007, T028, T031
+- 验证：卡牌分配成功
+
+### 思考
+T032 需要实现玩家将卡牌分配到棋子的功能。
+
+**架构设计：**
+1. 棋子卡牌上限：预设5张 + 灵活5张 = **最多10张**（用户确认）
+2. 灵活分配：0-5张可选（用户确认）
+3. 不区分预设/灵活卡牌（用户确认，简化实现）
+
+**实现内容：**
+1. `characterService.ts` 新增函数：
+   - `assignCardToCharacter()` - 分配卡牌（含上限检查 ≤10）
+   - `removeCardFromCharacter()` - 移除卡牌
+   - `getCharacterDeckCards()` - 获取棋子牌库
+
+2. `routes/characters.ts` 新增路由：
+   - `GET /:id/deck` - 获取棋子牌库
+   - `PUT /:id/deck` - 分配/移除卡牌（body: { cardId, action: 'assign' | 'remove' }）
+
+### 意外
+无。实现顺利，测试通过。
+
+### 测试结果
+- TypeScript 编译成功
+- 分配卡牌：✅
+- 查询棋子牌库：✅
+- 重复分配返回错误：✅
+- 移除卡牌：✅
+- 移除不存在的卡牌返回错误：✅
+- 卡牌上限检查（≤10张）：✅ 代码逻辑正确
+
+---
+
 *日志持续更新中...*

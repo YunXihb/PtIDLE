@@ -167,6 +167,14 @@ backend/
 | POST | /api/characters | JWT | 创建新棋子 |
 | GET | /api/characters | JWT | 获取玩家所有棋子 |
 | PUT | /api/characters/:id/name | JWT | 更新棋子名称 |
+| GET | /api/characters/:id/deck | JWT | 获取棋子牌库卡牌 |
+| PUT | /api/characters/:id/deck | JWT | 分配/移除卡牌 |
+
+#### 棋子牌库规则
+
+- 每棋子卡牌上限：**10张**（预设5张 + 灵活5张）
+- 分配/移除通过 `action` 参数区分：`assign` | `remove`
+- 卡牌归属玩家，不因分配而转移所有权
 
 #### 棋子创建请求/响应
 
@@ -191,6 +199,38 @@ backend/
     max_energy: 3,
     is_alive: true
   }
+}
+
+// PUT /api/characters/:id/deck 请求
+{
+  "cardId": "uuid",           // 玩家卡牌 ID
+  "action": "assign"         // "assign" | "remove"
+}
+
+// PUT /api/characters/:id/deck 响应
+{
+  "success": true,
+  "data": {
+    "character_deck_id": "uuid"  // 分配时返回
+  }
+}
+
+// GET /api/characters/:id/deck 响应
+{
+  "success": true,
+  "data": [
+    {
+      "deck_id": "uuid",
+      "card_id": "uuid",
+      "name": "轻击",
+      "type": "attack",
+      "cost": 1,
+      "effect": { "damage": 2 },
+      "template_no": 1,
+      "card_sequence": 1,
+      "assigned_at": "2026-03-19T12:00:00Z"
+    }
+  ]
 }
 ```
 
@@ -508,6 +548,8 @@ backend/
 - T028 已完成：棋子查询 API (GET /api/characters)
 - T029 已完成：棋子命名 API (PUT /api/characters/:id/name)
 - T030 已完成：基础卡牌数据模型 (GET /api/cards)
+- **T031 已完成**：卡牌库查询 API (GET /api/cards/my/list)
+- **T032 已完成**：卡牌分配 API (PUT /api/characters/:id/deck)
 
 ---
 
@@ -517,20 +559,64 @@ backend/
 |------|------|------|------|
 | GET | /api/cards | 否 | 获取所有卡牌模板 |
 | GET | /api/cards/:id | 否 | 获取单个卡牌模板 |
+| GET | /api/cards/my/list | JWT | 获取玩家拥有的卡牌（分页） |
 
 #### 卡牌模板配置
 
-| 卡牌 | 类型 | 费用 | 效果 | 职业限制 |
-|------|------|------|------|----------|
-| 轻击 | attack | 1 | damage: 2 | common |
-| 移动 | tactical | 0 | movement: 1 | common |
-| 重击 | attack | 2 | damage: 4 | warrior |
-| 精准射击 | attack | 1 | damage: 3, range: 3 | ranger |
-| 火球术 | attack | 2 | damage: 3, aoe: true | mage |
-| 防御 | defense | 1 | shield: 3 | common |
-| 治疗 | tactical | 1 | heal: 3 | common |
+| 卡牌 | 类型 | 费用 | 效果 | 职业限制 | No. | 上限 |
+|------|------|------|------|----------|-----|------|
+| 轻击 | attack | 1 | damage: 2 | common | 1 | 5 |
+| 移动 | tactical | 0 | movement: 1 | common | 2 | 5 |
+| 重击 | attack | 2 | damage: 4 | warrior | 3 | 5 |
+| 精准射击 | attack | 1 | damage: 3, range: 3 | ranger | 4 | 5 |
+| 火球术 | attack | 2 | damage: 3, aoe: true | mage | 5 | 5 |
+| 防御 | defense | 1 | shield: 3 | common | 6 | 5 |
+| 治疗 | tactical | 1 | heal: 3 | common | 7 | 5 |
+
+#### 卡牌自动排列
+
+玩家卡牌按以下规则自动排列：
+- **template_no**：卡牌种类固定编码（1-7），同种卡牌聚在一起
+- **card_sequence**：该玩家拥有该种卡牌的序号（递增）
+- **排序**：`ORDER BY template_no ASC, card_sequence ASC`
+
+#### 卡牌数量上限
+
+- 每种卡牌默认上限为 5 张（max_quantity）
+- 超出上限时制造返回错误：`Card quantity would exceed limit`
+- 溢出处理方案见 T1000-deferred.md
+
+#### 玩家卡牌响应示例
+
+```typescript
+// GET /api/cards/my/list?page=1&pageSize=50
+{
+  success: true,
+  data: [
+    {
+      id: "uuid",
+      player_id: "uuid",
+      card_template_id: "uuid",
+      template_no: 1,        // 轻击
+      card_sequence: 1,       // 第1张轻击
+      name: "轻击",
+      type: "attack",
+      cost: 1,
+      effect: { damage: 2 },
+      quantity: 1,
+      created_at: "2026-03-19T12:00:00Z"
+    }
+  ],
+  pagination: {
+    page: 1,
+    pageSize: 50,
+    total: 6,
+    totalPages: 1
+  }
+}
+```
 
 ---
 
-*文档版本：v1.16*
+*文档版本：v1.18*
 *最后更新：2026-03-19*

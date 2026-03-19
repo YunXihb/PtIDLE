@@ -218,11 +218,46 @@ export async function executeCardCrafting(
 
   const template = templateResult[0];
 
-  // 9. 创建玩家卡牌
+  // 9. 检查卡牌数量上限
+  const maxQuantityResult = await query<{ max_quantity: number }>(
+    'SELECT max_quantity FROM card_templates WHERE id = $1',
+    [template.id]
+  );
+  const maxQuantity = maxQuantityResult[0]?.max_quantity || 5;
+
+  // 检查玩家已拥有的该种卡牌数量
+  const existingCardsResult = await query<{ total_quantity: number }>(
+    `SELECT COALESCE(SUM(quantity), 0) as total_quantity
+     FROM player_cards
+     WHERE player_id = $1 AND card_template_id = $2`,
+    [player.id, template.id]
+  );
+  const currentQuantity = Number(existingCardsResult[0]?.total_quantity || 0);
+
+  if (currentQuantity + quantity > maxQuantity) {
+    return {
+      success: false,
+      cardName,
+      quantity,
+      materialsUsed: materialUsage,
+      error: `Card quantity would exceed limit (${maxQuantity}). Current: ${currentQuantity}, Requested: ${quantity}. Overflow handling deferred to T1000.`,
+    };
+  }
+
+  // 10. 获取该玩家已拥有的该种卡牌数量（用于生成 card_sequence）
+  const sequenceResult = await query<{ max_sequence: number }>(
+    `SELECT COALESCE(MAX(card_sequence), 0) as max_sequence
+     FROM player_cards
+     WHERE player_id = $1 AND card_template_id = $2`,
+    [player.id, template.id]
+  );
+  const nextSequence = Number(sequenceResult[0]?.max_sequence || 0) + 1;
+
+  // 11. 创建玩家卡牌
   const playerCardId = uuidv4();
   await execute(
-    `INSERT INTO player_cards (id, player_id, card_template_id, name, type, cost, effect, quantity, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())`,
+    `INSERT INTO player_cards (id, player_id, card_template_id, name, type, cost, effect, quantity, card_sequence, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())`,
     [
       playerCardId,
       player.id,
@@ -232,6 +267,7 @@ export async function executeCardCrafting(
       template.cost,
       JSON.stringify(template.effect),
       quantity,
+      nextSequence,
     ]
   );
 
