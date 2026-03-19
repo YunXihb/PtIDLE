@@ -507,8 +507,30 @@ backend/
 - T027 已完成：棋子创建 API (POST /api/characters)
 - T028 已完成：棋子查询 API (GET /api/characters)
 - T029 已完成：棋子命名 API (PUT /api/characters/:id/name)
+- T030 已完成：基础卡牌数据模型 (GET /api/cards)
 
 ---
 
-*文档版本：v1.15*
+### 卡牌 API
+
+| 方法 | 路径 | 认证 | 说明 |
+|------|------|------|------|
+| GET | /api/cards | 否 | 获取所有卡牌模板 |
+| GET | /api/cards/:id | 否 | 获取单个卡牌模板 |
+
+#### 卡牌模板配置
+
+| 卡牌 | 类型 | 费用 | 效果 | 职业限制 |
+|------|------|------|------|----------|
+| 轻击 | attack | 1 | damage: 2 | common |
+| 移动 | tactical | 0 | movement: 1 | common |
+| 重击 | attack | 2 | damage: 4 | warrior |
+| 精准射击 | attack | 1 | damage: 3, range: 3 | ranger |
+| 火球术 | attack | 2 | damage: 3, aoe: true | mage |
+| 防御 | defense | 1 | shield: 3 | common |
+| 治疗 | tactical | 1 | heal: 3 | common |
+
+---
+
+*文档版本：v1.16*
 *最后更新：2026-03-19*
