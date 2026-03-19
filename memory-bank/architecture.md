@@ -504,8 +504,9 @@ backend/
 - T025 已完成：周期性挂机收益计算（Redis 工作队列）
 - T026 已完成：职业数据模型服务层 (GET /api/professions)
 - T027 已完成：棋子创建 API (POST /api/characters)
+- T028 已完成：棋子查询 API (GET /api/characters)
 
 ---
 
-*文档版本：v1.13*
+*文档版本：v1.14*
 *最后更新：2026-03-19*

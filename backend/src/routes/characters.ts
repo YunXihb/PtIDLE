@@ -1,8 +1,30 @@
 import { Router } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
-import { createCharacter } from '../services/characterService';
+import { createCharacter, getCharactersByUserId } from '../services/characterService';
 
 const router = Router();
+
+// 获取玩家所有棋子
+router.get('/', authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user?.userId;
+
+    if (!userId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const characters = await getCharactersByUserId(userId);
+
+    res.json({
+      success: true,
+      data: characters,
+    });
+  } catch (error) {
+    console.error('Error fetching characters:', error);
+    res.status(500).json({ error: 'Failed to fetch characters' });
+  }
+});
 
 // 创建棋子
 router.post('/', authMiddleware, async (req: AuthRequest, res) => {
