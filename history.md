@@ -446,4 +446,40 @@
 
 ---
 
+## 2026-03-19 - 任务：T023 战术消耗品制造 API 实现
+
+### Prompt
+用户要求实施 T023 - 实现战术消耗品制造 API：
+- POST /api/crafting/consumable - 执行消耗品制造
+- 消耗材料制造战棋消耗品（回血药）
+- 支持替代材料（iron_ingot×1 或 plank×1）
+- 消耗品存储到 player_consumables 表
+
+### 思考
+在 T021/T022 的基础上添加消耗品制造功能：
+1. 创建 `player_consumables` 数据库表：
+   - 存储玩家拥有的消耗品
+   - 支持累加数量（同一消耗品叠加）
+
+2. `executeConsumableCrafting()` - 核心制造逻辑：
+   - 验证配方类型（必须是 consumable）
+   - 检查材料是否足够（支持替代材料数组）
+   - 扣除材料
+   - 检查是否已存在相同消耗品，存在则累加数量，否则新建记录
+
+3. `crafting.ts` - 添加 POST /api/crafting/consumable 端点：
+   - 使用 authMiddleware 保护
+   - 验证输入参数
+   - 返回制造结果
+
+### 意外
+无。实现过程顺利，31 个测试全部通过。
+
+### 测试结果
+- craftingService 单元测试：31 个测试用例全部通过（含 8 个新测试）
+- TypeScript 编译成功
+- 依赖 T007（JWT认证）、T020（制造配方数据模型）已完成
+
+---
+
 *日志持续更新中...*

@@ -379,3 +379,145 @@ export async function executeGearCrafting(
     materialsUsed: materialUsage,
   };
 }
+
+export interface ConsumableCraftingResult {
+  success: boolean;
+  consumableName: string;
+  quantity: number;
+  effect: Record<string, any>;
+  materialsUsed: Record<string, number>;
+  playerConsumableId?: string;
+  error?: string;
+}
+
+/**
+ * 执行消耗品制造
+ * @param userId 用户 ID
+ * @param recipeId 配方 ID
+ * @param quantity 制造数量
+ */
+export async function executeConsumableCrafting(
+  userId: string,
+  recipeId: string,
+  quantity: number = 1
+): Promise<ConsumableCraftingResult> {
+  // 1. 获取配方
+  const recipe = await getCraftingRecipeById(recipeId);
+  if (!recipe) {
+    return { success: false, consumableName: '', quantity, effect: {}, materialsUsed: {}, error: 'Recipe not found' };
+  }
+
+  // 2. 验证配方类型
+  if (recipe.category !== 'consumable') {
+    return { success: false, consumableName: '', quantity, effect: {}, materialsUsed: {}, error: 'Recipe is not a consumable recipe' };
+  }
+
+  // 3. 获取玩家数据
+  const playerResult = await query<{
+    id: string;
+    materials: Record<string, number>;
+  }>('SELECT id, materials FROM players WHERE user_id = $1', [userId]);
+
+  if (playerResult.length === 0) {
+    return { success: false, consumableName: '', quantity, effect: {}, materialsUsed: {}, error: 'Player not found' };
+  }
+
+  const player = playerResult[0];
+  const currentMaterials = player.materials || {};
+
+  // 4. 解析输入材料（可能是单一对象或对象数组）
+  const inputMaterials = Array.isArray(recipe.input) ? recipe.input : [recipe.input];
+
+  // 5. 检查每种材料是否足够（每种替代材料只需一种）
+  const materialUsage: Record<string, number> = {};
+  let hasAllMaterials = true;
+
+  for (const materialSet of inputMaterials) {
+    hasAllMaterials = true;
+    for (const [material, amount] of Object.entries(materialSet)) {
+      const totalRequired = amount * quantity;
+      const currentAmount = currentMaterials[material] || 0;
+      if (currentAmount < totalRequired) {
+        hasAllMaterials = false;
+        break;
+      }
+    }
+    if (hasAllMaterials) {
+      // 找到足够的材料组合
+      for (const [material, amount] of Object.entries(materialSet)) {
+        materialUsage[material] = amount * quantity;
+      }
+      break;
+    }
+  }
+
+  if (!hasAllMaterials) {
+    return {
+      success: false,
+      consumableName: recipe.name,
+      quantity,
+      effect: {},
+      materialsUsed: {},
+      error: 'Insufficient materials',
+    };
+  }
+
+  // 6. 扣除材料
+  const updatedMaterials = { ...currentMaterials };
+  for (const [material, amount] of Object.entries(materialUsage)) {
+    updatedMaterials[material] = (updatedMaterials[material] || 0) - amount;
+  }
+
+  // 7. 获取消耗品输出信息
+  const outputInfo = recipe.output as { name: string; quantity: number; effect: Record<string, any> };
+  const consumableName = outputInfo.name;
+  const effect = outputInfo.effect || {};
+  const outputQuantity = (outputInfo.quantity || 1) * quantity;
+
+  // 8. 检查是否已存在相同的消耗品
+  const existingResult = await query<{ id: string; quantity: number }>(
+    'SELECT id, quantity FROM player_consumables WHERE player_id = $1 AND name = $2',
+    [player.id, consumableName]
+  );
+
+  let playerConsumableId: string;
+
+  if (existingResult.length > 0) {
+    // 更新现有消耗品数量
+    playerConsumableId = existingResult[0].id;
+    const newQuantity = existingResult[0].quantity + outputQuantity;
+    await execute(
+      'UPDATE player_consumables SET quantity = $1, created_at = NOW() WHERE id = $2',
+      [newQuantity, playerConsumableId]
+    );
+  } else {
+    // 创建新的消耗品记录
+    playerConsumableId = uuidv4();
+    await execute(
+      `INSERT INTO player_consumables (id, player_id, name, effect, quantity, created_at)
+       VALUES ($1, $2, $3, $4, $5, NOW())`,
+      [
+        playerConsumableId,
+        player.id,
+        consumableName,
+        JSON.stringify(effect),
+        outputQuantity,
+      ]
+    );
+  }
+
+  // 9. 更新玩家材料
+  await execute(
+    'UPDATE players SET materials = $1, updated_at = NOW() WHERE user_id = $2',
+    [JSON.stringify(updatedMaterials), userId]
+  );
+
+  return {
+    success: true,
+    consumableName,
+    quantity: outputQuantity,
+    effect,
+    materialsUsed: materialUsage,
+    playerConsumableId,
+  };
+}

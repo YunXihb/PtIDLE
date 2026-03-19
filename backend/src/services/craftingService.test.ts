@@ -1,4 +1,4 @@
-import { getAllCraftingRecipes, getCraftingRecipesByCategory, getCraftingRecipeById, clearRecipesCache, executeCardCrafting, executeGearCrafting } from '../services/craftingService';
+import { getAllCraftingRecipes, getCraftingRecipesByCategory, getCraftingRecipeById, clearRecipesCache, executeCardCrafting, executeGearCrafting, executeConsumableCrafting } from '../services/craftingService';
 import { query, execute } from '../config/database';
 
 // Mock the database module
@@ -476,6 +476,131 @@ describe('CraftingService', () => {
       expect(result.success).toBe(true);
       expect(result.gearName).toBe('矿镐');
       expect(result.bonus).toBe(0.5);
+    });
+  });
+
+  describe('executeConsumableCrafting', () => {
+    const mockConsumableRecipe = {
+      id: 'consumable-recipe-1',
+      name: '回血药',
+      category: 'consumable',
+      input: [{ iron_ingot: 1 }, { plank: 1 }],
+      output: { name: '回血药', quantity: 1, effect: { heal: 5 } },
+      profession_required: null,
+    };
+
+    const mockPlayerWithMaterials = {
+      id: 'player-1',
+      materials: { iron_ingot: 5, plank: 3 },
+    };
+
+    it('should craft consumable successfully', async () => {
+      mockQuery.mockResolvedValueOnce([mockConsumableRecipe] as any);
+      mockQuery.mockResolvedValueOnce([mockPlayerWithMaterials] as any);
+      mockQuery.mockResolvedValueOnce([] as any); // No existing consumable
+      mockExecute.mockResolvedValueOnce({} as any); // Insert consumable
+      mockExecute.mockResolvedValueOnce({} as any); // Update materials
+
+      const result = await executeConsumableCrafting('user-1', 'consumable-recipe-1', 1);
+
+      expect(result.success).toBe(true);
+      expect(result.consumableName).toBe('回血药');
+      expect(result.quantity).toBe(1);
+      expect(result.effect).toEqual({ heal: 5 });
+      expect(result.materialsUsed).toEqual({ iron_ingot: 1 });
+    });
+
+    it('should return error for non-existent recipe', async () => {
+      mockQuery.mockResolvedValueOnce([] as any);
+
+      const result = await executeConsumableCrafting('user-1', 'nonexistent', 1);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Recipe not found');
+    });
+
+    it('should return error for non-consumable recipe', async () => {
+      const cardRecipe = { ...mockConsumableRecipe, category: 'card' };
+      mockQuery.mockResolvedValueOnce([cardRecipe] as any);
+
+      const result = await executeConsumableCrafting('user-1', 'consumable-recipe-1', 1);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Recipe is not a consumable recipe');
+    });
+
+    it('should return error for insufficient materials', async () => {
+      const playerWithFewMaterials = {
+        id: 'player-1',
+        materials: { iron_ingot: 0, plank: 0 },
+      };
+      mockQuery.mockResolvedValueOnce([mockConsumableRecipe] as any);
+      mockQuery.mockResolvedValueOnce([playerWithFewMaterials] as any);
+
+      const result = await executeConsumableCrafting('user-1', 'consumable-recipe-1', 1);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Insufficient materials');
+    });
+
+    it('should return error when player not found', async () => {
+      mockQuery.mockResolvedValueOnce([mockConsumableRecipe] as any);
+      mockQuery.mockResolvedValueOnce([] as any);
+
+      const result = await executeConsumableCrafting('user-1', 'consumable-recipe-1', 1);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Player not found');
+    });
+
+    it('should accumulate consumable quantity when already exists', async () => {
+      const existingConsumable = {
+        id: 'existing-consumable-1',
+        quantity: 3,
+      };
+      mockQuery.mockResolvedValueOnce([mockConsumableRecipe] as any);
+      mockQuery.mockResolvedValueOnce([mockPlayerWithMaterials] as any);
+      mockQuery.mockResolvedValueOnce([existingConsumable] as any); // Existing consumable found
+      mockExecute.mockResolvedValueOnce({} as any); // Update quantity
+      mockExecute.mockResolvedValueOnce({} as any); // Update materials
+
+      const result = await executeConsumableCrafting('user-1', 'consumable-recipe-1', 1);
+
+      expect(result.success).toBe(true);
+      expect(result.consumableName).toBe('回血药');
+      expect(result.playerConsumableId).toBe('existing-consumable-1');
+    });
+
+    it('should use alternative material when primary material is insufficient', async () => {
+      const playerWithOnlyPlank = {
+        id: 'player-1',
+        materials: { iron_ingot: 0, plank: 5 },
+      };
+      mockQuery.mockResolvedValueOnce([mockConsumableRecipe] as any);
+      mockQuery.mockResolvedValueOnce([playerWithOnlyPlank] as any);
+      mockQuery.mockResolvedValueOnce([] as any); // No existing consumable
+      mockExecute.mockResolvedValueOnce({} as any); // Insert consumable
+      mockExecute.mockResolvedValueOnce({} as any); // Update materials
+
+      const result = await executeConsumableCrafting('user-1', 'consumable-recipe-1', 1);
+
+      expect(result.success).toBe(true);
+      expect(result.consumableName).toBe('回血药');
+      expect(result.materialsUsed).toEqual({ plank: 1 });
+    });
+
+    it('should deduct correct quantity of materials', async () => {
+      mockQuery.mockResolvedValueOnce([mockConsumableRecipe] as any);
+      mockQuery.mockResolvedValueOnce([mockPlayerWithMaterials] as any);
+      mockQuery.mockResolvedValueOnce([] as any); // No existing consumable
+      mockExecute.mockResolvedValueOnce({} as any); // Insert consumable
+      mockExecute.mockResolvedValueOnce({} as any); // Update materials
+
+      const result = await executeConsumableCrafting('user-1', 'consumable-recipe-1', 3);
+
+      expect(result.success).toBe(true);
+      expect(result.quantity).toBe(3);
+      expect(result.materialsUsed).toEqual({ iron_ingot: 3 });
     });
   });
 });

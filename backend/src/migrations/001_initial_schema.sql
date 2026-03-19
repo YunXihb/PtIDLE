@@ -128,6 +128,25 @@ CREATE TABLE IF NOT EXISTS character_deck (
 );
 
 -- ========================================
+-- 玩家消耗品表（玩家拥有的消耗品）
+-- ========================================
+CREATE TABLE IF NOT EXISTS player_consumables (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    player_id UUID NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+
+    -- 消耗品名称
+    name VARCHAR(100) NOT NULL,
+
+    -- 效果（JSON）
+    effect JSONB DEFAULT '{}',
+
+    -- 数量
+    quantity INTEGER DEFAULT 1,
+
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ========================================
 -- 采集技能表
 -- ========================================
 CREATE TABLE IF NOT EXISTS gathering_skills (
@@ -287,7 +306,8 @@ INSERT INTO crafting_recipes (name, category, input, output, profession_required
     ('法师火球卡', 'card', '{"iron_ingot": 3, "herb_powder": 1}', '{"name": "火球术", "quantity": 1}', 'mage'),
     ('矿镐', 'gear', '{"iron_ingot": 5, "plank": 2}', '{"name": "矿镐", "bonus": 0.5}', NULL),
     ('伐木斧', 'gear', '{"iron_ingot": 3, "plank": 3}', '{"name": "伐木斧", "bonus": 0.5}', NULL),
-    ('采集手套', 'gear', '{"plank": 5}', '{"name": "采集手套", "bonus": 0.3}', NULL)
+    ('采集手套', 'gear', '{"plank": 5}', '{"name": "采集手套", "bonus": 0.3}', NULL),
+    ('回血药', 'consumable', '[{"iron_ingot": 1}, {"plank": 1}]', '{"name": "回血药", "quantity": 1, "effect": {"heal": 5}}', NULL)
 ON CONFLICT DO NOTHING;
 
 -- 注释

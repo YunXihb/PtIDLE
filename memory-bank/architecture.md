@@ -329,6 +329,7 @@ backend/
 | GET | /api/crafting/recipes/:category | 否 | 按分类获取配方 |
 | POST | /api/crafting/card | JWT | 执行卡牌制造 |
 | POST | /api/crafting/gear | JWT | 执行装备制造 |
+| POST | /api/crafting/consumable | JWT | 执行消耗品制造 |
 
 #### 制造配方配置
 
@@ -366,16 +367,50 @@ backend/
 }
 ```
 
+#### 消耗品配方配置
+
+| 配方 | 分类 | 输入材料 | 输出 | 效果 |
+|------|------|----------|------|------|
+| 回血药 | consumable | iron_ingot×1 或 plank×1 | 回血药×1 | heal +5 |
+
+#### 消耗品 API
+
+| 方法 | 路径 | 认证 | 说明 |
+|------|------|------|------|
+| POST | /api/crafting/consumable | JWT | 执行消耗品制造 |
+
+#### 消耗品响应示例
+
+```typescript
+// POST /api/crafting/consumable 请求
+{
+  recipeId: "consumable-recipe-uuid",
+  quantity: 1
+}
+
+// POST /api/crafting/consumable 响应
+{
+  success: true,
+  data: {
+    consumableName: "回血药",
+    quantity: 1,
+    effect: { heal: 5 },
+    materialsUsed: { iron_ingot: 1 },
+    playerConsumableId: "uuid"
+  }
+}
+```
+
 ---
 
 ### 当前状态
 
 - T001-T016 已完成
 - **T018 已完成**：仓库资源查询 API (GET /api/warehouse)
-- T019-T022 已完成
-- T023-T025 待开发
+- T019-T023 已完成
+- T024-T025 待开发
 
 ---
 
-*文档版本：v1.7*
+*文档版本：v1.8*
 *最后更新：2026-03-19*
