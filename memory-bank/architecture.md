@@ -312,13 +312,70 @@ backend/
 
 ---
 
+### 制造系统 (Crafting)
+
+制造配方从 `crafting_recipes` 数据库表读取，包含 5 分钟内存缓存：
+
+| 文件 | 说明 |
+|------|------|
+| `src/services/craftingService.ts` | 制造配方查询服务 + 执行制造逻辑 |
+| `src/routes/crafting.ts` | 制造 API 路由 |
+
+#### 制造 API
+
+| 方法 | 路径 | 认证 | 说明 |
+|------|------|------|------|
+| GET | /api/crafting/recipes | 否 | 获取所有制造配方 |
+| GET | /api/crafting/recipes/:category | 否 | 按分类获取配方 |
+| POST | /api/crafting/card | JWT | 执行卡牌制造 |
+| POST | /api/crafting/gear | JWT | 执行装备制造 |
+
+#### 制造配方配置
+
+| 配方 | 分类 | 输入材料 | 输出 | 效果 |
+|------|------|----------|------|------|
+| 矿镐 | gear | iron_ingot×5, plank×2 | 矿镐×1 | mining_bonus +0.5 |
+| 伐木斧 | gear | iron_ingot×3, plank×3 | 伐木斧×1 | woodcutting_bonus +0.5 |
+| 采集手套 | gear | plank×5 | 采集手套×1 | herbalism_bonus +0.3 |
+
+#### 装备加成映射
+
+```
+矿镐 → mining_bonus
+伐木斧 → woodcutting_bonus
+采集手套 → herbalism_bonus
+```
+
+#### API 响应示例
+
+```typescript
+// POST /api/crafting/gear 请求
+{
+  recipeId: "gear-recipe-uuid",
+  quantity: 1
+}
+
+// POST /api/crafting/gear 响应
+{
+  success: true,
+  data: {
+    gearName: "矿镐",
+    bonus: 0.5,
+    materialsUsed: { iron_ingot: 5, plank: 2 }
+  }
+}
+```
+
+---
+
 ### 当前状态
 
 - T001-T016 已完成
 - **T018 已完成**：仓库资源查询 API (GET /api/warehouse)
-- T019-T025 待开发
+- T019-T022 已完成
+- T023-T025 待开发
 
 ---
 
-*文档版本：v1.6*
-*最后更新：2026-03-12*
+*文档版本：v1.7*
+*最后更新：2026-03-19*

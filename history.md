@@ -336,6 +336,114 @@
 - warehouseService 单元测试：4 个测试用例全部通过
 - TypeScript 编译成功
 
+## 2026-03-19 - 任务：T020 制造配方数据模型实现
+
+### Prompt
+用户要求实施 T020 - 阶段2"挂机系统"的一部分，创建制造配方数据模型服务层：
+- 添加回血药配方到数据库迁移
+- 创建 craftingService.ts（5分钟缓存、GET端点）
+- 创建 crafting.ts 路由
+- 在 index.ts 注册路由
+- 创建单元测试
+
+### 思考
+按照 processingService.ts 的模式创建了只读的制造配方服务：
+1. `craftingService.ts` - 配方查询服务：
+   - getAllCraftingRecipes() - 获取所有配方
+   - getCraftingRecipesByCategory() - 按分类查询
+   - getCraftingRecipeById() - 按ID查询
+   - clearRecipesCache() - 清除缓存
+   - 5分钟内存缓存
+
+2. `crafting.ts` - 路由定义：
+   - GET /api/crafting/recipes - 公开端点获取所有配方
+   - GET /api/crafting/recipes/:category - 按分类获取（card/gear/consumable）
+
+3. 数据库迁移添加了回血药配方（consumable 类型，支持两种材料：iron_ingot ×1 或 plank ×1）
+
+### 意外
+无。TypeScript 编译通过，8个单元测试全部通过。
+
+### 测试结果
+- craftingService 单元测试：8 个测试用例全部通过
+- TypeScript 编译成功
+- 依赖 T003（数据库设计）已完成
+
+---
+
+## 2026-03-19 - 任务：T021 卡牌制造 API 实现
+
+### Prompt
+用户要求实施 T021 - 实现卡牌制造 API：
+- POST /api/crafting/card - 执行卡牌制造
+- 消耗材料制造基础卡牌
+- 需要验证职业要求（如战士重击卡需要战士职业）
+- 扣材料、创建玩家卡牌记录
+
+### 思考
+在 T020 的只读服务基础上添加了写操作：
+1. `executeCardCrafting()` - 核心制造逻辑：
+   - 验证配方类型（必须是 card）
+   - 检查材料是否足够（支持数组形式的替代材料）
+   - 检查职业要求（可选）
+   - 扣除材料
+   - 查询 card_template 获取卡牌信息
+   - 创建 player_cards 记录
+
+2. `crafting.ts` - 添加 POST /api/crafting/card 端点：
+   - 使用 authMiddleware 保护
+   - 验证输入参数
+   - 返回制造结果
+
+### 意外
+1. TypeScript 类型错误：output 类型不一致，修复为 Record<string, any>
+2. 单元测试 mock 对齐问题：recipes 缓存导致 mock queue 错位，通过显式清除缓存解决
+3. 移除了 alternative materials 测试（回血药是 consumable 而非 card，不适用于此 API）
+
+### 测试结果
+- craftingService 单元测试：16 个测试用例全部通过
+- TypeScript 编译成功
+- 依赖 T007（JWT认证）、T020（制造配方数据模型）已完成
+
+---
+
+## 2026-03-19 - 任务：T022 装备制造 API 实现
+
+### Prompt
+用户要求实施 T022 - 实现生产装备制造 API：
+- POST /api/crafting/gear - 执行装备制造
+- 消耗材料制造采集装备（矿镐、伐木斧、采集手套）
+- 装备加成更新 production_gear 字段
+
+### 思考
+在 T021 卡牌制造的基础上添加装备制造功能：
+1. `executeGearCrafting()` - 核心制造逻辑：
+   - 验证配方类型（必须是 gear）
+   - 检查材料是否足够（支持数组形式的替代材料）
+   - 扣除材料
+   - 获取装备加成信息（硬编码映射表）
+   - 更新 players.production_gear 字段（累加加成值）
+
+2. 装备加成映射（硬编码）：
+   - 矿镐 → mining_bonus +0.5
+   - 伐木斧 → woodcutting_bonus +0.5
+   - 采集手套 → herbalism_bonus +0.3
+
+3. `crafting.ts` - 添加 POST /api/crafting/gear 端点：
+   - 使用 authMiddleware 保护
+   - 验证输入参数
+   - 返回制造结果（装备名称、加成值、材料消耗）
+
+### 意外
+1. 单元测试断言问题：最初使用 `expect.stringContaining('mining_bonus')` 无法匹配 JSON 序列化后的格式，改为直接验证返回值字段解决
+2. mock.calls 参数类型问题：TypeScript 提示 `any[] | undefined`，使用类型断言 `as unknown as [string, string, string]` 解决
+
+### 测试结果
+- craftingService 单元测试：23 个测试用例全部通过（含 7 个新测试）
+- TypeScript 编译成功
+- 依赖 T007（JWT认证）、T020（制造配方数据模型）已完成
+- 已推送到 GitHub (git@github.com:YunXihb/PtIDLE.git)
+
 ---
 
 *日志持续更新中...*
