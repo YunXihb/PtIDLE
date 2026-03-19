@@ -517,4 +517,40 @@
 
 ---
 
+## 2026-03-19 - 任务：T025 周期性挂机收益计算服务
+
+### Prompt
+用户要求实施 T025 - 实现周期性挂机收益计算服务：
+- 上下文：使用 Redis 工作队列实现，支持离线也跑用户队列中的任务
+- 依赖：T024
+- 验证：周期性收益正确累加
+
+### 思考
+实现了 Redis 工作队列来处理周期性挂机收益计算：
+
+1. 创建 `idleQueueService.ts` - Redis 队列管理服务：
+   - `enqueueGatheringTask()` - 添加任务到 Redis Sorted Set
+   - `removeGatheringTask()` - 从队列移除任务
+   - `getDueGatheringTasks()` - 获取所有到期任务
+   - `acquireGatheringLock()` / `releaseGatheringLock()` - 分布式锁防止重复处理
+
+2. 修改 `gatheringService.ts`：
+   - `startGathering()` - 创建任务时同时添加到 Redis 队列
+   - `cancelGathering()` - 取消任务时同时从 Redis 队列移除
+   - `processDueGatheringTasks()` - 新函数，处理到期任务
+
+3. 修改 `index.ts` 定时器：
+   - 改用 Redis 队列处理，不再轮询所有玩家
+   - 每10秒从 Redis 队列获取到期任务并处理
+
+### 意外
+无。实现顺利，测试通过。
+
+### 测试结果
+- TypeScript 编译成功
+- gatheringService 测试：7 个测试通过
+- craftingService 测试：31 个测试通过
+
+---
+
 *日志持续更新中...*

@@ -8,9 +8,10 @@ import playerRoutes from './routes/player';
 import gatheringRoutes from './routes/gathering';
 import skillsRoutes from './routes/skills';
 import processingRoutes from './routes/processing';
+import craftingRoutes from './routes/crafting';
 import warehouseRoutes from './routes/warehouse';
 import { query } from './config/database';
-import { checkAndCompleteGathering, initializeGatheringConfig } from './services/gatheringService';
+import { checkAndCompleteGathering, initializeGatheringConfig, processDueGatheringTasks } from './services/gatheringService';
 
 dotenv.config();
 
@@ -27,6 +28,7 @@ app.use('/api/player', playerRoutes);
 app.use('/api/gathering', gatheringRoutes);
 app.use('/api/skills', skillsRoutes);
 app.use('/api/processing', processingRoutes);
+app.use('/api/crafting', craftingRoutes);
 app.use('/api/warehouse', warehouseRoutes);
 
 // Health check
@@ -68,24 +70,17 @@ app.listen(PORT, () => {
   initializeApp();
 });
 
-// 采集任务检查定时器
+// 采集任务检查定时器（使用 Redis 队列）
 async function startGatheringChecker(): Promise<void> {
-  // 每10秒检查一次
+  // 每10秒检查一次 Redis 队列中的到期任务
   setInterval(async () => {
     try {
-      // 获取所有有活跃采集任务的玩家
-      const players = await query<{ user_id: string; idle_queue: any[] }>(
-        "SELECT user_id, idle_queue FROM players WHERE idle_queue::text LIKE '%\"status\": \"active\"%'"
-      );
-
-      for (const player of players) {
-        const task = await checkAndCompleteGathering(player.user_id);
-        if (task) {
-          console.log(`[Gathering] Task completed for user ${player.user_id}:`, task.result);
-        }
+      const processed = await processDueGatheringTasks();
+      if (processed > 0) {
+        console.log(`[Gathering] Processed ${processed} completed tasks from Redis queue`);
       }
     } catch (error) {
-      console.error('[Gathering] Error checking gathering tasks:', error);
+      console.error('[Gathering] Error processing gathering tasks from Redis queue:', error);
     }
   }, 10000);
 }

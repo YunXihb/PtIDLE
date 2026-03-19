@@ -33,6 +33,15 @@ jest.mock('../services/skillService', () => ({
   clearSkillsCache: jest.fn(),
 }));
 
+// Mock idleQueueService
+jest.mock('../services/idleQueueService', () => ({
+  enqueueGatheringTask: jest.fn().mockResolvedValue(undefined),
+  removeGatheringTask: jest.fn().mockResolvedValue(undefined),
+  getDueGatheringTasks: jest.fn().mockResolvedValue([]),
+  acquireGatheringLock: jest.fn().mockResolvedValue(true),
+  releaseGatheringLock: jest.fn().mockResolvedValue(undefined),
+}));
+
 const mockedQuery = query as jest.MockedFunction<typeof query>;
 const mockedExecute = execute as jest.MockedFunction<typeof execute>;
 

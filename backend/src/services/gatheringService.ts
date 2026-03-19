@@ -1,5 +1,12 @@
 import { query, execute } from '../config/database';
 import { getGatheringConfig, getGatheringSkillByType, clearSkillsCache } from './skillService';
+import {
+  enqueueGatheringTask,
+  removeGatheringTask,
+  getDueGatheringTasks,
+  acquireGatheringLock,
+  releaseGatheringLock,
+} from './idleQueueService';
 
 export type SkillType = 'mining' | 'woodcutting' | 'herbalism';
 
@@ -105,6 +112,10 @@ export async function startGathering(
     'UPDATE players SET idle_queue = $1, updated_at = NOW() WHERE user_id = $2',
     [JSON.stringify(idleQueue), userId]
   );
+
+  // 5. 添加到 Redis 队列
+  const completionTime = now.getTime() + (DEFAULT_GATHERING_DURATION * 1000);
+  await enqueueGatheringTask(userId, skillType, completionTime);
 
   return task;
 }
@@ -306,6 +317,10 @@ export async function cancelGathering(userId: string): Promise<boolean> {
     [JSON.stringify(idleQueue), userId]
   );
 
+  // 从 Redis 队列移除
+  const cancelledTask = idleQueue[activeTaskIndex];
+  await removeGatheringTask(userId, cancelledTask.skillType, new Date(cancelledTask.startedAt).getTime());
+
   return true;
 }
 
@@ -407,4 +422,42 @@ export async function getGatheringEfficiency(userId: string): Promise<GatheringE
     efficiency,
     totalBonus,
   };
+}
+
+/**
+ * 处理到期的采集任务（从 Redis 队列）
+ * 由定时任务调用，遍历 Redis 队列处理所有到期任务
+ * @returns 处理完成的任务数量
+ */
+export async function processDueGatheringTasks(): Promise<number> {
+  const now = Date.now();
+  const dueTasks = await getDueGatheringTasks(now);
+
+  let processedCount = 0;
+
+  for (const task of dueTasks) {
+    // 尝试获取锁，防止重复处理
+    const lockAcquired = await acquireGatheringLock(task.userId);
+    if (!lockAcquired) {
+      continue;
+    }
+
+    try {
+      const completedTask = await checkAndCompleteGathering(task.userId);
+      if (completedTask) {
+        // 任务完成，从 Redis 队列移除
+        await removeGatheringTask(task.userId, task.skillType, task.enqueuedAt);
+        processedCount++;
+        console.log(`[Gathering] Processed task for user ${task.userId}:`, completedTask.result);
+      } else {
+        // 任务不存在或已取消，从 Redis 队列移除
+        await removeGatheringTask(task.userId, task.skillType, task.enqueuedAt);
+      }
+    } finally {
+      // 释放锁
+      await releaseGatheringLock(task.userId);
+    }
+  }
+
+  return processedCount;
 }
