@@ -482,4 +482,39 @@
 
 ---
 
+## 2026-03-19 - 任务：T024 生产装备效率计算
+
+### Prompt
+用户要求实施 T024 - 实现基于生产装备的效率计算：
+- 上下文：计算装备加成后的采集效率
+- 依赖：T022（装备制造完成后）
+- 验证：效率加成正确计算
+
+### 思考
+在 T022 装备制造完成后的下一个任务。效率计算已在 gatheringService.ts 的 calculateGatheringYield 中实现，本次任务添加一个专门的 API 端点来查询效率信息：
+
+1. `getGatheringEfficiency()` - 新增服务函数：
+   - 获取玩家生产装备数据 (production_gear)
+   - 获取采集技能配置（基础产出、副产物概率等）
+   - 计算每个技能的效率：effectiveYield = baseYield × (1 + gearBonus)
+   - 返回各技能的详细效率信息
+
+2. `getGatheringEfficiencyHandler()` - 控制器处理函数
+
+3. `GET /api/gathering/efficiency` - 新增 API 端点：
+   - JWT 认证保护
+   - 返回每个采集技能的 baseYield、gearBonus、effectiveYield
+   - 返回 totalBonus（所有加成之和）
+
+### 意外
+无。实现顺利，测试通过。
+
+### 测试结果
+- TypeScript 编译成功
+- gatheringService 测试：7 个测试通过
+- craftingService 测试：31 个测试通过
+- 集成测试因数据库连接问题失败（非本次修改导致）
+
+---
+
 *日志持续更新中...*

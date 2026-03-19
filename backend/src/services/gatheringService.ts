@@ -342,3 +342,69 @@ export async function checkAndCompleteGathering(userId: string): Promise<Gatheri
 
   return null;
 }
+
+export interface GatheringEfficiency {
+  skillType: SkillType;
+  baseYield: number; // per minute
+  gearBonus: number;
+  effectiveYield: number; // per minute (baseYield * (1 + gearBonus))
+  primaryResource: string;
+  byproduct: string;
+  byproductChance: number;
+}
+
+export interface GatheringEfficiencyResult {
+  success: boolean;
+  efficiency: GatheringEfficiency[];
+  totalBonus: number;
+  error?: string;
+}
+
+/**
+ * 获取玩家采集效率信息
+ * @param userId 用户ID
+ */
+export async function getGatheringEfficiency(userId: string): Promise<GatheringEfficiencyResult> {
+  // 1. 获取玩家生产装备数据
+  const playerResult = await query<{
+    production_gear: Record<string, number>;
+  }>('SELECT production_gear FROM players WHERE user_id = $1', [userId]);
+
+  if (playerResult.length === 0) {
+    return { success: false, efficiency: [], totalBonus: 0, error: 'Player not found' };
+  }
+
+  const productionGear = playerResult[0].production_gear || {};
+
+  // 2. 获取采集配置
+  const config = await getConfig();
+
+  // 3. 计算每个技能的效率
+  const efficiency: GatheringEfficiency[] = [];
+  let totalBonus = 0;
+
+  for (const skillType of ['mining', 'woodcutting', 'herbalism'] as SkillType[]) {
+    const skillConfig = config[skillType];
+    const gearBonusKey = `${skillType}_bonus`;
+    const gearBonus = productionGear[gearBonusKey] || 0;
+    const effectiveYield = skillConfig.baseRate * (1 + gearBonus);
+
+    efficiency.push({
+      skillType,
+      baseYield: skillConfig.baseRate,
+      gearBonus,
+      effectiveYield,
+      primaryResource: skillConfig.primaryResource,
+      byproduct: skillConfig.byproduct,
+      byproductChance: skillConfig.byproductChance,
+    });
+
+    totalBonus += gearBonus;
+  }
+
+  return {
+    success: true,
+    efficiency,
+    totalBonus,
+  };
+}

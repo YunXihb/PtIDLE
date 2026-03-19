@@ -5,6 +5,7 @@ import {
   getGatheringStatus,
   completeGathering,
   cancelGathering,
+  getGatheringEfficiency,
   SkillType,
 } from '../services/gatheringService';
 
@@ -168,6 +169,42 @@ export async function cancelGatheringHandler(
     });
   } catch (error) {
     console.error('Error cancelling gathering:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/**
+ * GET /api/gathering/efficiency
+ * 获取采集效率信息（包含装备加成）
+ */
+export async function getGatheringEfficiencyHandler(
+  req: AuthRequest,
+  res: Response
+): Promise<void> {
+  try {
+    const userId = req.user?.userId;
+
+    if (!userId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const result = await getGatheringEfficiency(userId);
+
+    if (!result.success) {
+      res.status(404).json({ error: result.error });
+      return;
+    }
+
+    res.json({
+      success: true,
+      data: {
+        efficiency: result.efficiency,
+        totalBonus: result.totalBonus,
+      },
+    });
+  } catch (error) {
+    console.error('Error getting gathering efficiency:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 }

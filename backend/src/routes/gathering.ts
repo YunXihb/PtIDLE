@@ -5,6 +5,7 @@ import {
   getGatheringStatusHandler,
   completeGatheringHandler,
   cancelGatheringHandler,
+  getGatheringEfficiencyHandler,
 } from '../controllers/gatheringController';
 
 const router = Router();
@@ -30,6 +31,11 @@ router.post('/complete', async (req: AuthRequest, res) => {
 // POST /api/gathering/cancel - 取消采集任务
 router.post('/cancel', async (req: AuthRequest, res) => {
   await cancelGatheringHandler(req, res);
+});
+
+// GET /api/gathering/efficiency - 获取采集效率信息
+router.get('/efficiency', async (req: AuthRequest, res) => {
+  await getGatheringEfficiencyHandler(req, res);
 });
 
 export default router;

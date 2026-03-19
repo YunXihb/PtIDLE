@@ -143,6 +143,7 @@ backend/
 | GET | /api/gathering/status | 查询采集状态 |
 | POST | /api/gathering/complete | 手动完成采集（通常由定时任务调用） |
 | POST | /api/gathering/cancel | 取消采集任务 |
+| GET | /api/gathering/efficiency | 获取采集效率信息（含装备加成） |
 
 ### 技能 API
 
@@ -206,6 +207,43 @@ backend/
     status: "active",
     progress: 0.5,
     elapsedSeconds: 30
+  }
+}
+
+// GET /api/gathering/efficiency 响应
+{
+  success: true,
+  data: {
+    efficiency: [
+      {
+        skillType: "mining",
+        baseYield: 1,
+        gearBonus: 0.5,
+        effectiveYield: 1.5,
+        primaryResource: "iron_ore",
+        byproduct: "coal",
+        byproductChance: 0.3
+      },
+      {
+        skillType: "woodcutting",
+        baseYield: 1,
+        gearBonus: 0.5,
+        effectiveYield: 1.5,
+        primaryResource: "wood",
+        byproduct: "sap",
+        byproductChance: 0.2
+      },
+      {
+        skillType: "herbalism",
+        baseYield: 1,
+        gearBonus: 0.3,
+        effectiveYield: 1.3,
+        primaryResource: "herb",
+        byproduct: "mushroom",
+        byproductChance: 0.3
+      }
+    ],
+    totalBonus: 1.3
   }
 }
 ```
@@ -407,10 +445,10 @@ backend/
 
 - T001-T016 已完成
 - **T018 已完成**：仓库资源查询 API (GET /api/warehouse)
-- T019-T023 已完成
-- T024-T025 待开发
+- T019-T024 已完成
+- T025 待开发
 
 ---
 
-*文档版本：v1.8*
+*文档版本：v1.9*
 *最后更新：2026-03-19*
