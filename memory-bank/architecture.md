@@ -553,6 +553,7 @@ backend/
 - **T033 已完成**：棋盘初始化逻辑 (9x9 棋盘)
 - **T034 已完成**：移动判定逻辑 (BFS 路径检查)
 - **T035 已完成**：攻击判定逻辑（射程验证 + 伤害计算 + AOE 范围检索）
+- **T036 已完成**：回合流程控制（状态机 + 蛇形激活顺序 + 阶段转换）
 
 ---
 
@@ -692,5 +693,70 @@ backend/
 
 ---
 
-*文档版本：v1.21*
+### 战斗会话服务 (Battle Session Service)
+
+| 文件 | 说明 |
+|------|------|
+| `src/services/battleSessionService.ts` | 回合流程状态机：初始化、阶段转换、步进、轮次切换 |
+| `src/migrations/003_add_battle_session_state.sql` | battles 表新增 current_round, current_step, current_actor_id, current_phase 字段 |
+
+#### 状态机
+
+| 状态 | 含义 | 进入条件 | 退出 API |
+|------|------|----------|----------|
+| `idle` | 当前激活单位待激活 | 初始化 / `endCurrentStep` 切到下一位 | `activateCurrentUnit` |
+| `draw` | 抽牌阶段（T037） | `activateCurrentUnit` | `completeDrawPhase` |
+| `move` | 自由移动阶段 | `completeDrawPhase` | `completeMovePhase` |
+| `play` | 打牌阶段 | `completeMovePhase` | `completePlayPhase` |
+| `end_step` | 单位回合结束 | `completePlayPhase` | `endCurrentStep` |
+| `end_round` | 本轮所有单位行动完毕 | `endCurrentStep` 命中最后一步 | `endCurrentRound` |
+| `finished` | 战斗结束 | T052 胜负判定 | — |
+
+#### 蛇形激活顺序 (Snake Draft)
+
+- **3v3 简化为 ABABAB 6 步，每步 1 个单位**（已确认）
+- `buildSnakeOrder(p1Chars, p2Chars)` 算法：2N 步，偶数索引取 p1，奇数索引取 p2
+  - 1v1: `[p1[0], p2[0]]`
+  - 2v2: `[p1[0], p2[0], p1[1], p2[1]]`
+  - 3v3: `[p1[0], p2[0], p1[1], p2[1], p1[2], p2[2]]`
+  - 4v4: `[p1[0], p2[0], p1[1], p2[1], p1[2], p2[2], p1[3], p2[3]]`
+- **5v5 项目计划使用块状激活模式 (A-1, B-2, A-2, B-2, A-2, B-1)**，与当前 1-单位/步算法不同，留待未来扩展
+
+#### 状态存储
+
+- **Redis 临时状态**：`battle:{battleId}:session` 键存储 `BattleSessionState` JSON
+- **PostgreSQL 持久化**：在 `initializeSession` / `endCurrentRound` / `finishSession` 时同步到 `battles` 表
+- Redis 临时态为运行时主存，DB 为恢复与审计用
+
+#### 公共 API
+
+| 函数 | 说明 |
+|------|------|
+| `initializeSession(battleId, p1Chars, p2Chars)` | 初始化会话，生成蛇形顺序，actor=order[0]，phase=idle |
+| `getCurrentState(battleId)` | 返回 `BattleSessionView`（包含 totalSteps, nextActorId, isLastStepInRound） |
+| `activateCurrentUnit(battleId)` | idle → draw |
+| `completeDrawPhase(battleId)` | draw → move |
+| `completeMovePhase(battleId)` | move → play |
+| `completePlayPhase(battleId)` | play → end_step |
+| `endCurrentStep(battleId)` | 推进到下一位（end_step→idle）或 end_step→end_round（最后一步） |
+| `endCurrentRound(battleId)` | end_round → idle，round+1，step=0，actor=order[0]（持久化到 DB） |
+| `finishSession(battleId)` | 任意阶段 → finished，actor=null（持久化到 DB，T052 使用） |
+| `deleteSession(battleId)` | 清理 Redis 临时态（测试 / 重置对战用） |
+
+#### T036 范围说明
+
+- ✅ **在 T036 范围内**：状态机本身、蛇形顺序生成、阶段转换、步进/轮次切换、临时状态管理
+- ❌ **不在 T036 范围内**：
+  - 抽牌逻辑 → T037
+  - 手牌保留机制 → T038
+  - 胜负判定 → T052
+  - WebSocket 同步 → T045-T047
+  - REST 路由 / WS 事件 → T051
+  - 战场初始化（棋盘棋子放置） → T048
+
+后续任务应聚焦在上述未覆盖的功能，不要在 T036 基础上添加新机制。
+
+---
+
+*文档版本：v1.22*
 *最后更新：2026-06-09*

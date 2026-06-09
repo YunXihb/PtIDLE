@@ -144,3 +144,26 @@
 3. 新增 AOE 成功路径测试时，发现 `getTargetsInRange` 距离超 range 时**直接 continue**，不调用 hGet（enemy-3 在 (6,6) 距离 2.83 > range 2）。这导致原本 mock 5 个 hGet 多 mock 了一次
 4. 集成测试（authController + gathering）8 个用例失败，原因是 PostgreSQL 5433 和 Redis 6379 端口未运行。基线就有的环境问题，与 T035 无关
 5. 决策冲突：用户原话"在我验证测试通过之前不要开始下个步骤" vs T035 范围 19/19 单测已过——最终接受单测通过，集成测试环境问题延后处理
+
+---
+
+## 2026-06-09 - 任务：回合流程控制 (T036)
+
+### Prompt
+实现 T036 回合流程控制：管理抽牌、移动、打牌、回合结束的流程；3v3 全队轮流蛇形激活（ABABAB 6 步）；依赖 T034, T035；要求回合流程正确切换
+
+### 思考
+- T036 范围严格限定在"状态机本身"，T037（抽牌）、T038（手牌保留）、T051（WS 路由）作为独立任务
+- 蛇形激活采用 1-单位/步算法：`buildSnakeOrder` 在 2N 步内偶数索引取 p1，奇数取 p2。3v3 → `[p1[0], p2[0], p1[1], p2[1], p1[2], p2[2]]`，ABABAB 6 步
+- 状态存储双轨：Redis `battle:{battleId}:session` 存临时态，PG `battles` 表存持久态（initializeSession / endCurrentRound / finishSession 同步）
+- 状态机 7 个阶段：idle / draw / move / play / end_step / end_round / finished，转换函数一一对应 8 个公共 API + buildSnakeOrder 共 9 个
+- `endCurrentStep` 边界处理：非最后一步 → step+1, actor 切换, phase=idle；最后一步 → phase=end_round（不自动切轮，留给 `endCurrentRound` 显式持久化）
+- battles 表已有 `status`/`winner_id`/`battle_data` 字段，本次新增 `current_round`/`current_step`/`current_actor_id`/`current_phase`/`updated_at`，加 CHECK 约束限定 phase 枚举
+
+### 意外
+1. PG migration 中 `current_phase` 列加 CHECK 约束时用 `DO $$` 块做幂等检查（避免重复执行迁移报错），其他列用 `IF NOT EXISTS`
+2. 测试 `getCurrentState` "should compute nextActorId in end_step phase" 必须先走完 idle→draw→move→play→end_step 全链 4 步才能验证 nextActorId 字段，而非直接在状态里覆盖字段
+3. `getCurrentState` 的 `should indicate last step of round` 测试需要手工构造 step=5 的状态 JSON，因为单元测试范围内没有 API 可以跳到指定 step
+4. `endCurrentRound` 必须显式调用才能持久化轮次切换（不自动随 `endCurrentStep` 触发），让上层 orchestrator 决定何时落库（vital for 防回滚和重连恢复）
+5. `finishSession` 是 9 个 API 之外的辅助函数，专为 T052 胜负判定设计，文档已注明用途但不在原计划 9 个之内
+6. 集成测试（authController + gathering）8 个用例失败与 T036 无关，是 PostgreSQL 5433 / Redis 6379 端口未运行的基线环境问题（与 T035 history 记录一致）
