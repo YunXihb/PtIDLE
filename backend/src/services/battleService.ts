@@ -509,3 +509,337 @@ export async function getReachablePositions(
   // BFS 寻路
   return bfsFindReachablePositions(board, currentPos, movement);
 }
+
+// ========================================
+// 攻击判定逻辑
+// ========================================
+
+export interface CardEffect {
+  damage?: number;
+  range?: number;
+  aoe?: boolean;
+  heal?: number;
+  shield?: number;
+  movement?: number;
+}
+
+export interface AttackValidationResult {
+  valid: boolean;
+  error?: string;
+  damage?: number;
+  targets?: string[];
+  energyCost?: number;
+}
+
+/**
+ * 从 Redis 或数据库获取棋子完整信息
+ */
+async function getCharacterPiece(
+  battleId: string,
+  characterId: string
+): Promise<BattlePiece | null> {
+  const piecesKey = getBattlePiecesKey(battleId);
+  const pieceData = await redisClient.hGet(piecesKey, characterId);
+
+  if (pieceData) {
+    return JSON.parse(pieceData);
+  }
+
+  // 如果 Redis 没有，从数据库获取
+  const result = await query<{
+    id: string;
+    player_id: string;
+    profession: string;
+    name: string;
+    health: number;
+    max_health: number;
+    movement: number;
+    energy: number;
+    max_energy: number;
+    position_x: number | null;
+    position_y: number | null;
+    is_alive: boolean;
+  }>(
+    `SELECT id, player_id, profession, name, health, max_health, movement,
+            energy, max_energy, position_x, position_y, is_alive
+     FROM characters WHERE id = $1`,
+    [characterId]
+  );
+
+  if (!result || result.length === 0) {
+    return null;
+  }
+
+  const row = result[0];
+  return {
+    character_id: row.id,
+    player_id: row.player_id,
+    profession: row.profession,
+    name: row.name,
+    health: row.health,
+    max_health: row.max_health,
+    movement: row.movement,
+    energy: row.energy,
+    max_energy: row.max_energy,
+    position_x: row.position_x,
+    position_y: row.position_y,
+    is_alive: row.is_alive,
+  };
+}
+
+/**
+ * 获取玩家卡牌信息（包含效果）
+ */
+async function getPlayerCard(
+  playerCardId: string
+): Promise<{ id: string; player_id: string; cost: number; effect: CardEffect } | null> {
+  const result = await query<{
+    id: string;
+    player_id: string;
+    cost: number;
+    effect: Record<string, unknown>;
+  }>(
+    `SELECT pc.id, pc.player_id, pc.cost, pc.effect
+     FROM player_cards pc WHERE pc.id = $1`,
+    [playerCardId]
+  );
+
+  if (!result || result.length === 0) {
+    return null;
+  }
+
+  const row = result[0];
+  return {
+    id: row.id,
+    player_id: row.player_id,
+    cost: row.cost,
+    effect: row.effect as CardEffect,
+  };
+}
+
+/**
+ * 计算伤害值
+ * 未来可扩展职业加成
+ */
+function calculateDamage(cardEffect: CardEffect, attackerProfession?: string): number {
+  return cardEffect.damage ?? 0;
+}
+
+/**
+ * 获取范围内所有敌方目标
+ * @param battleId 对战 ID
+ * @param attackerPos 攻击者位置
+ * @param range 射程
+ * @param attackerPlayerId 攻击者玩家 ID（排除己方单位）
+ * @returns 范围内所有敌方棋子 ID 列表
+ */
+async function getTargetsInRange(
+  battleId: string,
+  attackerPos: BoardPosition,
+  range: number,
+  attackerPlayerId: string
+): Promise<string[]> {
+  const positions = await getAllBoardPositions(battleId);
+  const targets: string[] = [];
+
+  for (const [posKey, charId] of positions.entries()) {
+    const targetPos = keyToPosition(posKey);
+    const distance = euclideanDistance(attackerPos, targetPos);
+
+    // 检查是否在射程内
+    if (distance > range) {
+      continue;
+    }
+
+    // 获取目标棋子信息，检查是否存活和阵营
+    const targetPiece = await getCharacterPiece(battleId, charId);
+    if (!targetPiece || !targetPiece.is_alive) {
+      continue;
+    }
+
+    // 排除己方单位
+    if (targetPiece.player_id === attackerPlayerId) {
+      continue;
+    }
+
+    targets.push(charId);
+  }
+
+  return targets;
+}
+
+/**
+ * 验证单体攻击是否合法
+ * @param battleId 对战 ID
+ * @param attackerId 攻击者棋子 ID
+ * @param cardId 玩家卡牌 ID (player_card_id)
+ * @param targetId 目标棋子 ID
+ * @returns 验证结果
+ */
+export async function validateAttack(
+  battleId: string,
+  attackerId: string,
+  cardId: string,
+  targetId: string
+): Promise<AttackValidationResult> {
+  // 1. 获取攻击者棋子信息
+  const attacker = await getCharacterPiece(battleId, attackerId);
+  if (!attacker) {
+    return { valid: false, error: 'Attacker not found' };
+  }
+
+  // 2. 检查攻击者是否存活
+  if (!attacker.is_alive) {
+    return { valid: false, error: 'Attacker is not alive' };
+  }
+
+  // 3. 获取卡牌信息
+  const card = await getPlayerCard(cardId);
+  if (!card) {
+    return { valid: false, error: 'Card not found' };
+  }
+
+  // 4. 验证卡牌归属（攻击者必须使用自己的卡牌）
+  if (card.player_id !== attacker.player_id) {
+    return { valid: false, error: 'Card does not belong to attacker' };
+  }
+
+  // 5. 能量检查
+  const energyCost = card.cost;
+  if (attacker.energy < energyCost) {
+    return {
+      valid: false,
+      error: `Not enough energy (need ${energyCost}, have ${attacker.energy})`,
+      energyCost,
+    };
+  }
+
+  // 6. 获取目标棋子信息
+  const target = await getCharacterPiece(battleId, targetId);
+  if (!target) {
+    return { valid: false, error: 'Target not found' };
+  }
+
+  // 7. 检查目标是否存活
+  if (!target.is_alive) {
+    return { valid: false, error: 'Target is not alive' };
+  }
+
+  // 8. 阵营验证（不能攻击己方单位）
+  if (target.player_id === attacker.player_id) {
+    return { valid: false, error: 'Cannot attack friendly target' };
+  }
+
+  // 9. 射程验证
+  const attackerPos = await getCharacterPosition(battleId, attackerId);
+  const targetPos = await getCharacterPosition(battleId, targetId);
+
+  if (!attackerPos || !targetPos) {
+    return { valid: false, error: 'Character position not found' };
+  }
+
+  const distance = euclideanDistance(attackerPos, targetPos);
+  const cardEffect = card.effect;
+
+  // 近战卡牌（无 range 字段或 range 为 1）
+  const isMelee = !cardEffect.range || cardEffect.range === 1;
+  const maxRange = cardEffect.range ?? 1; // 近战默认为 1
+
+  if (isMelee) {
+    // 近战：欧几里得距离 ≤ 1.5（相邻格子）
+    if (distance > 1.5) {
+      return { valid: false, error: `Target out of range (melee range: 1.5, actual: ${distance.toFixed(2)})` };
+    }
+  } else {
+    // 远程：欧几里得距离 ≤ range
+    if (distance > maxRange) {
+      return { valid: false, error: `Target out of range (range: ${maxRange}, actual: ${distance.toFixed(2)})` };
+    }
+  }
+
+  // 10. 计算伤害
+  const damage = calculateDamage(cardEffect, attacker.profession);
+
+  return {
+    valid: true,
+    damage,
+    targets: [targetId],
+    energyCost,
+  };
+}
+
+/**
+ * 验证 AOE 攻击是否合法
+ * @param battleId 对战 ID
+ * @param attackerId 攻击者棋子 ID
+ * @param cardId 玩家卡牌 ID (player_card_id)
+ * @returns 验证结果（包含所有有效目标）
+ */
+export async function validateAOEAttack(
+  battleId: string,
+  attackerId: string,
+  cardId: string
+): Promise<AttackValidationResult> {
+  // 1. 获取攻击者棋子信息
+  const attacker = await getCharacterPiece(battleId, attackerId);
+  if (!attacker) {
+    return { valid: false, error: 'Attacker not found' };
+  }
+
+  // 2. 检查攻击者是否存活
+  if (!attacker.is_alive) {
+    return { valid: false, error: 'Attacker is not alive' };
+  }
+
+  // 3. 获取卡牌信息
+  const card = await getPlayerCard(cardId);
+  if (!card) {
+    return { valid: false, error: 'Card not found' };
+  }
+
+  // 4. 验证卡牌归属
+  if (card.player_id !== attacker.player_id) {
+    return { valid: false, error: 'Card does not belong to attacker' };
+  }
+
+  // 5. 能量检查
+  const energyCost = card.cost;
+  if (attacker.energy < energyCost) {
+    return {
+      valid: false,
+      error: `Not enough energy (need ${energyCost}, have ${attacker.energy})`,
+      energyCost,
+    };
+  }
+
+  // 6. 检查是否为 AOE 卡牌
+  if (!card.effect.aoe) {
+    return { valid: false, error: 'Card is not an AOE attack' };
+  }
+
+  // 7. 获取射程
+  const range = card.effect.range ?? 2; // AOE 默认射程 2
+
+  // 8. 获取攻击者位置
+  const attackerPos = await getCharacterPosition(battleId, attackerId);
+  if (!attackerPos) {
+    return { valid: false, error: 'Attacker position not found' };
+  }
+
+  // 9. 获取范围内所有敌方目标
+  const targets = await getTargetsInRange(battleId, attackerPos, range, attacker.player_id);
+
+  if (targets.length === 0) {
+    return { valid: false, error: 'No targets in range' };
+  }
+
+  // 10. 计算伤害
+  const damage = calculateDamage(card.effect, attacker.profession);
+
+  return {
+    valid: true,
+    damage,
+    targets,
+    energyCost,
+  };
+}

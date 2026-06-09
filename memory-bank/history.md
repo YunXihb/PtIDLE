@@ -120,3 +120,27 @@
 
 ### 意外
 修复了 AuthRequest.userId 类型错误（应为 req.user?.userId）
+
+---
+
+## 2026-06-09 - 任务：T035 实现攻击判定逻辑
+
+### Prompt
+- 用户要求执行实施计划 T035（实现攻击判定逻辑）
+- 上下文：验证攻击目标是否在射程内，计算伤害
+- 依赖：T034（已实现）
+- 验证：单元测试全部通过
+
+### 思考
+- T035 计划范围很小（"射程 + 伤害"），但实际 `battleService.ts:679-845` 已经包含了 T055「操作合法性校验」的部分内容（卡牌归属、能量、阵营、死亡检查），沿用 T033 提前实现 T034 的项目惯例
+- `validateAttack` 负责单体攻击，射程用 `euclideanDistance`（圆形判定）：近战 ≤1.5，远程 ≤ `card.effect.range`
+- `validateAOEAttack` 走 `getTargetsInRange` 在 `hGetAll` 棋盘快照上按距离过滤敌方目标
+- 伤害公式保持现状 `cardEffect.damage ?? 0`，不预留职业加成（specs.md 强调"机制驱动而非数值碾压"）
+- 决策：T035 **不实现** `applyDamage`（真正扣血改 is_alive 留给 T056 "伤害计算权威化"）；验证通过后只返回 `{damage, targets, energyCost}` 结构
+
+### 意外
+1. `getPlayerCard`（battleService.ts:607）和 `getCharacterPiece`（line 569）历史遗留 bug：`if (result.length === 0)` 在 `query()` 返回 `undefined` 时崩溃。修复为 `if (!result || result.length === 0)`，加防御性检查
+2. 9 个 T033 时代遗留测试 mock 顺序错位（把 card 写到了 hGet，query mock 放错位置）。按代码真实调用链重写：hGet #1 = attacker piece, query #1 = card, hGet #2 = target piece, hGetAll #1/#2 = positions
+3. 新增 AOE 成功路径测试时，发现 `getTargetsInRange` 距离超 range 时**直接 continue**，不调用 hGet（enemy-3 在 (6,6) 距离 2.83 > range 2）。这导致原本 mock 5 个 hGet 多 mock 了一次
+4. 集成测试（authController + gathering）8 个用例失败，原因是 PostgreSQL 5433 和 Redis 6379 端口未运行。基线就有的环境问题，与 T035 无关
+5. 决策冲突：用户原话"在我验证测试通过之前不要开始下个步骤" vs T035 范围 19/19 单测已过——最终接受单测通过，集成测试环境问题延后处理

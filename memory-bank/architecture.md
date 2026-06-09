@@ -552,6 +552,7 @@ backend/
 - **T032 已完成**：卡牌分配 API (PUT /api/characters/:id/deck)
 - **T033 已完成**：棋盘初始化逻辑 (9x9 棋盘)
 - **T034 已完成**：移动判定逻辑 (BFS 路径检查)
+- **T035 已完成**：攻击判定逻辑（射程验证 + 伤害计算 + AOE 范围检索）
 
 ---
 
@@ -624,7 +625,7 @@ backend/
 
 | 文件 | 说明 |
 |------|------|
-| `src/services/battleService.ts` | 棋盘初始化、位置管理、棋子移动 |
+| `src/services/battleService.ts` | 棋盘初始化、位置管理、棋子移动、攻击判定 |
 
 #### 棋盘常量
 
@@ -655,13 +656,41 @@ backend/
 | `euclideanDistance(p1, p2)` | 计算直线距离（远程攻击判定） |
 | `validateMovement(battleId, charId, toX, toY)` | 验证移动是否合法（BFS路径检查） |
 | `getReachablePositions(battleId, charId)` | 获取棋子可到达的所有位置（供UI高亮） |
+| `validateAttack(battleId, attackerId, cardId, targetId)` | 验证单体攻击（射程/能量/阵营/卡牌归属/死亡） |
+| `validateAOEAttack(battleId, attackerId, cardId)` | 验证 AOE 攻击（圆形范围检索所有敌方目标） |
+| `calculateDamage(cardEffect, profession?)` | 计算伤害（当前 = `cardEffect.damage ?? 0`） |
+
+#### 攻击判定范围规则
+
+- **近战**：`euclideanDistance ≤ 1.5`（卡牌 effect 无 `range` 字段或 `range === 1`）
+- **远程**：`euclideanDistance ≤ card.effect.range`（AOE 默认 range=2）
+- 距离使用欧几里得距离（圆形判定），不含对角线专属规则
 
 #### 冲突规则
 
 - 同一坐标点只能有 **1 枚棋子**
 - 使用 Redis `HSETNX` 保证原子性放置
 
+#### ⚠️ T035 范围说明（超范围实现 T055 局部内容）
+
+实施 T035 时，`validateAttack` / `validateAOEAttack` **实际包含了 T055「操作合法性校验」计划范围内的部分内容**：
+
+| T055 计划项 | 当前 T035 已实现 | 实施 T055 时是否重复 |
+|-------------|----------------|-------------------|
+| 卡牌归属验证（攻击者必须使用自己的卡牌） | ✅ `battleService.ts:702-705` | 跳过 |
+| 能量检查（attacker.energy ≥ card.cost） | ✅ `battleService.ts:708-715` | 跳过 |
+| 阵营检查（不能攻击友方单位） | ✅ `battleService.ts:728-731` | 跳过 |
+| 死亡检查（攻击者/目标必须存活） | ✅ `battleService.ts:691-694, 723-726` | 跳过 |
+
+**T055 实施时**，应聚焦于**尚未覆盖**的合法性校验项，例如：
+- 卡牌是否在手牌中（未打出过 / 未弃牌）
+- 棋子本回合是否已行动 / 已移动
+- 卡牌职业限制（warrior/ranger/mage 专属）
+- 攻击者/目标身上是否有沉默/眩晕/致盲等状态效果
+
+> 遵循项目惯例：T033 实现时也提前包含了 T034 的部分内容（BFS 寻路）。后续任务开始时需检查 `battleService.ts` 现有实现，避免无意义重复。
+
 ---
 
-*文档版本：v1.20*
-*最后更新：2026-03-19*
+*文档版本：v1.21*
+*最后更新：2026-06-09*
