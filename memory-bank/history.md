@@ -282,3 +282,33 @@
 6. **测试统计偏差**：plan 估算 ~150 行测试，实际 publicPoolService(6) + handService 新增(6) + retain 公共池(2) + battleService public_pool(5) + AOE public_pool(1) + 集成(5) = **23 新增测试**。全过：`npx jest` **27 suites / 392 tests 全过**；`npx tsc --noEmit` 0 错误
 7. **handService.toHandCard 加 source='deck' 默认**：现有 `toHandCard(row)` 不接受 source 参数，固定写死 `source: 'deck'`。这样 `getCharacterDeckCards` 路径所有返回的卡都是 deck 来源，无需改 toHandCard 签名
 
+---
+
+## 2026-06-10 - 任务：弓手职业机制 1 (T040)
+
+### Prompt
+实施 T040 弓手职业机制 1（攻击累计增伤）。沿用 T039 架构：走 `statusEffectService` 通用框架，新增 `StatusEffectType: 'damage_boost'`。规则：弓手每 2 次使用攻击卡片后，下次攻击的单体或 AOE 主体目标伤害增加 50%（1.5×）。用户选「仅机制 1」——不动 characterStatusService、不加弓手新卡、不做 T039 完整镜像。
+
+### 思考
+- **「生产」与「应用」分离**：`validateAttack` 仅标记 `damageBoosted=true` / `damageBoostValue=0.5` / `primaryTargetId=targetId`；实际 LREM + 1.5× 应用在 T056 `applyDamage` 阶段（与 T039 warrior shield 模式一致）
+- **ranger 私有计数器**：`battle:{id}:ranger_status:{ranger_id}` STRING (JSON) `{attack_counter}`，与 warrior `warrior_status` 平行
+- **StatusEffect 复用**：damage_boost 复用 `battle:{id}:effects:{ranger_id}` LIST key（与 warrior shield 共用 key 命名空间，每角色独立）
+- **duration_rounds=1 占位**：consume 优先，next round tick 兜底清理
+- **AOE 主体目标语义**：T040 选 `targets[0]` 作为 primary target（warrior 1.5× 仅应用到此 target，其他 target 保持基础伤害）
+- **公共池卡不累积**：与 warrior 一致，加 `source !== 'public_pool'` 过滤
+- **失败路径保护**：能量/射程/职业/taunt 拦截等失败路径不触发累积（在所有校验通过后才累积）
+- **AOE currentRound hardcode=0**：T040 不改 `validateAOEAttack` 签名，T051 衔接时再补 currentRound 参数
+- **公共 API 入口**：
+  - `onRangerAttackCardPlayed(battleId, rangerId, currentRound)` → `{attackCounter, damageBoostApplied, damageBoostValue}`
+  - `getRangerDamageBoost(battleId, rangerId, currentRound)` → `DamageBoostInfo | null`（不消耗）
+  - `consumeRangerDamageBoost(battleId, rangerId, currentRound)` → `DamageBoostInfo | null`（消耗，T056 调用）
+- **AttackValidationResult 扩展**：4 个新字段 `damageBoosted?` / `damageBoostValue?` / `primaryTargetId?` / `damagePerTarget?`
+
+### 意外
+1. **AOE test mock 顺序坑**：`getTargetsInRange` 对 positions 中每个 piece 都调 `getCharacterPiece`（hGet）。positions 包含 attacker+enemy 共 2 个 piece，所以要预填 2 次 hGet（attacker 用于 friendly 过滤）。初版只填 1 次 hGet，结果 enemy-1 mock 被 attacker 位置消耗，导致测试 `targets=['char-attacker']`（错把 attacker 当 enemy 添加）。修复：补一个 hGet for attacker (friendly → filtered)
+2. **mockResolvedValueOnce 队列从 resetAllMocks 重置**：`jest.resetAllMocks()` 会清空 mock fn 实现 + 调用记录 + mockResolvedValueOnce 队列（与 `clearAllMocks` 不同）。这导致 `beforeEach` 设的 default mock 会被每个 test 共享，但通过 `mockImplementation` / `mockResolvedValue` 重新设的 default 不会跨 test 串扰
+3. **「生产/应用」边界**：plan 初版想在 `validateAttack` 直接乘 1.5 + LREM，但 T039 设计「validateAttack 不实现 applyDamage」是 T056 任务。T040 与 T039 一致：validateAttack 负责校验 + 标记语义，apply 推给 T056。这样 T056 一次统一处理「ranger 1.5× + warrior shield absorb + 多 effect 顺序」
+4. **TypeScript narrowing 沿用 T039 经验**：`effects.find(e => e.type === 'damage_boost')` 返回 `StatusEffect | undefined`，`boost.value ?? 0` 处理 value 可能 undefined 的情况（与 warrior `sumActiveShield` 同模式）
+5. **测试统计偏差**：plan 估算 professionMechanicService 20 个 + battleService 12 个 = 32 个，实际 professionMechanicService(`RANGER_DAMAGE_BOOST_VALUE` 1 + onRangerAttackCardPlayed 2 describe 6 + getRangerDamageBoost 1 describe 5 + consumeRangerDamageBoost 1 describe 4 + ranger 隔离 1) = **17 个** + battleService(ranger trigger 5 + public_pool 1 + AOE 3 + 失败路径 2) = **11 个**。最终 T040 总计 **28 个新测试**（比 plan 少 4 个，因为公共池 vs ranger 测试合并到 1 个，失败路径用了统一 describe）
+6. **完整 service 测试**：`npx jest src/services/` 18 suites / 337 tests 全过；`npx tsc --noEmit` 0 错误
+

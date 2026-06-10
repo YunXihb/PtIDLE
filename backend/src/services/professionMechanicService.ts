@@ -1,12 +1,14 @@
 // ========================================
-// 职业机制服务 (Profession Mechanic Service) - T039
+// 职业机制服务 (Profession Mechanic Service) - T039 + T040
 // ========================================
 // 1) 职业卡牌权限校验（deck 分配 + 战斗内打牌）
 // 2) Warrior 机制 1：攻击累计护盾（每 2 张攻击卡 → 累计 cost 总和护盾，2 round）
 // 3) Warrior 机制 2：嘲讽（写入 statusEffectService，由 battleService.validateAttack 读取）
 // 4) Warrior 私有计数器：battle:{id}:warrior_status:{warrior_id}（JSON STRING）
+// 5) Ranger 机制 1：攻击累计增伤（每 2 张攻击卡 → 写入 damage_boost 效果，1.5× 单体/AOE 主体）
+// 6) Ranger 私有计数器：battle:{id}:ranger_status:{ranger_id}（JSON STRING）
 //
-// T040/T041 在本文件内加 rangerMechanic / mageMechanic 命名空间
+// T041 在本文件内加 mageMechanic 命名空间
 
 import { redisClient } from '../config/redis';
 import { query } from '../config/database';
@@ -351,4 +353,130 @@ export async function getTauntRedirect(
     };
   }
   return { mustRedirectTo: null, sourceId: null };
+}
+
+// ========================================
+// 5. Ranger 私有状态（counter）
+// ========================================
+
+interface RangerStatus {
+  attack_counter: number;
+}
+
+function getRangerStatusKey(battleId: string, rangerId: string): string {
+  return `battle:${battleId}:ranger_status:${rangerId}`;
+}
+
+async function readRangerStatus(
+  battleId: string,
+  rangerId: string
+): Promise<RangerStatus> {
+  const raw = await redisClient.get(getRangerStatusKey(battleId, rangerId));
+  if (!raw) {
+    return { attack_counter: 0 };
+  }
+  try {
+    return JSON.parse(raw) as RangerStatus;
+  } catch {
+    return { attack_counter: 0 };
+  }
+}
+
+async function writeRangerStatus(
+  battleId: string,
+  rangerId: string,
+  status: RangerStatus
+): Promise<void> {
+  await redisClient.set(
+    getRangerStatusKey(battleId, rangerId),
+    JSON.stringify(status)
+  );
+}
+
+// ========================================
+// 6. Ranger 机制 1：攻击累计增伤
+// ========================================
+
+/** ranger 攻击累计增伤默认 50%（即最终伤害 = 1 + 0.5 = 1.5 倍） */
+export const RANGER_DAMAGE_BOOST_VALUE = 0.5;
+
+export interface RangerAttackCardResult {
+  attackCounter: number;        // 触发后的计数器值（0 表示刚触发）
+  damageBoostApplied: boolean;  // 本次是否生成了新的 damage_boost effect
+  damageBoostValue: number;     // 增伤比例（默认 0.5）
+}
+
+/**
+ * ranger 出攻击卡后调用
+ * - 累加 attack_counter
+ * - 触发判断：counter >= 2 → 写入 damage_boost effect（value=0.5, duration_rounds=1）
+ * - 触发后重置 counter（但 effect 仍 active，等待下次攻击时 consume）
+ * - 持续时间设计：duration_rounds=1 占位（下次 round tick 兜底清理，consume 优先）
+ */
+export async function onRangerAttackCardPlayed(
+  battleId: string,
+  rangerId: string,
+  currentRound: number
+): Promise<RangerAttackCardResult> {
+  const status = await readRangerStatus(battleId, rangerId);
+  status.attack_counter += 1;
+
+  let damageBoostApplied = false;
+  if (status.attack_counter >= 2) {
+    // 写入 damage_boost effect（value=0.5 表示 1.5×）
+    await applyEffect(battleId, rangerId, {
+      type: 'damage_boost',
+      value: RANGER_DAMAGE_BOOST_VALUE,
+      duration_rounds: 1,
+      currentRound,
+    });
+    damageBoostApplied = true;
+    status.attack_counter = 0;
+  }
+
+  await writeRangerStatus(battleId, rangerId, status);
+
+  return {
+    attackCounter: status.attack_counter,
+    damageBoostApplied,
+    damageBoostValue: RANGER_DAMAGE_BOOST_VALUE,
+  };
+}
+
+export interface DamageBoostInfo {
+  value: number;       // 0.5 表示 1.5× 增伤
+  effectId: string;
+}
+
+/**
+ * 读取 ranger 的 active damage_boost（不消耗），用于 validateAttack/validateAOEAttack 预览
+ * - 若有多个 effect，只取第一个 damage_boost（多 effect 并存时按类型过滤）
+ * - 无 active damage_boost → 返回 null
+ */
+export async function getRangerDamageBoost(
+  battleId: string,
+  rangerId: string,
+  currentRound: number
+): Promise<DamageBoostInfo | null> {
+  const effects = await getActiveEffects(battleId, rangerId, currentRound);
+  const boost = effects.find(e => e.type === 'damage_boost');
+  if (!boost) return null;
+  return { value: boost.value ?? 0, effectId: boost.effect_id };
+}
+
+/**
+ * 读取并移除 ranger 的 damage_boost effect（T056 applyDamage 阶段调用）
+ * - 先 read boost → 移除 effect → 返回 boost 值
+ * - 若无 active damage_boost → 返回 null
+ */
+export async function consumeRangerDamageBoost(
+  battleId: string,
+  rangerId: string,
+  currentRound: number
+): Promise<DamageBoostInfo | null> {
+  const effects = await getActiveEffects(battleId, rangerId, currentRound);
+  const boost = effects.find(e => e.type === 'damage_boost');
+  if (!boost) return null;
+  await removeEffect(battleId, rangerId, boost.effect_id);
+  return { value: boost.value ?? 0, effectId: boost.effect_id };
 }

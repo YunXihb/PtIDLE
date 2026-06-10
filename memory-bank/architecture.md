@@ -1015,6 +1015,68 @@ getCharacterStatus(battleId, characterId, currentRound) → CharacterStatus | nu
 | profession 错误映射 | `routes/characters.ts:180` | `error.includes('profession')` → 400 |
 | 集成测试 | `routes/characters.deck.integration.test.ts` | 5 个用例（成功/profession 错/角色不存在/卡牌不存在/未授权） |
 
+---
+
+## T040 新增服务（T040）
+
+### Ranger 机制 1：攻击累计增伤
+
+#### 概述
+
+- ranger 每打出 2 张攻击卡 → 写入 `damage_boost` 状态效果
+- 下次攻击时消耗，对单体或 AOE 主体目标造成 1.5× 伤害（增伤 50%）
+- 走 `statusEffectService` 通用框架（与 warrior 护盾同模式）
+- 「生产」与「应用」分离：`validateAttack` 仅标记 `damageBoosted=true`；实际 LREM + 1.5× 应用在 T056 `applyDamage` 阶段
+
+#### 公共 API
+
+| 函数 | 用途 |
+|------|------|
+| `onRangerAttackCardPlayed(battleId, rangerId, currentRound)` | 累加 counter；counter≥2 时写入 damage_boost effect (value=0.5, duration=1) 并重置 counter |
+| `getRangerDamageBoost(battleId, rangerId, currentRound)` | 读取 active damage_boost（不消耗），用于 validateAttack/validateAOEAttack 预览 |
+| `consumeRangerDamageBoost(battleId, rangerId, currentRound)` | 读取并移除 damage_boost effect（T056 applyDamage 阶段调用） |
+| `RANGER_DAMAGE_BOOST_VALUE` | 常量 `0.5`（即 1.5× 增伤） |
+
+#### Ranger 私有 Redis Key
+
+| Key | 类型 | 用途 | 生命周期 |
+|-----|------|------|----------|
+| `battle:{battleId}:ranger_status:{rangerId}` | STRING (JSON) | ranger 私有计数器 `{attack_counter}` | session |
+
+> damage_boost effect 复用 `battle:{id}:effects:{ranger_id}` LIST key（与 warrior shield 共用 key 命名空间，但每角色独立）
+
+#### T040 battleService 注入
+
+| 改动点 | 文件:行 | 说明 |
+|--------|---------|------|
+| `AttackValidationResult` 扩展 | `battleService.ts:533-547` | 新增 `damageBoosted?` / `damageBoostValue?` / `primaryTargetId?` / `damagePerTarget?` |
+| `validateAttack` ranger 触发 | `battleService.ts:14 步` | ranger + attack card + 非 public_pool → 调 onRangerAttackCardPlayed + getRangerDamageBoost；返回 `damageBoosted=true` / `damageBoostValue=0.5` / `primaryTargetId=targetId` |
+| `validateAOEAttack` ranger 触发 | `battleService.ts:12-13 步` | 同上 + 计算 `damagePerTarget[0] = ceil(base * 1.5)`（主体目标），其他保持基础伤害 |
+
+#### T040 失败路径保护
+
+| 场景 | 行为 |
+|------|------|
+| attack 校验失败（能量/射程/职业）| 不触发累积（在所有校验通过后才累积）|
+| attack 被 taunt 强制重定向（`forcedTarget`）| 不触发累积（attacker 出牌失败路径）|
+| AOE 校验失败（无目标）| 不触发累积 |
+| 公共池卡（source='public_pool'）| 不累积（与 warrior 一致）|
+
+#### T040/T040.5 边界
+
+- T040 仅实现 ranger 机制 1
+- 不扩展 `characterStatusService`（用户选「仅机制 1」）
+- 不动 warrior 既有 API
+- 不动 mage（T041 处理）
+- AOE 路径下 `currentRound=0` hardcode（T051 衔接时再补参数）
+- `consumeRangerDamageBoost` 由 T056 `applyDamage` 阶段调用
+
+### T040 StatusEffectType 扩展
+
+| 类型 | 用途 |
+|------|------|
+| `damage_boost` | ranger 攻击累计增伤效果（value=0.5 表示 1.5×）|
+
 ### T039/T055 边界说明
 
 | T055 原计划项 | 当前 T039 已实现 | T055 实施时是否重复 |

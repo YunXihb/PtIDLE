@@ -28,6 +28,10 @@ import {
   onWarriorAttackCardPlayed,
   applyWarriorTaunt,
   getTauntRedirect,
+  onRangerAttackCardPlayed,
+  getRangerDamageBoost,
+  consumeRangerDamageBoost,
+  RANGER_DAMAGE_BOOST_VALUE,
 } from './professionMechanicService';
 
 describe('professionMechanicService', () => {
@@ -377,6 +381,246 @@ describe('professionMechanicService', () => {
       ]);
       const result = await getTauntRedirect('b-1', 'attacker-1', 't-1', 3);
       expect(result.mustRedirectTo).toBeNull();
+    });
+  });
+
+  // ========================================
+  // T040: Ranger 机制 1 - 攻击累计增伤
+  // ========================================
+  describe('RANGER_DAMAGE_BOOST_VALUE constant', () => {
+    it('should be 0.5 (i.e. 1.5x damage multiplier)', () => {
+      expect(RANGER_DAMAGE_BOOST_VALUE).toBe(0.5);
+    });
+  });
+
+  describe('onRangerAttackCardPlayed - ranger 私有状态', () => {
+    it('initial state: attack_counter=0 when no key in Redis', async () => {
+      // onRangerAttackCardPlayed 内部 readRangerStatus → get
+      // 1st attack: counter 0→1, 不触发
+      // 内部 getActiveEffects 检查时 lRange (空)
+      mockRedisClient.get.mockResolvedValueOnce(null);
+      mockRedisClient.lRange.mockResolvedValueOnce([]);
+
+      const result = await onRangerAttackCardPlayed('b-1', 'r-1', 1);
+      expect(result.attackCounter).toBe(1);
+      expect(result.damageBoostApplied).toBe(false);
+      expect(result.damageBoostValue).toBe(0.5);
+      // 不写入 damage_boost effect
+      expect(mockRedisClient.rPush).not.toHaveBeenCalled();
+    });
+
+    it('should write ranger status JSON with attack_counter=1 after 1st attack', async () => {
+      mockRedisClient.get.mockResolvedValueOnce(null);
+      mockRedisClient.lRange.mockResolvedValueOnce([]);
+
+      await onRangerAttackCardPlayed('b-1', 'r-1', 1);
+      expect(mockRedisClient.set).toHaveBeenCalledWith(
+        'battle:b-1:ranger_status:r-1',
+        expect.stringContaining('"attack_counter":1')
+      );
+    });
+  });
+
+  describe('onRangerAttackCardPlayed - 触发模式', () => {
+    it('2nd attack: counter 1→0, triggers damage_boost effect (value=0.5)', async () => {
+      // 1st attack 已写入 counter=1
+      mockRedisClient.get.mockResolvedValueOnce(
+        JSON.stringify({ attack_counter: 1 })
+      );
+      // 触发后内部 getActiveEffects 不需要 (damage_boost 写入走 applyEffect)
+      // applyEffect 内部不调 lRange
+      const result = await onRangerAttackCardPlayed('b-1', 'r-1', 1);
+      expect(result.attackCounter).toBe(0);
+      expect(result.damageBoostApplied).toBe(true);
+      expect(result.damageBoostValue).toBe(0.5);
+      // rPush 应当被调用（写入 damage_boost effect）
+      expect(mockRedisClient.rPush).toHaveBeenCalled();
+      const pushed = JSON.parse(mockRedisClient.rPush.mock.calls[0][1]);
+      expect(pushed.type).toBe('damage_boost');
+      expect(pushed.value).toBe(0.5);
+      expect(pushed.duration_rounds).toBe(1);
+    });
+
+    it('3rd attack: counter 0→1, no new boost (counter 重启累加)', async () => {
+      // 2nd attack 触发了：counter 归 0
+      mockRedisClient.get.mockResolvedValueOnce(
+        JSON.stringify({ attack_counter: 0 })
+      );
+      // 触发判断前内部 getActiveEffects
+      mockRedisClient.lRange.mockResolvedValueOnce([]);
+      const result = await onRangerAttackCardPlayed('b-1', 'r-1', 2);
+      expect(result.attackCounter).toBe(1);
+      expect(result.damageBoostApplied).toBe(false);
+    });
+
+    it('4th attack: counter 1→0, triggers damage_boost again (cycle 2)', async () => {
+      // 3rd attack 累积到 counter=1
+      mockRedisClient.get.mockResolvedValueOnce(
+        JSON.stringify({ attack_counter: 1 })
+      );
+      const result = await onRangerAttackCardPlayed('b-1', 'r-1', 3);
+      expect(result.attackCounter).toBe(0);
+      expect(result.damageBoostApplied).toBe(true);
+    });
+
+    it('should ignore corrupted JSON in get()', async () => {
+      mockRedisClient.get.mockResolvedValueOnce('not-json');
+      mockRedisClient.lRange.mockResolvedValueOnce([]);
+
+      const result = await onRangerAttackCardPlayed('b-1', 'r-1', 1);
+      expect(result.attackCounter).toBe(1);
+    });
+  });
+
+  describe('getRangerDamageBoost - 读取', () => {
+    it('should return null when no active damage_boost', async () => {
+      mockRedisClient.lRange.mockResolvedValueOnce([]);
+      const result = await getRangerDamageBoost('b-1', 'r-1', 1);
+      expect(result).toBeNull();
+    });
+
+    it('should return boost info when active damage_boost exists', async () => {
+      mockRedisClient.lRange.mockResolvedValueOnce([
+        JSON.stringify({
+          effect_id: 'boost-1', type: 'damage_boost', value: 0.5,
+          duration_rounds: 1, created_round: 1, expire_round: 5,
+        }),
+      ]);
+      const result = await getRangerDamageBoost('b-1', 'r-1', 1);
+      expect(result).not.toBeNull();
+      expect(result!.value).toBe(0.5);
+      expect(result!.effectId).toBe('boost-1');
+    });
+
+    it('should ignore non-damage_boost effects (shield coexisting)', async () => {
+      mockRedisClient.lRange.mockResolvedValueOnce([
+        JSON.stringify({
+          effect_id: 'shield-1', type: 'shield', value: 5,
+          duration_rounds: 2, created_round: 1, expire_round: 5,
+        }),
+      ]);
+      const result = await getRangerDamageBoost('b-1', 'r-1', 1);
+      expect(result).toBeNull();
+    });
+
+    it('should return first damage_boost when multiple effects (shield + damage_boost)', async () => {
+      mockRedisClient.lRange.mockResolvedValueOnce([
+        JSON.stringify({
+          effect_id: 'shield-1', type: 'shield', value: 5,
+          duration_rounds: 2, created_round: 1, expire_round: 5,
+        }),
+        JSON.stringify({
+          effect_id: 'boost-1', type: 'damage_boost', value: 0.5,
+          duration_rounds: 1, created_round: 1, expire_round: 5,
+        }),
+      ]);
+      const result = await getRangerDamageBoost('b-1', 'r-1', 1);
+      expect(result).not.toBeNull();
+      expect(result!.value).toBe(0.5);
+      expect(result!.effectId).toBe('boost-1');
+    });
+
+    it('should default value to 0 when damage_boost.value is undefined', async () => {
+      mockRedisClient.lRange.mockResolvedValueOnce([
+        JSON.stringify({
+          effect_id: 'boost-1', type: 'damage_boost',
+          duration_rounds: 1, created_round: 1, expire_round: 5,
+        }),
+      ]);
+      const result = await getRangerDamageBoost('b-1', 'r-1', 1);
+      expect(result).not.toBeNull();
+      expect(result!.value).toBe(0);
+    });
+  });
+
+  describe('consumeRangerDamageBoost - 消耗', () => {
+    it('should return null and not remove anything when no active damage_boost', async () => {
+      mockRedisClient.lRange.mockResolvedValueOnce([]);
+      const result = await consumeRangerDamageBoost('b-1', 'r-1', 1);
+      expect(result).toBeNull();
+      // 不应调用 lRem
+      expect(mockRedisClient.lRem).not.toHaveBeenCalled();
+    });
+
+    it('should remove effect and return boost info when active damage_boost exists', async () => {
+      const boostJson = JSON.stringify({
+        effect_id: 'boost-1', type: 'damage_boost', value: 0.5,
+        duration_rounds: 1, created_round: 1, expire_round: 5,
+      });
+      mockRedisClient.lRange
+        .mockResolvedValueOnce([boostJson])
+        .mockResolvedValueOnce([boostJson]);  // removeEffect also calls lRange
+      mockRedisClient.lRem.mockResolvedValueOnce(1);
+
+      const result = await consumeRangerDamageBoost('b-1', 'r-1', 1);
+      expect(result).not.toBeNull();
+      expect(result!.value).toBe(0.5);
+      expect(result!.effectId).toBe('boost-1');
+      expect(mockRedisClient.lRem).toHaveBeenCalled();
+    });
+
+    it('after consume, getRangerDamageBoost should return null', async () => {
+      const boostJson = JSON.stringify({
+        effect_id: 'boost-1', type: 'damage_boost', value: 0.5,
+        duration_rounds: 1, created_round: 1, expire_round: 5,
+      });
+      // First call: consumeRangerDamageBoost
+      mockRedisClient.lRange
+        .mockResolvedValueOnce([boostJson])
+        .mockResolvedValueOnce([boostJson]);
+      mockRedisClient.lRem.mockResolvedValueOnce(1);
+      // Second call: getRangerDamageBoost (after consume)
+      mockRedisClient.lRange.mockResolvedValueOnce([]);
+
+      await consumeRangerDamageBoost('b-1', 'r-1', 1);
+      const result = await getRangerDamageBoost('b-1', 'r-1', 1);
+      expect(result).toBeNull();
+    });
+
+    it('should not remove shield effect when consuming damage_boost', async () => {
+      const shieldJson = JSON.stringify({
+        effect_id: 'shield-1', type: 'shield', value: 5,
+        duration_rounds: 2, created_round: 1, expire_round: 5,
+      });
+      const boostJson = JSON.stringify({
+        effect_id: 'boost-1', type: 'damage_boost', value: 0.5,
+        duration_rounds: 1, created_round: 1, expire_round: 5,
+      });
+      // First lRange: getActiveEffects (returns both)
+      // Second lRange: removeEffect (returns both, then lRem only boost)
+      mockRedisClient.lRange
+        .mockResolvedValueOnce([shieldJson, boostJson])
+        .mockResolvedValueOnce([shieldJson, boostJson]);
+      mockRedisClient.lRem.mockResolvedValueOnce(1);
+
+      const result = await consumeRangerDamageBoost('b-1', 'r-1', 1);
+      expect(result).not.toBeNull();
+      expect(result!.effectId).toBe('boost-1');
+      // lRem should be called with the boost json specifically
+      expect(mockRedisClient.lRem).toHaveBeenCalledWith(
+        'battle:b-1:effects:r-1',
+        0,
+        boostJson
+      );
+    });
+  });
+
+  describe('ranger vs warrior key 隔离', () => {
+    it('ranger_status key should not affect warrior_status key', async () => {
+      mockRedisClient.get.mockResolvedValueOnce(null);
+      mockRedisClient.lRange.mockResolvedValueOnce([]);
+      await onRangerAttackCardPlayed('b-1', 'r-1', 1);
+
+      // 应当写入 ranger_status key, 不写 warrior_status key
+      const setCalls = mockRedisClient.set.mock.calls;
+      const rangerKeyCalls = setCalls.filter(
+        (call: unknown[]) => (call[0] as string).includes('ranger_status')
+      );
+      const warriorKeyCalls = setCalls.filter(
+        (call: unknown[]) => (call[0] as string).includes('warrior_status')
+      );
+      expect(rangerKeyCalls.length).toBe(1);
+      expect(warriorKeyCalls.length).toBe(0);
     });
   });
 });

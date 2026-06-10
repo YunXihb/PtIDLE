@@ -16,13 +16,14 @@ import { redisClient } from '../config/redis';
 // ========================================
 
 export type StatusEffectType =
-  | 'shield'   // 护盾（warrior 攻击累计）
-  | 'taunt'    // 嘲讽（warrior 挑战卡）
-  | 'stun'     // 眩晕（T040+ 扩展）
-  | 'blind'    // 致盲（T040+ 扩展）
-  | 'silence'  // 沉默（T040+ 扩展）
-  | 'burn'     // 灼烧（T040+ 扩展）
-  | 'regen';   // 持续回血（T040+ 扩展）
+  | 'shield'        // 护盾（warrior 攻击累计）
+  | 'taunt'         // 嘲讽（warrior 挑战卡）
+  | 'damage_boost'  // 攻击累计增伤（ranger 机制 1）
+  | 'stun'          // 眩晕（T040+ 扩展）
+  | 'blind'         // 致盲（T040+ 扩展）
+  | 'silence'       // 沉默（T040+ 扩展）
+  | 'burn'          // 灼烧（T040+ 扩展）
+  | 'regen';        // 持续回血（T040+ 扩展）
 
 export interface StatusEffect {
   type: StatusEffectType;

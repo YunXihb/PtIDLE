@@ -5,6 +5,8 @@ import {
   getTauntRedirect,
   onWarriorAttackCardPlayed,
   applyWarriorTaunt,
+  onRangerAttackCardPlayed,
+  getRangerDamageBoost,
 } from './professionMechanicService';
 
 // ========================================
@@ -532,11 +534,16 @@ export interface CardEffect {
 export interface AttackValidationResult {
   valid: boolean;
   error?: string;
-  damage?: number;
-  targets?: string[];
+  damage?: number;             // 单体：单一伤害；AOE：基础伤害（未应用 boost）
+  targets?: string[];          // 目标 ID 列表
   energyCost?: number;
   forcedTarget?: string;       // T039 嘲讽重定向
   shieldGained?: number;       // T039 warrior 攻击累计触发
+  // T040 ranger 机制 1：攻击累计增伤
+  damageBoosted?: boolean;     // 本次攻击是否应用了 damage_boost
+  damageBoostValue?: number;   // 增伤比例（如 0.5 表示 1.5×）
+  primaryTargetId?: string;    // AOE 主体目标（targets[0]）；单体 = targets[0]
+  damagePerTarget?: number[];  // AOE 各 target 最终伤害（含 boost 应用到 primary）
 }
 
 /**
@@ -850,12 +857,34 @@ export async function validateAttack(
     }
   }
 
+  // 14. T040 ranger 机制 1：攻击累计增伤触发 + 读取 boost
+  // - 累加 ranger counter；触发时写入 damage_boost effect
+  // - 检查 active boost → 标记 damageBoosted=true（应用 1.5× 在 T056 applyDamage 阶段）
+  // - 公共池卡不计入累积
+  let damageBoosted: boolean | undefined;
+  let damageBoostValue: number | undefined;
+  if (
+    attacker.profession === 'ranger' &&
+    card.type === 'attack' &&
+    source !== 'public_pool'
+  ) {
+    await onRangerAttackCardPlayed(battleId, attackerId, currentRound);
+    const existingBoost = await getRangerDamageBoost(battleId, attackerId, currentRound);
+    if (existingBoost) {
+      damageBoosted = true;
+      damageBoostValue = existingBoost.value;
+    }
+  }
+
   return {
     valid: true,
     damage,
     targets: [targetId],
     energyCost,
     shieldGained,
+    damageBoosted,
+    damageBoostValue,
+    primaryTargetId: targetId,    // 单体主体 = 唯一 target
   };
 }
 
@@ -937,11 +966,45 @@ export async function validateAOEAttack(
   // 11. 计算伤害
   const damage = calculateDamage(card.effect, attacker.profession);
 
+  // 12. T040 ranger 机制 1：攻击累计增伤触发 + 读取 boost
+  // - 与单体同模式：累加 + 写 boost（如触发） + 读 active boost
+  // - AOE 路径暂 hardcode currentRound=0（T051 衔接时再补参数）
+  // - 公共池卡不计入累积
+  let damageBoosted: boolean | undefined;
+  let damageBoostValue: number | undefined;
+  if (
+    attacker.profession === 'ranger' &&
+    card.type === 'attack' &&
+    source !== 'public_pool'
+  ) {
+    await onRangerAttackCardPlayed(battleId, attackerId, 0);
+    const existingBoost = await getRangerDamageBoost(battleId, attackerId, 0);
+    if (existingBoost) {
+      damageBoosted = true;
+      damageBoostValue = existingBoost.value;
+    }
+  }
+
+  // 13. 计算 AOE 主体目标 + 各 target 伤害
+  // - 主体目标 = targets[0]
+  // - damagePerTarget[i] = boost 应用到 primary (i===0)，其他保持基础伤害
+  const primaryTargetId = targets[0];
+  let damagePerTarget: number[] | undefined;
+  if (damageBoosted && damageBoostValue !== undefined && primaryTargetId) {
+    damagePerTarget = targets.map((t, i) =>
+      i === 0 ? Math.ceil(damage * (1 + damageBoostValue)) : damage
+    );
+  }
+
   return {
     valid: true,
     damage,
     targets,
     energyCost,
+    damageBoosted,
+    damageBoostValue,
+    primaryTargetId,
+    damagePerTarget,
   };
 }
 

@@ -31,12 +31,16 @@ const mockCanUseProfession = jest.fn();
 const mockGetTauntRedirect = jest.fn();
 const mockOnWarriorAttackCardPlayed = jest.fn();
 const mockApplyWarriorTaunt = jest.fn();
+const mockOnRangerAttackCardPlayed = jest.fn();
+const mockGetRangerDamageBoost = jest.fn();
 
 jest.mock('./professionMechanicService', () => ({
   canUseProfession: mockCanUseProfession,
   getTauntRedirect: mockGetTauntRedirect,
   onWarriorAttackCardPlayed: mockOnWarriorAttackCardPlayed,
   applyWarriorTaunt: mockApplyWarriorTaunt,
+  onRangerAttackCardPlayed: mockOnRangerAttackCardPlayed,
+  getRangerDamageBoost: mockGetRangerDamageBoost,
 }));
 
 import {
@@ -109,6 +113,14 @@ describe('battleService - attack validation', () => {
     });
     // Default: applyWarriorTaunt succeeds
     mockApplyWarriorTaunt.mockResolvedValue({ success: true });
+    // Default: ranger attack returns no boost
+    mockOnRangerAttackCardPlayed.mockResolvedValue({
+      attackCounter: 0,
+      damageBoostApplied: false,
+      damageBoostValue: 0.5,
+    });
+    // Default: no active damage_boost
+    mockGetRangerDamageBoost.mockResolvedValue(null);
   });
 
   describe('validateAttack', () => {
@@ -875,6 +887,257 @@ describe('battleService - attack validation', () => {
 
       expect(result.valid).toBe(false);
       expect(result.error).toBe('Card is not an AOE attack');
+    });
+  });
+
+  // ========================================
+  // T040: Ranger 机制 1 - 攻击累计增伤 (validateAttack)
+  // ========================================
+  describe('validateAttack - ranger damage boost trigger (T040)', () => {
+    const rangerAttacker = {
+      ...mockAttacker,
+      profession: 'ranger',
+      name: 'RangerAttacker',
+    };
+    const positions = { '2,2': mockAttackerId, '3,2': mockTargetId };
+
+    const setupRangerMocks = (overrides?: {
+      damageBoostReturned?: { value: number; effectId: string } | null;
+      damageBoostApplied?: boolean;
+    }) => {
+      mockOnRangerAttackCardPlayed.mockResolvedValue({
+        attackCounter: overrides?.damageBoostApplied ? 0 : 1,
+        damageBoostApplied: overrides?.damageBoostApplied ?? false,
+        damageBoostValue: 0.5,
+      });
+      mockGetRangerDamageBoost.mockResolvedValue(overrides?.damageBoostReturned ?? null);
+      mockRedisClient.hGet
+        .mockResolvedValueOnce(JSON.stringify(rangerAttacker))
+        .mockResolvedValueOnce(JSON.stringify(mockTarget));
+      mockQuery.mockResolvedValueOnce([{ ...mockCard, type: 'attack' }]);
+      mockRedisClient.hGetAll
+        .mockResolvedValueOnce(positions)
+        .mockResolvedValueOnce(positions);
+    };
+
+    it('ranger 1st attack: damageBoosted=undefined, no boost info', async () => {
+      setupRangerMocks();
+      const result = await validateAttack(
+        mockBattleId, mockAttackerId, mockCardId, mockTargetId, 1
+      );
+      expect(result.valid).toBe(true);
+      expect(result.damageBoosted).toBeUndefined();
+      expect(result.damageBoostValue).toBeUndefined();
+      expect(mockOnRangerAttackCardPlayed).toHaveBeenCalledWith(
+        mockBattleId, mockAttackerId, 1
+      );
+    });
+
+    it('ranger 2nd attack (trigger): damageBoosted=undefined, only writes boost', async () => {
+      // 2nd attack: writes damage_boost, but this is the trigger card itself
+      // the new boost will be available on the NEXT (3rd) attack
+      setupRangerMocks({ damageBoostApplied: true });
+      const result = await validateAttack(
+        mockBattleId, mockAttackerId, mockCardId, mockTargetId, 1
+      );
+      // 本次 attack 尚未 consume boost → damageBoosted=undefined
+      expect(result.damageBoosted).toBeUndefined();
+      expect(mockOnRangerAttackCardPlayed).toHaveBeenCalled();
+    });
+
+    it('ranger 3rd attack (consume): damageBoosted=true, damageBoostValue=0.5', async () => {
+      // 3rd attack: 2nd attack 已经写入 boost, 3rd attack 读到 boost
+      setupRangerMocks({
+        damageBoostReturned: { value: 0.5, effectId: 'boost-1' },
+      });
+      const result = await validateAttack(
+        mockBattleId, mockAttackerId, mockCardId, mockTargetId, 1
+      );
+      expect(result.valid).toBe(true);
+      expect(result.damageBoosted).toBe(true);
+      expect(result.damageBoostValue).toBe(0.5);
+    });
+
+    it('ranger attack should set primaryTargetId=targetId', async () => {
+      setupRangerMocks({
+        damageBoostReturned: { value: 0.5, effectId: 'boost-1' },
+      });
+      const result = await validateAttack(
+        mockBattleId, mockAttackerId, mockCardId, mockTargetId, 1
+      );
+      expect(result.primaryTargetId).toBe(mockTargetId);
+    });
+
+    it('warrior attack: damageBoosted always undefined (no ranger trigger)', async () => {
+      // mockAttacker default is warrior
+      mockRedisClient.hGet
+        .mockResolvedValueOnce(JSON.stringify(mockAttacker))
+        .mockResolvedValueOnce(JSON.stringify(mockTarget));
+      mockQuery.mockResolvedValueOnce([{ ...mockCard, type: 'attack' }]);
+      mockRedisClient.hGetAll
+        .mockResolvedValueOnce(positions)
+        .mockResolvedValueOnce(positions);
+
+      const result = await validateAttack(
+        mockBattleId, mockAttackerId, mockCardId, mockTargetId, 1
+      );
+      expect(result.valid).toBe(true);
+      expect(result.damageBoosted).toBeUndefined();
+      // warrior 不应触发 ranger
+      expect(mockOnRangerAttackCardPlayed).not.toHaveBeenCalled();
+    });
+  });
+
+  // ========================================
+  // T040: 公共池卡 vs ranger 累积
+  // ========================================
+  describe('validateAttack - public pool card + ranger (T040)', () => {
+    const rangerAttacker = { ...mockAttacker, profession: 'ranger' };
+    const positions = { '2,2': mockAttackerId, '3,2': mockTargetId };
+    const publicPoolCard = {
+      id: 'template-qj',
+      player_id: null,
+      cost: 1,
+      effect: { damage: 2 },
+      type: 'attack',
+      profession: 'common',
+    };
+
+    it('ranger + public_pool attack: should NOT trigger accumulation', async () => {
+      mockRedisClient.hGet
+        .mockResolvedValueOnce(JSON.stringify(rangerAttacker))
+        .mockResolvedValueOnce(JSON.stringify(mockTarget));
+      mockQuery.mockResolvedValueOnce([{ ...publicPoolCard, profession: 'common' }]);
+      mockRedisClient.hGetAll
+        .mockResolvedValueOnce(positions)
+        .mockResolvedValueOnce(positions);
+
+      const result = await validateAttack(
+        mockBattleId, mockAttackerId, 'template-qj', mockTargetId, 1, 'public_pool'
+      );
+
+      expect(result.valid).toBe(true);
+      // 公共池卡不计入 ranger 累积
+      expect(mockOnRangerAttackCardPlayed).not.toHaveBeenCalled();
+      expect(result.damageBoosted).toBeUndefined();
+    });
+  });
+
+  // ========================================
+  // T040: validateAOEAttack 加 ranger 机制 1
+  // ========================================
+  describe('validateAOEAttack - ranger damage boost (T040)', () => {
+    const aoeCard = { ...mockCard, effect: { damage: 3, aoe: true, range: 2 }, type: 'attack' };
+    const attackerAt44 = { ...mockAttacker, profession: 'ranger', position_x: 4, position_y: 4 };
+    const positions = { '4,4': mockAttackerId, '5,4': 'enemy-1' };
+    const enemyPiece = {
+      character_id: 'enemy-1',
+      player_id: 'player-2',
+      profession: 'mage',
+      name: 'Enemy1',
+      health: 12, max_health: 12,
+      movement: 2, energy: 3, max_energy: 3,
+      position_x: 5, position_y: 4, is_alive: true,
+    };
+    const enemyPiece2 = {
+      ...enemyPiece,
+      character_id: 'enemy-2',
+      position_x: 5, position_y: 5,
+    };
+
+    it('ranger AOE with boost: primaryTargetId=targets[0], damagePerTarget[0]=1.5x', async () => {
+      mockOnRangerAttackCardPlayed.mockResolvedValue({
+        attackCounter: 0, damageBoostApplied: true, damageBoostValue: 0.5,
+      });
+      mockGetRangerDamageBoost.mockResolvedValue({ value: 0.5, effectId: 'boost-1' });
+      mockRedisClient.hGet
+        .mockResolvedValueOnce(JSON.stringify(attackerAt44))    // #1 attacker (validateAOEAttack)
+        .mockResolvedValueOnce(JSON.stringify(attackerAt44))    // #2 attacker (in getTargetsInRange, friendly → filtered)
+        .mockResolvedValueOnce(JSON.stringify(enemyPiece));     // #3 enemy-1 (added)
+      mockQuery.mockResolvedValueOnce([aoeCard]);
+      mockRedisClient.hGetAll
+        .mockResolvedValueOnce(positions)                       // #1 attacker position
+        .mockResolvedValueOnce(positions);                      // #2 targets in range
+
+      const result = await validateAOEAttack(mockBattleId, mockAttackerId, mockCardId);
+      expect(result.valid).toBe(true);
+      expect(result.targets).toEqual(['enemy-1']);
+      expect(result.primaryTargetId).toBe('enemy-1');
+      expect(result.damageBoosted).toBe(true);
+      expect(result.damageBoostValue).toBe(0.5);
+      // damagePerTarget: [ceil(3 * 1.5), ...] = [5, ...] (单 target)
+      expect(result.damagePerTarget).toEqual([5]);
+    });
+
+    it('ranger AOE without boost: damagePerTarget undefined', async () => {
+      mockRedisClient.hGet
+        .mockResolvedValueOnce(JSON.stringify(attackerAt44))
+        .mockResolvedValueOnce(JSON.stringify(attackerAt44))
+        .mockResolvedValueOnce(JSON.stringify(enemyPiece));
+      mockQuery.mockResolvedValueOnce([aoeCard]);
+      mockRedisClient.hGetAll
+        .mockResolvedValueOnce(positions)
+        .mockResolvedValueOnce(positions);
+
+      const result = await validateAOEAttack(mockBattleId, mockAttackerId, mockCardId);
+      expect(result.valid).toBe(true);
+      expect(result.damageBoosted).toBeUndefined();
+      expect(result.primaryTargetId).toBe('enemy-1');
+      expect(result.damagePerTarget).toBeUndefined();
+    });
+
+    it('warrior AOE: primaryTargetId=targets[0], no boost', async () => {
+      const warriorAt44 = { ...mockAttacker, profession: 'warrior', position_x: 4, position_y: 4 };
+      mockRedisClient.hGet
+        .mockResolvedValueOnce(JSON.stringify(warriorAt44))
+        .mockResolvedValueOnce(JSON.stringify(warriorAt44))
+        .mockResolvedValueOnce(JSON.stringify(enemyPiece));
+      mockQuery.mockResolvedValueOnce([aoeCard]);
+      mockRedisClient.hGetAll
+        .mockResolvedValueOnce(positions)
+        .mockResolvedValueOnce(positions);
+
+      const result = await validateAOEAttack(mockBattleId, mockAttackerId, mockCardId);
+      expect(result.valid).toBe(true);
+      expect(result.primaryTargetId).toBe('enemy-1');
+      expect(result.damageBoosted).toBeUndefined();
+      // warrior 不应触发 ranger
+      expect(mockOnRangerAttackCardPlayed).not.toHaveBeenCalled();
+    });
+  });
+
+  // ========================================
+  // T040: 失败路径不触发累积
+  // ========================================
+  describe('validateAttack - failed attacks should not trigger ranger accumulation (T040)', () => {
+    const rangerAttacker = { ...mockAttacker, profession: 'ranger' };
+
+    it('should NOT call onRangerAttackCardPlayed when energy insufficient', async () => {
+      mockRedisClient.hGet.mockResolvedValueOnce(
+        JSON.stringify({ ...rangerAttacker, energy: 0 })
+      );
+      mockQuery.mockResolvedValueOnce([mockCard]);
+
+      const result = await validateAttack(
+        mockBattleId, mockAttackerId, mockCardId, mockTargetId, 1
+      );
+      expect(result.valid).toBe(false);
+      expect(mockOnRangerAttackCardPlayed).not.toHaveBeenCalled();
+    });
+
+    it('should NOT call onRangerAttackCardPlayed when target is taunted (forced redirect)', async () => {
+      mockGetTauntRedirect.mockResolvedValue({
+        mustRedirectTo: 'warrior-x',
+        sourceId: 'warrior-x',
+      });
+      mockRedisClient.hGet.mockResolvedValueOnce(JSON.stringify(rangerAttacker));
+      mockQuery.mockResolvedValueOnce([{ ...mockCard, type: 'attack' }]);
+
+      const result = await validateAttack(
+        mockBattleId, mockAttackerId, mockCardId, mockTargetId, 1
+      );
+      expect(result.valid).toBe(false);
+      expect(mockOnRangerAttackCardPlayed).not.toHaveBeenCalled();
     });
   });
 });
