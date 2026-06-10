@@ -598,17 +598,50 @@ async function getCharacterPiece(
 /**
  * 获取玩家卡牌信息（包含效果、类型、职业）
  * T039：LEFT JOIN card_templates 拿 profession 和 type
+ * T1001：source='deck' 走 player_cards；source='public_pool' 走 card_templates
  */
 async function getPlayerCard(
-  playerCardId: string
+  cardId: string,
+  source: 'deck' | 'public_pool' = 'deck'
 ): Promise<{
   id: string;
-  player_id: string;
+  player_id: string | null;  // T1001 公共池卡无 player_id
   cost: number;
   effect: CardEffect;
   type: string | null;
   profession: string | null;
 } | null> {
+  if (source === 'public_pool') {
+    // T1001：公共池卡走 card_templates 表（无 player_cards 实例）
+    const result = await query<{
+      id: string;
+      cost: number;
+      effect: Record<string, unknown>;
+      type: string | null;
+      profession: string | null;
+    }>(
+      `SELECT id, cost, effect, type, profession
+       FROM card_templates
+       WHERE id = $1 AND is_public_pool = TRUE`,
+      [cardId]
+    );
+
+    if (!result || result.length === 0) {
+      return null;
+    }
+
+    const row = result[0];
+    return {
+      id: row.id,
+      player_id: null,  // 公共池无归属
+      cost: row.cost,
+      effect: row.effect as CardEffect,
+      type: row.type,
+      profession: row.profession,
+    };
+  }
+
+  // deck 路径：保持 T039 行为
   const result = await query<{
     id: string;
     player_id: string;
@@ -621,7 +654,7 @@ async function getPlayerCard(
      FROM player_cards pc
      LEFT JOIN card_templates ct ON pc.card_template_id = ct.id
      WHERE pc.id = $1`,
-    [playerCardId]
+    [cardId]
   );
 
   if (!result || result.length === 0) {
@@ -694,9 +727,10 @@ async function getTargetsInRange(
  * 验证单体攻击是否合法
  * @param battleId 对战 ID
  * @param attackerId 攻击者棋子 ID
- * @param cardId 玩家卡牌 ID (player_card_id)
+ * @param cardId 玩家卡牌 ID (player_card_id) 或 卡牌模板 ID（T1001 public_pool）
  * @param targetId 目标棋子 ID
  * @param currentRound 当前 battle round（T039 注入）
+ * @param source 卡牌来源（'deck' | 'public_pool'，T1001 注入）
  * @returns 验证结果
  */
 export async function validateAttack(
@@ -704,7 +738,8 @@ export async function validateAttack(
   attackerId: string,
   cardId: string,
   targetId: string,
-  currentRound: number = 0
+  currentRound: number = 0,
+  source: 'deck' | 'public_pool' = 'deck'
 ): Promise<AttackValidationResult> {
   // 1. 获取攻击者棋子信息
   const attacker = await getCharacterPiece(battleId, attackerId);
@@ -717,14 +752,14 @@ export async function validateAttack(
     return { valid: false, error: 'Attacker is not alive' };
   }
 
-  // 3. 获取卡牌信息
-  const card = await getPlayerCard(cardId);
+  // 3. 获取卡牌信息（T1001：source 决定走哪条 SQL 路径）
+  const card = await getPlayerCard(cardId, source);
   if (!card) {
     return { valid: false, error: 'Card not found' };
   }
 
-  // 4. 验证卡牌归属（攻击者必须使用自己的卡牌）
-  if (card.player_id !== attacker.player_id) {
+  // 4. 验证卡牌归属（公共池卡无 player_id，跳过此检查）
+  if (source === 'deck' && card.player_id !== attacker.player_id) {
     return { valid: false, error: 'Card does not belong to attacker' };
   }
 
@@ -802,9 +837,13 @@ export async function validateAttack(
   // 12. 计算伤害
   const damage = calculateDamage(cardEffect, attacker.profession);
 
-  // 13. T039 warrior 机制 1：攻击累计护盾触发
+  // 13. T039 warrior 机制 1：攻击累计护盾触发（T1001：公共池卡不计入累计）
   let shieldGained: number | undefined;
-  if (attacker.profession === 'warrior' && card.type === 'attack') {
+  if (
+    attacker.profession === 'warrior' &&
+    card.type === 'attack' &&
+    source !== 'public_pool'
+  ) {
     const result = await onWarriorAttackCardPlayed(battleId, attackerId, card.cost, currentRound);
     if (result.shieldGained > 0) {
       shieldGained = result.shieldGained;
@@ -824,13 +863,15 @@ export async function validateAttack(
  * 验证 AOE 攻击是否合法
  * @param battleId 对战 ID
  * @param attackerId 攻击者棋子 ID
- * @param cardId 玩家卡牌 ID (player_card_id)
+ * @param cardId 玩家卡牌 ID (player_card_id) 或 卡牌模板 ID（T1001 public_pool）
+ * @param source 卡牌来源（'deck' | 'public_pool'，T1001 注入）
  * @returns 验证结果（包含所有有效目标）
  */
 export async function validateAOEAttack(
   battleId: string,
   attackerId: string,
-  cardId: string
+  cardId: string,
+  source: 'deck' | 'public_pool' = 'deck'
 ): Promise<AttackValidationResult> {
   // 1. 获取攻击者棋子信息
   const attacker = await getCharacterPiece(battleId, attackerId);
@@ -843,14 +884,14 @@ export async function validateAOEAttack(
     return { valid: false, error: 'Attacker is not alive' };
   }
 
-  // 3. 获取卡牌信息
-  const card = await getPlayerCard(cardId);
+  // 3. 获取卡牌信息（T1001：source 决定走哪条 SQL 路径）
+  const card = await getPlayerCard(cardId, source);
   if (!card) {
     return { valid: false, error: 'Card not found' };
   }
 
-  // 4. 验证卡牌归属
-  if (card.player_id !== attacker.player_id) {
+  // 4. 验证卡牌归属（公共池卡无 player_id，跳过此检查）
+  if (source === 'deck' && card.player_id !== attacker.player_id) {
     return { valid: false, error: 'Card does not belong to attacker' };
   }
 

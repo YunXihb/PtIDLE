@@ -252,3 +252,33 @@
 9. **测试统计偏差**：plan 估算「约 100+ tests」，实际 statusEffect(17) + professionMechanic(32) + characterStatus(7) + characterService assignCard(7) + battleService validateAttack profession/taunt/warrior trigger/AOE/taunt(13) + 集成测试(5) = **81 tests**。新加测试都比 plan 估算略多，覆盖更密
 10. **完整 service + routes 测试**：`npx jest src/services/ src/routes/` 共 17 + 6 = 23 suites，**289 + 59 = 348 tests 全过**；`npx tsc --noEmit` 0 错误
 
+---
+
+## 2026-06-10 - 任务：战棋公共池系统（T1001）
+
+### Prompt
+实施 T1001 战棋公共池系统。设计已锁定（见 T1000-deferred.md）：池内仅「轻击」、无限复用、不可保留、牌库 < count 时补足、HandCard 加 `source` 字段、warrior 攻击累计不计入公共池。`src/migrations/006_public_pool.sql` + `publicPoolService.ts` + `HandCard.source` 字段 + `getPlayerCard` 双 SQL 路径 + `validateAttack` 第 6 参 source + `GET /api/cards/public-pool` 路由。
+
+### 思考
+- **新 service 文件**：`publicPoolService.ts`（~70 行）：`drawFromPublicPool(need)` + `isPublicPoolDeckId(deckId)`，从 `cardService.getPublicPoolCards()` 拉数据
+- **migration 006_public_pool.sql**：`card_templates.is_public_pool BOOLEAN` 列 + 部分索引 + 标记「轻击」
+- **HandCard 联合类型**：`source: 'deck' | 'public_pool'`，TS 联合类型天然约束。`deck_id` 用 `pool:<template_no>` 虚拟 ID 区分
+- **drawCards 行为变化**：先抽 `min(count, deckSize)` 张 deck，缺额调 `drawFromPublicPool(count - actualFromDeck)`，drawn_count = deck + public_pool
+- **retainHandOnStepEnd 新增 path 3**：命中公共池卡 → 强制全弃 + error `'public pool cards cannot be retained'`（防止公共池卡无限堆叠在 retained key）
+- **getPlayerCard(cardId, source)` 双 SQL 路径**：
+  - `source='deck'`：原 SQL（player_cards LEFT JOIN card_templates）— 不变
+  - `source='public_pool'`：新 SQL（card_templates WHERE is_public_pool=TRUE），返回 `player_id: null`
+- **validateAttack 第 4 步**：「卡牌归属」加 `source === 'deck'` 守卫，公共池卡 bypass
+- **validateAttack 第 13 步**：warrior attack trigger 加 `source !== 'public_pool'` 过滤（公共池卡不计入累计）
+- **公共池端点**：`GET /api/cards/public-pool`，放在 `GET /:id` 之前避免贪婪匹配
+- **无限复用语义**：公共池卡不回 player_cards、不持久化「库存」、弃牌堆只作"已使用历史"
+
+### 意外
+1. **handService.test.ts 大量旧测试预期变化**：「should return empty hand when deck is empty」原期望空手牌，现在空池时仍空手牌（mock default 返 []），但若公共池非空则返 3 张轻击。修复：default mock 设 `mockResolvedValue([])`，旧测试零修改通过；新增 6 个测试覆盖"池非空时补足"
+2. **getPublicPoolCards 名字冲突**：一开始在 routes/cards.ts 错从 publicPoolService 导入，实际该函数在 cardService 中（数据层 vs 业务层分离）。修复：统一从 cardService 导入
+3. **jest.mock hoisting 坑**：`cards.public-pool.integration.test.ts` 用了 `const mockFn = jest.fn(); jest.mock(..., () => ({ x: mockFn }))`，报错 "Cannot access 'mockFn' before initialization"。修复：改用 `jest.mock({x: jest.fn()...})` + `import * as cardService` + `as jest.MockedFunction` 强制断言。这是 T039 沿袭下来的坑
+4. **CardTemplate type 联合断言**：测试里的 pool cards 用 `as const` 不够，因为 effect 字段是 `Record<string, unknown>`，需要直接 `: cardService.CardTemplate[]` 注解才能通过 TS 编译
+5. **route ordering 必须显式声明**：`GET /api/cards/public-pool` 必须在 `GET /api/cards/:id` 之前，否则被贪婪匹配。集成测试加一条"无贪婪匹配"断言
+6. **测试统计偏差**：plan 估算 ~150 行测试，实际 publicPoolService(6) + handService 新增(6) + retain 公共池(2) + battleService public_pool(5) + AOE public_pool(1) + 集成(5) = **23 新增测试**。全过：`npx jest` **27 suites / 392 tests 全过**；`npx tsc --noEmit` 0 错误
+7. **handService.toHandCard 加 source='deck' 默认**：现有 `toHandCard(row)` 不接受 source 参数，固定写死 `source: 'deck'`。这样 `getCharacterDeckCards` 路径所有返回的卡都是 deck 来源，无需改 toHandCard 签名
+

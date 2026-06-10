@@ -10,6 +10,7 @@ export interface CardTemplate {
   profession: string | null; // 'warrior', 'ranger', 'mage', or 'common'
   template_no: number;        // 卡牌模板固定编码
   max_quantity: number;       // 单组卡牌数量上限，默认5
+  is_public_pool: boolean;    // T1001：是否进入战棋公共池（无限复用）
 }
 
 // 内存缓存（5分钟过期）
@@ -42,7 +43,8 @@ export async function getAllCardTemplates(): Promise<CardTemplate[]> {
     profession: string | null;
     template_no: number;
     max_quantity: number;
-  }>('SELECT id, name, description, type, cost, effect, profession, template_no, max_quantity FROM card_templates ORDER BY template_no');
+    is_public_pool: boolean;
+  }>('SELECT id, name, description, type, cost, effect, profession, template_no, max_quantity, is_public_pool FROM card_templates ORDER BY template_no');
 
   const cardTemplates: CardTemplate[] = result.map(row => ({
     id: row.id,
@@ -54,6 +56,7 @@ export async function getAllCardTemplates(): Promise<CardTemplate[]> {
     profession: row.profession,
     template_no: row.template_no,
     max_quantity: row.max_quantity,
+    is_public_pool: row.is_public_pool,
   }));
 
   // 更新缓存
@@ -79,6 +82,14 @@ export async function getCardTemplateById(id: string): Promise<CardTemplate | nu
 export async function getCardTemplatesByProfession(profession: string): Promise<CardTemplate[]> {
   const cardTemplates = await getAllCardTemplates();
   return cardTemplates.filter(c => c.profession === profession || c.profession === 'common');
+}
+
+/**
+ * T1001：获取公共池卡牌（is_public_pool=TRUE）
+ */
+export async function getPublicPoolCards(): Promise<CardTemplate[]> {
+  const cardTemplates = await getAllCardTemplates();
+  return cardTemplates.filter(c => c.is_public_pool);
 }
 
 /**

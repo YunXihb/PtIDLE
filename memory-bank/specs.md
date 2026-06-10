@@ -148,6 +148,43 @@ PVP对战（消耗卡牌）
 结算（获得体验/成就感）
 ```
 
+### 3.4 职业机制
+
+#### 战士（warrior）
+- **攻击累计护盾**：每打出 2 张攻击卡 → 获得 2 张卡能量消耗总和的护盾，持续 2 个战斗回合
+- **嘲讽（挑战卡）**：tactical 1 费 warrior 专属，嘲讽 3 格内 1 个指定敌方 1 个战斗回合
+  - 被嘲讽的敌方本回合所有攻击卡必须指定该战士为目标
+
+#### 弓手（ranger）
+TBD - T040 实施
+
+#### 法师（mage）
+TBD - T041 实施
+
+### 3.5 战棋公共池（Public Pool）
+
+**目的**：避免「棋子抽空手牌、整回合无所事事」的负体验。内置一套**通用基础攻击卡**（轻击），当棋子牌库 < 抽牌数时自动从公共池补足，保证每回合棋子仍可执行有限的战术操作。
+
+**池内容**：仅「轻击」（template_no=1, common, attack, cost=1, damage=2）
+
+**消耗性**：**无限复用** — 不入 player_cards，无归属；打出后回池（不进入弃牌堆逻辑或保留）
+
+**保留**：**不可保留** — retainHandOnStepEnd 命中公共池卡时强制全弃 + error（防无限堆叠）
+
+**抽取优先级**：牌库 < count 时从公共池补足（不强制覆盖原有牌库逻辑）
+
+**HandCard 标识**：`source: 'deck' | 'public_pool'`（TS 联合类型天然约束）
+
+**职业机制影响**：
+- warrior 攻击累计护盾：公共池卡不计入累计（公共池是「借用」资源，不入职业私有计数器）
+
+**API**：
+- `GET /api/cards/public-pool` — 公共池卡牌模板列表（公共池是公开系统资源，无需鉴权）
+
+**数据库**：`card_templates.is_public_pool BOOLEAN` 标记公共池卡。Migration `006_public_pool.sql`
+
+**Redis**：无新增 key。`HandCard` 在手牌 JSON 中自带 `source` 字段。
+
 ---
 
 ## 四、核心组件 (Core Components)

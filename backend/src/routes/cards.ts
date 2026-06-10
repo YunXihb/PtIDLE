@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
-import { getAllCardTemplates, getCardTemplateById, getPlayerCards } from '../services/cardService';
+import { getAllCardTemplates, getCardTemplateById, getPlayerCards, getPublicPoolCards } from '../services/cardService';
 import { query } from '../config/database';
 
 const router = Router();
@@ -17,6 +17,20 @@ router.get('/', async (_req, res) => {
   } catch (error) {
     console.error('Error fetching card templates:', error);
     res.status(500).json({ error: 'Failed to fetch card templates' });
+  }
+});
+
+// T1001：获取战棋公共池卡牌（无需认证；放 /:id 之前以避免被贪婪匹配）
+router.get('/public-pool', async (_req, res) => {
+  try {
+    const poolCards = await getPublicPoolCards();
+    res.json({
+      success: true,
+      data: poolCards,
+    });
+  } catch (error) {
+    console.error('Error fetching public pool cards:', error);
+    res.status(500).json({ error: 'Failed to fetch public pool cards' });
   }
 });
 

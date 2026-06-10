@@ -746,4 +746,135 @@ describe('battleService - attack validation', () => {
       expect(result.error).toContain('out of range');
     });
   });
+
+  // ========================================
+  // T1001: 公共池卡 validateAttack 路径
+  // ========================================
+  describe('validateAttack - public pool card (T1001)', () => {
+    const positions = { '2,2': mockAttackerId, '3,2': mockTargetId };
+    const publicPoolCard = {
+      id: 'template-qj',
+      player_id: null,  // 公共池卡无归属
+      cost: 1,
+      effect: { damage: 2 },
+      type: 'attack',
+      profession: 'common',
+    };
+
+    it('should query card_templates and accept attack with public_pool source', async () => {
+      mockRedisClient.hGet
+        .mockResolvedValueOnce(JSON.stringify(mockAttacker))
+        .mockResolvedValueOnce(JSON.stringify(mockTarget));
+      mockQuery.mockResolvedValueOnce([publicPoolCard]);
+      mockRedisClient.hGetAll
+        .mockResolvedValueOnce(positions)
+        .mockResolvedValueOnce(positions);
+
+      const result = await validateAttack(
+        mockBattleId, mockAttackerId, 'template-qj', mockTargetId, 1, 'public_pool'
+      );
+
+      expect(result.valid).toBe(true);
+      expect(result.damage).toBe(2);
+      expect(mockQuery).toHaveBeenCalledWith(
+        expect.stringContaining('card_templates'),
+        expect.arrayContaining(['template-qj'])
+      );
+      // 校验 SQL 包含 is_public_pool = TRUE
+      const sql = mockQuery.mock.calls[0][0];
+      expect(sql).toContain('is_public_pool');
+    });
+
+    it('should NOT skip warrior attack trigger when source is deck (regression)', async () => {
+      const positions2 = { '2,2': mockAttackerId, '3,2': mockTargetId };
+      mockRedisClient.hGet
+        .mockResolvedValueOnce(JSON.stringify(mockAttacker))
+        .mockResolvedValueOnce(JSON.stringify(mockTarget));
+      mockQuery.mockResolvedValueOnce([{ ...mockCard, type: 'attack', profession: 'common' }]);
+      mockRedisClient.hGetAll
+        .mockResolvedValueOnce(positions2)
+        .mockResolvedValueOnce(positions2);
+
+      await validateAttack(
+        mockBattleId, mockAttackerId, mockCardId, mockTargetId, 1, 'deck'
+      );
+      expect(mockOnWarriorAttackCardPlayed).toHaveBeenCalled();
+    });
+
+    it('should NOT trigger warrior attack shield for public_pool cards (T1001)', async () => {
+      mockRedisClient.hGet
+        .mockResolvedValueOnce(JSON.stringify(mockAttacker))
+        .mockResolvedValueOnce(JSON.stringify(mockTarget));
+      mockQuery.mockResolvedValueOnce([{ ...publicPoolCard, profession: 'common' }]);
+      mockRedisClient.hGetAll
+        .mockResolvedValueOnce(positions)
+        .mockResolvedValueOnce(positions);
+
+      const result = await validateAttack(
+        mockBattleId, mockAttackerId, 'template-qj', mockTargetId, 1, 'public_pool'
+      );
+
+      expect(result.valid).toBe(true);
+      // 公共池卡不计入 warrior 攻击累计
+      expect(mockOnWarriorAttackCardPlayed).not.toHaveBeenCalled();
+      expect(result.shieldGained).toBeUndefined();
+    });
+
+    it('should skip ownership check for public_pool card (no player_id)', async () => {
+      // publicPoolCard.player_id === null，但 attacker.player_id === 'player-1'
+      // 公共池路径应跳过这个比较
+      mockRedisClient.hGet
+        .mockResolvedValueOnce(JSON.stringify(mockAttacker))
+        .mockResolvedValueOnce(JSON.stringify(mockTarget));
+      mockQuery.mockResolvedValueOnce([publicPoolCard]);
+      mockRedisClient.hGetAll
+        .mockResolvedValueOnce(positions)
+        .mockResolvedValueOnce(positions);
+
+      const result = await validateAttack(
+        mockBattleId, mockAttackerId, 'template-qj', mockTargetId, 1, 'public_pool'
+      );
+
+      expect(result.valid).toBe(true);
+      expect(result.error).toBeUndefined();
+    });
+
+    it('should still reject when public_pool card not found in card_templates', async () => {
+      mockRedisClient.hGet.mockResolvedValueOnce(JSON.stringify(mockAttacker));
+      mockQuery.mockResolvedValueOnce([]);  // card_templates 无此 id
+
+      const result = await validateAttack(
+        mockBattleId, mockAttackerId, 'nonexistent-template', mockTargetId, 1, 'public_pool'
+      );
+
+      expect(result.valid).toBe(false);
+      expect(result.error).toBe('Card not found');
+    });
+  });
+
+  // ========================================
+  // T1001: 公共池卡 validateAOEAttack 路径
+  // ========================================
+  describe('validateAOEAttack - public pool card (T1001)', () => {
+    it('should reject public_pool AOE since pool has no AOE card (current implementation)', async () => {
+      // 公共池只有「轻击」非 AOE — 即使传入 public_pool 来源也会被 effect.aoe 拦截
+      const publicPoolCard = {
+        id: 'template-qj',
+        player_id: null,
+        cost: 1,
+        effect: { damage: 2 },  // 无 aoe 字段
+        type: 'attack',
+        profession: 'common',
+      };
+      mockRedisClient.hGet.mockResolvedValueOnce(JSON.stringify(mockAttacker));
+      mockQuery.mockResolvedValueOnce([publicPoolCard]);
+
+      const result = await validateAOEAttack(
+        mockBattleId, mockAttackerId, 'template-qj', 'public_pool'
+      );
+
+      expect(result.valid).toBe(false);
+      expect(result.error).toBe('Card is not an AOE attack');
+    });
+  });
 });

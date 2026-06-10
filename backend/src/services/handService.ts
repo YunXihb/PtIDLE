@@ -1,16 +1,25 @@
 import { redisClient } from '../config/redis';
 import { getCharacterDeckCards } from './characterService';
+import { drawFromPublicPool } from './publicPoolService';
 
 // ========================================
 // 类型定义
 // ========================================
 
 /**
+ * 手牌卡牌来源（T1001）
+ * - 'deck': 来自棋子的 character_deck（玩家私有）
+ * - 'public_pool': 来自战棋公共池（无限复用，不消耗）
+ */
+export type HandCardSource = 'deck' | 'public_pool';
+
+/**
  * 手牌卡牌结构（战棋运行时使用的精简卡牌信息）
- * - deck_id: character_deck.id (手牌唯一标识，用于后续打出/弃牌)
- * - card_id: player_card.id (玩家卡牌 ID)
+ * - deck_id: character_deck.id 或 `pool:<template_no>` (T1001 公共池虚拟 ID)
+ * - card_id: player_card.id（deck 来源）或 card_template.id（public_pool 来源）
  * - name / type / cost / effect: 卡牌模板数据
  * - template_no: 卡牌种类编号（用于 UI 排序）
+ * - source: 卡牌来源（'deck' | 'public_pool'，T1001）
  */
 export interface HandCard {
   deck_id: string;
@@ -20,6 +29,7 @@ export interface HandCard {
   cost: number;
   effect: Record<string, unknown>;
   template_no: number;
+  source: HandCardSource;
 }
 
 /**
@@ -100,6 +110,7 @@ function shuffleArray<T>(arr: T[]): T[] {
 
 /**
  * 将 character_deck 行映射为 HandCard（去除私有字段，限定 type 联合类型）
+ * T1001：source 默认为 'deck'
  */
 function toHandCard(row: {
   deck_id: string;
@@ -118,6 +129,7 @@ function toHandCard(row: {
     cost: row.cost,
     effect: row.effect,
     template_no: row.template_no,
+    source: 'deck',
   };
 }
 
@@ -154,14 +166,14 @@ async function consumeRetainedCard(
 /**
  * 1. 抽牌：从棋子的 character_deck 随机抽取 N 张卡牌，存入该棋子本回合的"手牌"
  *
- * 流程：
+ * 流程（T1001 公共池补足版）：
  * 1. 校验 count 为非负整数
  * 2. 消费上回合保留的牌（如有 retained key 则读取并 DEL）
  * 3. 查询该棋子的完整牌库
- * 4. 牌库为空 → 若有 retained 则手牌只含 retained，否则空手牌
- * 5. Fisher-Yates 洗牌
- * 6. 实际抽取数 = min(count, deckSize)
- * 7. 取前 N 张 → 映射为 HandCard
+ * 4. 实际抽取 = min(count, deckSize)
+ * 5. 洗牌 + 取前 N 张 → 映射为 HandCard（source='deck'）
+ * 6. 缺额 = count - actualFromDeck → 从公共池补足（source='public_pool'）
+ * 7. 公共池抽到的轻击算入 drawn_count（计入本回合抽到的手牌数）
  * 8. 最终手牌 = retained ? [retained, ...drawn] : drawn
  * 9. 写入 Redis 手牌 key
  *
@@ -190,9 +202,12 @@ export async function drawCards(
   const deckRows = await getCharacterDeckCards(characterId);
   const deckSize = deckRows.length;
 
-  // 3. 牌库为空 → 手牌仅由 retained（若有）组成
+  // 3. 牌库为空：整 count 张从公共池补
   if (deckSize === 0) {
-    const handCards: HandCard[] = retainedCard ? [retainedCard] : [];
+    const publicCards = await drawFromPublicPool(count);
+    const handCards: HandCard[] = retainedCard
+      ? [retainedCard, ...publicCards]
+      : publicCards;
     await redisClient.set(
       getHandKey(battleId, characterId),
       JSON.stringify(handCards)
@@ -200,7 +215,7 @@ export async function drawCards(
     const result: DrawCardsResult = {
       success: true,
       cards: handCards,
-      drawn_count: 0,
+      drawn_count: publicCards.length,
       deck_size: 0,
     };
     if (retainedCard) {
@@ -209,26 +224,35 @@ export async function drawCards(
     return result;
   }
 
-  // 4. 洗牌 + 抽取
+  // 4. 洗牌 + 抽取（deck 来源）
   const shuffled = shuffleArray([...deckRows]);
-  const actualCount = Math.min(count, deckSize);
-  const drawnCards: HandCard[] = shuffled.slice(0, actualCount).map(toHandCard);
+  const actualFromDeck = Math.min(count, deckSize);
+  const deckCards: HandCard[] = shuffled.slice(0, actualFromDeck).map(toHandCard);
 
-  // 5. 合并 retained（保留牌排在手牌顶部）
+  // 5. T1001 公共池补足：牌库 < count 时从公共池补
+  const needFromPool = count - actualFromDeck;
+  const publicCards: HandCard[] = needFromPool > 0
+    ? await drawFromPublicPool(needFromPool)
+    : [];
+  const drawnCards: HandCard[] = [...deckCards, ...publicCards];
+
+  // 6. 合并 retained（保留牌排在手牌顶部）
   const handCards: HandCard[] = retainedCard
     ? [retainedCard, ...drawnCards]
     : drawnCards;
 
-  // 6. 写入 Redis（每次 draw 覆盖手牌）
+  // 7. 写入 Redis（每次 draw 覆盖手牌）
   await redisClient.set(
     getHandKey(battleId, characterId),
     JSON.stringify(handCards)
   );
 
+  // drawn_count = deck + public_pool（不含 retained）
+  const totalDrawn = actualFromDeck + publicCards.length;
   const result: DrawCardsResult = {
     success: true,
     cards: handCards,
-    drawn_count: actualCount,
+    drawn_count: totalDrawn,
     deck_size: deckSize,
   };
   if (retainedCard) {
@@ -330,9 +354,11 @@ export async function clearDiscardPile(
 /**
  * 7. 回合结束保留手牌
  *
- * 三种路径：
+ * 四种路径：
  * - retainDeckId === null → 全部手牌入弃牌堆，清空手牌，retained:null
- * - retainDeckId 命中手牌某张 → 写 retained key + 其余入弃牌堆 + 清手牌
+ * - retainDeckId 命中手牌某张（deck 来源）→ 写 retained key + 其余入弃牌堆 + 清手牌
+ * - retainDeckId 命中手牌某张（public_pool 来源，T1001）→ 强制全弃 + error
+ *   （公共池卡不可保留 → 拒绝该保留请求，安全降级牌不丢）
  * - retainDeckId 不在手牌中 → 全部入弃牌堆（安全降级，牌不丢）+ 返回 error
  *
  * 空手牌时 no-op，返回 `{ success:true, retained:null, discarded:[] }`。
@@ -360,10 +386,10 @@ export async function retainHandOnStepEnd(
     return { success: true, retained: null, discarded: hand };
   }
 
-  // 路径 2/3：尝试命中 retainDeckId
+  // 路径 2/3/4：尝试命中 retainDeckId
   const idx = hand.findIndex((c) => c.deck_id === retainDeckId);
 
-  // 路径 3：未命中 → 全部弃牌 + error
+  // 路径 4：未命中 → 全部弃牌 + error
   if (idx === -1) {
     await addToDiscardPile(battleId, characterId, hand);
     await clearActorHand(battleId, characterId);
@@ -375,8 +401,21 @@ export async function retainHandOnStepEnd(
     };
   }
 
-  // 路径 2：命中 → 保留 + 其余入弃牌堆
   const retainedCard = hand[idx];
+
+  // 路径 3：命中但为公共池卡 → 强制全弃 + error
+  if (retainedCard.source === 'public_pool') {
+    await addToDiscardPile(battleId, characterId, hand);
+    await clearActorHand(battleId, characterId);
+    return {
+      success: false,
+      retained: null,
+      discarded: hand,
+      error: 'public pool cards cannot be retained',
+    };
+  }
+
+  // 路径 2：命中（deck 来源）→ 保留 + 其余入弃牌堆
   const discarded = hand.filter((_, i) => i !== idx);
 
   await redisClient.set(

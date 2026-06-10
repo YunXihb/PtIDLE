@@ -10,6 +10,7 @@ const mockRedisClient = {
 };
 
 const mockGetCharacterDeckCards = jest.fn();
+const mockDrawFromPublicPool = jest.fn();
 
 jest.mock('../config/redis', () => ({
   redisClient: mockRedisClient,
@@ -17,6 +18,11 @@ jest.mock('../config/redis', () => ({
 
 jest.mock('./characterService', () => ({
   getCharacterDeckCards: mockGetCharacterDeckCards,
+}));
+
+jest.mock('./publicPoolService', () => ({
+  drawFromPublicPool: mockDrawFromPublicPool,
+  isPublicPoolDeckId: (id: string) => id.startsWith('pool:'),
 }));
 
 import {
@@ -48,6 +54,9 @@ describe('handService', () => {
     stringStore = {};
     discardStore = {};
     handStore = stringStore;
+
+    // T1001 default: public pool returns empty array unless a test sets it up explicitly
+    mockDrawFromPublicPool.mockResolvedValue([]);
 
     // redisClient.get reads STRING store (hand + retained share namespace by key prefix)
     mockRedisClient.get.mockImplementation((key: string) =>
@@ -263,6 +272,7 @@ describe('handService', () => {
           cost: 1,
           effect: {},
           template_no: 99,
+          source: 'deck',
         },
       ];
       handStore[`battle:${battleId}:hand:${characterId}`] = JSON.stringify(oldHand);
@@ -336,6 +346,115 @@ describe('handService', () => {
   });
 
   // ========================================
+  // T1001: 公共池补足
+  // ========================================
+  describe('drawCards with public pool topup (T1001)', () => {
+    const poolCard: HandCard = {
+      deck_id: 'pool:1',
+      card_id: 'template-qj',
+      name: '轻击',
+      type: 'attack',
+      cost: 1,
+      effect: { damage: 2 },
+      template_no: 1,
+      source: 'public_pool',
+    };
+
+    it('should topup from public pool when deck is empty', async () => {
+      mockGetCharacterDeckCards.mockResolvedValueOnce([]);
+      mockDrawFromPublicPool.mockResolvedValueOnce([poolCard, poolCard, poolCard]);
+
+      const result = await drawCards(battleId, characterId, 3);
+
+      expect(result.success).toBe(true);
+      expect(result.deck_size).toBe(0);
+      expect(result.drawn_count).toBe(3); // pool cards count as drawn
+      expect(result.cards).toHaveLength(3);
+      for (const c of result.cards!) {
+        expect(c.source).toBe('public_pool');
+        expect(c.deck_id).toBe('pool:1');
+      }
+      // drawFromPublicPool should be called with count=3
+      expect(mockDrawFromPublicPool).toHaveBeenCalledWith(3);
+    });
+
+    it('should topup from public pool when deck < count (partial)', async () => {
+      mockGetCharacterDeckCards.mockResolvedValueOnce([
+        makeDeckRow('d1', 'c1', '移动', 'tactical', 0),
+      ]);
+      mockDrawFromPublicPool.mockResolvedValueOnce([poolCard, poolCard]);
+
+      const result = await drawCards(battleId, characterId, 3);
+
+      expect(result.success).toBe(true);
+      expect(result.deck_size).toBe(1);
+      expect(result.drawn_count).toBe(3); // 1 deck + 2 pool
+      expect(result.cards).toHaveLength(3);
+      expect(result.cards![0].source).toBe('deck');
+      expect(result.cards![1].source).toBe('public_pool');
+      expect(result.cards![2].source).toBe('public_pool');
+      // drawFromPublicPool called with deficit (count - deckSize) = 2
+      expect(mockDrawFromPublicPool).toHaveBeenCalledWith(2);
+    });
+
+    it('should not call public pool when deck has enough cards', async () => {
+      mockGetCharacterDeckCards.mockResolvedValueOnce([
+        makeDeckRow('d1', 'c1', 'A', 'attack', 1),
+        makeDeckRow('d2', 'c2', 'B', 'attack', 1),
+        makeDeckRow('d3', 'c3', 'C', 'attack', 1),
+      ]);
+
+      const result = await drawCards(battleId, characterId, 3);
+
+      expect(result.success).toBe(true);
+      expect(result.drawn_count).toBe(3);
+      expect(mockDrawFromPublicPool).not.toHaveBeenCalled();
+    });
+
+    it('should yield empty hand when deck empty and public pool empty', async () => {
+      mockGetCharacterDeckCards.mockResolvedValueOnce([]);
+      // public pool default mock returns []
+      mockDrawFromPublicPool.mockResolvedValueOnce([]);
+
+      const result = await drawCards(battleId, characterId, 3);
+
+      expect(result.success).toBe(true);
+      expect(result.deck_size).toBe(0);
+      expect(result.drawn_count).toBe(0);
+      expect(result.cards).toEqual([]);
+    });
+
+    it('should persist pool cards to Redis with source=public_pool', async () => {
+      mockGetCharacterDeckCards.mockResolvedValueOnce([]);
+      mockDrawFromPublicPool.mockResolvedValueOnce([poolCard]);
+
+      await drawCards(battleId, characterId, 1);
+
+      const stored = JSON.parse(handStore[handKey(battleId, characterId)]);
+      expect(stored).toHaveLength(1);
+      expect(stored[0].source).toBe('public_pool');
+    });
+
+    it('should merge retained + public pool topup when deck empty', async () => {
+      const retained = makeHandCard('retained-d', 'retained-c', 'KeptCard');
+      stringStore[retainedKey(battleId, characterId)] = JSON.stringify(retained);
+
+      mockGetCharacterDeckCards.mockResolvedValueOnce([]);
+      mockDrawFromPublicPool.mockResolvedValueOnce([poolCard, poolCard]);
+
+      const result = await drawCards(battleId, characterId, 3);
+
+      expect(result.success).toBe(true);
+      expect(result.drawn_count).toBe(2); // pool cards, retained is separate
+      expect(result.cards).toHaveLength(3); // 1 retained + 2 pool
+      expect(result.cards![0]).toEqual(retained); // retained on top
+      expect(result.cards![1].source).toBe('public_pool');
+      expect(result.cards![2].source).toBe('public_pool');
+      expect(result.retained_from_previous).toEqual(retained);
+    });
+  });
+
+  // ========================================
   // getActorHand
   // ========================================
   describe('getActorHand', () => {
@@ -354,6 +473,7 @@ describe('handService', () => {
           cost: 1,
           effect: { damage: 2 },
           template_no: 1,
+          source: 'deck',
         },
         {
           deck_id: 'd2',
@@ -363,6 +483,7 @@ describe('handService', () => {
           cost: 0,
           effect: { movement: 1 },
           template_no: 2,
+          source: 'deck',
         },
       ];
       handStore[`battle:${battleId}:hand:${characterId}`] =
@@ -394,6 +515,7 @@ describe('handService', () => {
           cost: 1,
           effect: {},
           template_no: 1,
+          source: 'deck',
         },
       ];
       handStore[`battle:${battleId}:hand:${characterId}`] =
@@ -439,9 +561,10 @@ describe('handService', () => {
     type: HandCard['type'] = 'attack',
     cost: number = 1,
     effect: Record<string, unknown> = {},
-    template_no: number = 0
+    template_no: number = 0,
+    source: HandCard['source'] = 'deck'
   ): HandCard {
-    return { deck_id, card_id, name, type, cost, effect, template_no };
+    return { deck_id, card_id, name, type, cost, effect, template_no, source };
   }
 
   const handKey = (b: string, c: string) => `battle:${b}:hand:${c}`;
@@ -625,6 +748,66 @@ describe('handService', () => {
       expect(second.retained).toBeNull();
       expect(second.discarded).toEqual([]);
       expect(mockRedisClient.rPush).not.toHaveBeenCalled();
+    });
+
+    // T1001: 公共池卡不能被保留（强制全弃 + error）
+    it('should reject retain of a public_pool card and discard the whole hand (T1001)', async () => {
+      const hand: HandCard[] = [
+        makeHandCard('d1', 'c1', 'deck-A', 'attack', 1, {}, 5, 'deck'),
+        makeHandCard(
+          'pool:1',
+          'template-qj',
+          '轻击',
+          'attack',
+          1,
+          { damage: 2 },
+          1,
+          'public_pool'
+        ),
+      ];
+      stringStore[handKey(battleId, characterId)] = JSON.stringify(hand);
+
+      const result = await retainHandOnStepEnd(battleId, characterId, 'pool:1');
+
+      expect(result.success).toBe(false);
+      expect(result.retained).toBeNull();
+      expect(result.discarded).toEqual(hand);
+      expect(result.error).toBe('public pool cards cannot be retained');
+      // All cards in discard pile
+      const pile = (discardStore[discardKey(battleId, characterId)] ?? []).map(
+        (s) => JSON.parse(s)
+      );
+      expect(pile).toEqual(hand);
+      // No retained key written
+      expect(stringStore[retainedKey(battleId, characterId)]).toBeUndefined();
+    });
+
+    it('should still allow retaining a deck card when public_pool cards are present (T1001)', async () => {
+      const hand: HandCard[] = [
+        makeHandCard('d1', 'c1', 'deck-A', 'attack', 1, {}, 5, 'deck'),
+        makeHandCard(
+          'pool:1',
+          'template-qj',
+          '轻击',
+          'attack',
+          1,
+          { damage: 2 },
+          1,
+          'public_pool'
+        ),
+        makeHandCard('d3', 'c3', 'deck-B', 'defense', 1, {}, 6, 'deck'),
+      ];
+      stringStore[handKey(battleId, characterId)] = JSON.stringify(hand);
+
+      const result = await retainHandOnStepEnd(battleId, characterId, 'd3');
+
+      expect(result.success).toBe(true);
+      expect(result.retained).toEqual(hand[2]); // deck-B retained
+      expect(result.discarded).toEqual([hand[0], hand[1]]); // deck-A + pool
+      // retained key holds the chosen deck card
+      expect(stringStore[retainedKey(battleId, characterId)]).toBe(
+        JSON.stringify(hand[2])
+      );
     });
   });
 

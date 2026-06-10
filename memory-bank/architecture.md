@@ -1041,5 +1041,102 @@ T055 范围缩小为：手牌归属、沉默/眩晕/致盲等状态效果检查�
 
 ---
 
-*文档版本：v1.25*
+## T1001 新增服务：战棋公共池
+
+> 详见 `T1000-deferred.md` 「T1001」章节。设计目标：避免棋子牌库抽空后整回合无操作的负体验。
+
+### 公共池服务 (Public Pool Service)
+
+**位置**：`src/services/publicPoolService.ts`
+
+#### 公共 API
+
+| API | 描述 | 返回 |
+|-----|------|------|
+| `drawFromPublicPool(need: number): Promise<HandCard[]>` | 从公共池抽 N 张「轻击」HandCard（source='public_pool'） | `HandCard[]` |
+| `isPublicPoolDeckId(deckId: string): boolean` | 判断 deck_id 是否公共池卡（`'pool:'` 前缀） | `boolean` |
+
+#### 实现细节
+
+- 公共池卡走 `card_templates` 表（`is_public_pool = TRUE`），不入 `player_cards` 表
+- 当前公共池仅含「轻击」（template_no=1）
+- 抽 N 张时返回 N 份独立 `HandCard`（同 `deck_id='pool:1'`，同 `card_id`）
+- 客户端打牌时按 `source='public_pool'` 路由到 `validateAttack` 公共池分支
+- `isPublicPoolDeckId` 是前端/校验辅助函数
+
+### 公共池 API 路由
+
+**位置**：`src/routes/cards.ts`
+
+| 路由 | 鉴权 | 描述 |
+|------|------|------|
+| `GET /api/cards/public-pool` | 无 | 返回公共池卡牌模板（公共资源） |
+| `GET /api/cards/:id` | 无 | 单个卡牌模板（greedy 匹配；公共池路由必须在它之前定义） |
+
+### 卡牌数据模型扩展
+
+**位置**：`src/services/cardService.ts`
+
+`CardTemplate` interface 新增 `is_public_pool: boolean` 字段。
+
+```sql
+ALTER TABLE card_templates
+  ADD COLUMN IF NOT EXISTS is_public_pool BOOLEAN NOT NULL DEFAULT FALSE;
+CREATE INDEX IF NOT EXISTS idx_card_templates_public_pool
+  ON card_templates(is_public_pool) WHERE is_public_pool = TRUE;
+UPDATE card_templates SET is_public_pool = TRUE WHERE name = '轻击';
+```
+
+迁移：`src/migrations/006_public_pool.sql`
+
+### HandCard 来源标识（T037 / T1001）
+
+**位置**：`src/services/handService.ts`
+
+`HandCard` interface 新增 `source: 'deck' | 'public_pool'` 字段：
+- `source='deck'`：来自棋子的 `character_deck`（玩家私有）→ `deck_id` = `character_deck.id`
+- `source='public_pool'`：来自战棋公共池（无限复用）→ `deck_id` = `pool:<template_no>`
+
+`drawCards` 行为变化（T1001）：
+- 牌库 ≥ count：行为不变（不调公共池）
+- 牌库 < count：实际抽 `min(count, deckSize)` 张 deck 牌 + `count - actualFromDeck` 张公共池牌
+- 牌库 = 0：整 `count` 张从公共池补
+- `drawn_count = deck 牌数 + 公共池牌数`（不含 retained）
+
+`retainHandOnStepEnd` 行为变化（T1001）：
+- 命中公共池卡 → 强制全弃 + error `'public pool cards cannot be retained'`
+
+### 攻击校验公共池路径（T035 / T1001）
+
+**位置**：`src/services/battleService.ts`
+
+`validateAttack` / `validateAOEAttack` 新增第 6 参数 `source: 'deck' | 'public_pool' = 'deck'`：
+- `getPlayerCard(cardId, source)` 双 SQL 路径
+  - `source='deck'`：原 SQL（`player_cards` LEFT JOIN `card_templates`）
+  - `source='public_pool'`：新 SQL（`card_templates WHERE id=$1 AND is_public_pool=TRUE`），返回 `player_id: null`
+- 「卡牌归属」校验：公共池卡 bypass `'Card does not belong to attacker'`
+- warrior 攻击累计护盾触发：增加 `source !== 'public_pool'` 过滤（公共池卡不计入累计）
+
+### Redis 状态
+
+无新增 key。`HandCard` 在手牌 JSON 中自带 `source` 字段。
+
+### 文件清单
+
+| 路径 | 改动 |
+|------|------|
+| `src/services/publicPoolService.ts` | **新建**：drawFromPublicPool / isPublicPoolDeckId |
+| `src/services/publicPoolService.test.ts` | **新建**：6 测试 |
+| `src/services/cardService.ts` | `CardTemplate.is_public_pool` 字段 + `getPublicPoolCards()` |
+| `src/services/handService.ts` | `HandCard.source` + `drawCards` 公共池补足 + retain 拒绝公共池 |
+| `src/services/handService.test.ts` | 6 新测试 + 旧测试加 `source: 'deck'` 字段 |
+| `src/services/battleService.ts` | `getPlayerCard(cardId, source)` 双路径 + `validateAttack/AOEAttack` 第 6 参 source + warrior 触发过滤 |
+| `src/services/battleService.test.ts` | 6 新测试 |
+| `src/routes/cards.ts` | `GET /api/cards/public-pool` 路由 |
+| `src/routes/cards.public-pool.integration.test.ts` | **新建**：5 集成测试 |
+| `src/migrations/006_public_pool.sql` | **新建**：`is_public_pool` 列 + 索引 + 标记「轻击」 |
+
+---
+
+*文档版本：v1.26*
 *最后更新：2026-06-10*
