@@ -8,6 +8,11 @@ const mockRedisClient = {
   hGetAll: jest.fn(),
   hSetNX: jest.fn(),
   del: jest.fn(),
+  get: jest.fn(),
+  set: jest.fn(),
+  lRange: jest.fn(),
+  rPush: jest.fn(),
+  lRem: jest.fn(),
 };
 
 const mockQuery = jest.fn();
@@ -20,9 +25,24 @@ jest.mock('../config/database', () => ({
   query: mockQuery,
 }));
 
+// Mock the new professionMechanicService module so warrior triggers don't
+// actually hit Redis.
+const mockCanUseProfession = jest.fn();
+const mockGetTauntRedirect = jest.fn();
+const mockOnWarriorAttackCardPlayed = jest.fn();
+const mockApplyWarriorTaunt = jest.fn();
+
+jest.mock('./professionMechanicService', () => ({
+  canUseProfession: mockCanUseProfession,
+  getTauntRedirect: mockGetTauntRedirect,
+  onWarriorAttackCardPlayed: mockOnWarriorAttackCardPlayed,
+  applyWarriorTaunt: mockApplyWarriorTaunt,
+}));
+
 import {
   validateAttack,
   validateAOEAttack,
+  validateTauntCard,
   euclideanDistance,
   BoardPosition,
 } from './battleService';
@@ -68,6 +88,8 @@ describe('battleService - attack validation', () => {
     player_id: 'player-1',
     cost: 1,
     effect: { damage: 2 },
+    type: 'attack',
+    profession: 'common',
   };
 
   beforeEach(() => {
@@ -75,6 +97,18 @@ describe('battleService - attack validation', () => {
     // Set default returns for hGet to return undefined (will use mockResolvedValueOnce for specific tests)
     mockRedisClient.hGet.mockImplementation(() => Promise.resolve(undefined));
     mockQuery.mockImplementation(() => Promise.resolve(undefined));
+    // Default: profession always allowed
+    mockCanUseProfession.mockReturnValue(true);
+    // Default: no taunt redirect
+    mockGetTauntRedirect.mockResolvedValue({ mustRedirectTo: null, sourceId: null });
+    // Default: warrior attack returns no shield gained
+    mockOnWarriorAttackCardPlayed.mockResolvedValue({
+      attackCounter: 0,
+      shieldGained: 0,
+      totalShield: 0,
+    });
+    // Default: applyWarriorTaunt succeeds
+    mockApplyWarriorTaunt.mockResolvedValue({ success: true });
   });
 
   describe('validateAttack', () => {
@@ -356,7 +390,7 @@ describe('battleService - attack validation', () => {
 
     it('should accept valid AOE attack and return all enemy targets in range', async () => {
       // Attacker at (4, 4); AOE range 2
-      const aoeCard = { ...mockCard, effect: { damage: 3, aoe: true, range: 2 } };
+      const aoeCard = { ...mockCard, effect: { damage: 3, aoe: true, range: 2 }, type: 'attack', profession: 'common' };
       const attackerAt44 = { ...mockAttacker, position_x: 4, position_y: 4 };
 
       // Board state (attacker at (4,4) is also included so getCharacterPosition
@@ -447,6 +481,269 @@ describe('battleService - attack validation', () => {
     it('should return 0 for same position', () => {
       const p: BoardPosition = { x: 5, y: 5 };
       expect(euclideanDistance(p, p)).toBe(0);
+    });
+  });
+
+  // ========================================
+  // T039: 职业-卡牌匹配校验 (validateAttack)
+  // ========================================
+  describe('validateAttack - profession check (T039)', () => {
+    const positions = { '2,2': mockAttackerId, '3,2': mockTargetId };
+
+    it('should reject when char profession does not match card profession', async () => {
+      mockCanUseProfession.mockReturnValue(false);
+      mockRedisClient.hGet
+        .mockResolvedValueOnce(JSON.stringify(mockAttacker))
+        .mockResolvedValueOnce(JSON.stringify(mockTarget));
+      mockQuery.mockResolvedValueOnce([{ ...mockCard, profession: 'mage' }]);
+
+      const result = await validateAttack(
+        mockBattleId, mockAttackerId, mockCardId, mockTargetId, 1
+      );
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('warrior');
+      expect(result.error).toContain('mage');
+    });
+
+    it('should accept when profession matches', async () => {
+      mockCanUseProfession.mockReturnValue(true);
+      mockRedisClient.hGet
+        .mockResolvedValueOnce(JSON.stringify(mockAttacker))
+        .mockResolvedValueOnce(JSON.stringify(mockTarget));
+      mockQuery.mockResolvedValueOnce([{ ...mockCard, profession: 'warrior' }]);
+      mockRedisClient.hGetAll
+        .mockResolvedValueOnce(positions)
+        .mockResolvedValueOnce(positions);
+
+      const result = await validateAttack(
+        mockBattleId, mockAttackerId, mockCardId, mockTargetId, 1
+      );
+      expect(result.valid).toBe(true);
+    });
+
+    it('should accept common card for any profession', async () => {
+      mockCanUseProfession.mockReturnValue(true);  // common card matches
+      mockRedisClient.hGet
+        .mockResolvedValueOnce(JSON.stringify(mockAttacker))
+        .mockResolvedValueOnce(JSON.stringify(mockTarget));
+      mockQuery.mockResolvedValueOnce([{ ...mockCard, profession: 'common' }]);
+      mockRedisClient.hGetAll
+        .mockResolvedValueOnce(positions)
+        .mockResolvedValueOnce(positions);
+
+      const result = await validateAttack(
+        mockBattleId, mockAttackerId, mockCardId, mockTargetId, 1
+      );
+      expect(result.valid).toBe(true);
+    });
+  });
+
+  // ========================================
+  // T039: 嘲讽读取 (validateAttack)
+  // ========================================
+  describe('validateAttack - taunt redirect (T039)', () => {
+    it('should reject when target is taunted by another warrior', async () => {
+      mockGetTauntRedirect.mockResolvedValue({
+        mustRedirectTo: 'warrior-x',
+        sourceId: 'warrior-x',
+      });
+      mockRedisClient.hGet
+        .mockResolvedValueOnce(JSON.stringify(mockAttacker))
+        .mockResolvedValueOnce(JSON.stringify(mockTarget));
+      mockQuery.mockResolvedValueOnce([mockCard]);
+
+      const result = await validateAttack(
+        mockBattleId, mockAttackerId, mockCardId, mockTargetId, 1
+      );
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('taunted');
+      expect(result.forcedTarget).toBe('warrior-x');
+    });
+
+    it('should not redirect when no taunt present', async () => {
+      mockGetTauntRedirect.mockResolvedValue({ mustRedirectTo: null, sourceId: null });
+      const positions = { '2,2': mockAttackerId, '3,2': mockTargetId };
+      mockRedisClient.hGet
+        .mockResolvedValueOnce(JSON.stringify(mockAttacker))
+        .mockResolvedValueOnce(JSON.stringify(mockTarget));
+      mockQuery.mockResolvedValueOnce([mockCard]);
+      mockRedisClient.hGetAll
+        .mockResolvedValueOnce(positions)
+        .mockResolvedValueOnce(positions);
+
+      const result = await validateAttack(
+        mockBattleId, mockAttackerId, mockCardId, mockTargetId, 1
+      );
+      expect(result.valid).toBe(true);
+      expect(result.forcedTarget).toBeUndefined();
+    });
+  });
+
+  // ========================================
+  // T039: warrior 攻击累计护盾触发 (validateAttack)
+  // ========================================
+  describe('validateAttack - warrior attack shield trigger (T039)', () => {
+    it('should call onWarriorAttackCardPlayed when warrior plays attack card', async () => {
+      mockOnWarriorAttackCardPlayed.mockResolvedValue({
+        attackCounter: 1,
+        shieldGained: 0,
+        totalShield: 0,
+      });
+      const positions = { '2,2': mockAttackerId, '3,2': mockTargetId };
+      mockRedisClient.hGet
+        .mockResolvedValueOnce(JSON.stringify(mockAttacker))
+        .mockResolvedValueOnce(JSON.stringify(mockTarget));
+      mockQuery.mockResolvedValueOnce([{ ...mockCard, type: 'attack' }]);
+      mockRedisClient.hGetAll
+        .mockResolvedValueOnce(positions)
+        .mockResolvedValueOnce(positions);
+
+      await validateAttack(mockBattleId, mockAttackerId, mockCardId, mockTargetId, 1);
+      expect(mockOnWarriorAttackCardPlayed).toHaveBeenCalledWith(
+        mockBattleId, mockAttackerId, mockCard.cost, 1
+      );
+    });
+
+    it('should include shieldGained in result when triggered', async () => {
+      mockOnWarriorAttackCardPlayed.mockResolvedValue({
+        attackCounter: 0,
+        shieldGained: 5,
+        totalShield: 5,
+      });
+      const positions = { '2,2': mockAttackerId, '3,2': mockTargetId };
+      mockRedisClient.hGet
+        .mockResolvedValueOnce(JSON.stringify(mockAttacker))
+        .mockResolvedValueOnce(JSON.stringify(mockTarget));
+      mockQuery.mockResolvedValueOnce([{ ...mockCard, type: 'attack' }]);
+      mockRedisClient.hGetAll
+        .mockResolvedValueOnce(positions)
+        .mockResolvedValueOnce(positions);
+
+      const result = await validateAttack(mockBattleId, mockAttackerId, mockCardId, mockTargetId, 1);
+      expect(result.shieldGained).toBe(5);
+    });
+  });
+
+  // ========================================
+  // T039: validateAOEAttack 职业校验
+  // ========================================
+  describe('validateAOEAttack - profession check (T039)', () => {
+    it('should reject when profession does not match', async () => {
+      mockCanUseProfession.mockReturnValue(false);
+      mockRedisClient.hGet.mockResolvedValueOnce(JSON.stringify(mockAttacker));
+      mockQuery.mockResolvedValueOnce([mockCard]);
+
+      const result = await validateAOEAttack(mockBattleId, mockAttackerId, mockCardId);
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('warrior');
+    });
+
+    it('should accept when profession matches', async () => {
+      mockCanUseProfession.mockReturnValue(true);
+      const aoeCard = { ...mockCard, effect: { damage: 3, aoe: true, range: 2 }, type: 'attack' };
+      const attackerAt44 = { ...mockAttacker, position_x: 4, position_y: 4 };
+      const positions = {
+        '4,4': mockAttackerId,
+        '5,4': 'enemy-1',
+      };
+      mockRedisClient.hGet.mockResolvedValueOnce(JSON.stringify(attackerAt44));
+      mockQuery.mockResolvedValueOnce([aoeCard]);
+      mockRedisClient.hGetAll
+        .mockResolvedValueOnce(positions)
+        .mockResolvedValueOnce(positions);
+      mockRedisClient.hGet
+        .mockResolvedValueOnce(JSON.stringify(attackerAt44))
+        .mockResolvedValueOnce(JSON.stringify({
+          character_id: 'enemy-1',
+          player_id: 'player-2',
+          profession: 'mage',
+          name: 'Enemy',
+          health: 12, max_health: 12,
+          movement: 2, energy: 3, max_energy: 3,
+          position_x: 5, position_y: 4, is_alive: true,
+        }));
+
+      const result = await validateAOEAttack(mockBattleId, mockAttackerId, mockCardId);
+      expect(result.valid).toBe(true);
+    });
+  });
+
+  // ========================================
+  // T039: validateTauntCard
+  // ========================================
+  describe('validateTauntCard (T039)', () => {
+    const positions = { '2,2': mockAttackerId, '3,2': mockTargetId };
+
+    it('should fail when warrior not found', async () => {
+      mockRedisClient.hGet.mockResolvedValueOnce(null);
+      mockQuery.mockResolvedValueOnce([]);
+
+      const result = await validateTauntCard(mockBattleId, 'nonexistent', 'card-1', mockTargetId, 1);
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('not found');
+    });
+
+    it('should fail when card is not a taunt card', async () => {
+      mockRedisClient.hGet.mockResolvedValueOnce(JSON.stringify(mockAttacker));
+      mockQuery.mockResolvedValueOnce([{ ...mockCard, effect: { damage: 2 }, profession: 'common' }]);
+
+      const result = await validateTauntCard(mockBattleId, mockAttackerId, mockCardId, mockTargetId, 1);
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('not a taunt card');
+    });
+
+    it('should fail when target is friendly', async () => {
+      mockRedisClient.hGet.mockResolvedValueOnce(JSON.stringify(mockAttacker));
+      mockQuery.mockResolvedValueOnce([{ ...mockCard, effect: { type: 'taunt', range: 3 }, profession: 'warrior' }]);
+      // 第二步：能量足够，第三步：目标存在但 friendly
+      mockRedisClient.hGet.mockResolvedValueOnce(JSON.stringify({ ...mockTarget, player_id: 'player-1' }));
+
+      const result = await validateTauntCard(mockBattleId, mockAttackerId, mockCardId, mockTargetId, 1);
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('friendly');
+    });
+
+    it('should succeed and call applyWarriorTaunt on valid input', async () => {
+      mockApplyWarriorTaunt.mockResolvedValue({ success: true });
+      // hGet #1: warrior piece
+      // query #1: card
+      // hGet #2: target piece
+      // hGetAll #1: positions (for getCharacterPosition warrior)
+      // hGetAll #2: positions (for getCharacterPosition target)
+      mockRedisClient.hGet
+        .mockResolvedValueOnce(JSON.stringify(mockAttacker))
+        .mockResolvedValueOnce(JSON.stringify(mockTarget));
+      mockQuery.mockResolvedValueOnce([{
+        ...mockCard,
+        effect: { type: 'taunt', range: 3, duration: 1 },
+        profession: 'warrior',
+      }]);
+      mockRedisClient.hGetAll
+        .mockResolvedValueOnce(positions)
+        .mockResolvedValueOnce(positions);
+
+      const result = await validateTauntCard(mockBattleId, mockAttackerId, mockCardId, mockTargetId, 1);
+      expect(result.valid).toBe(true);
+      expect(mockApplyWarriorTaunt).toHaveBeenCalled();
+    });
+
+    it('should fail when applyWarriorTaunt fails (e.g. out of range)', async () => {
+      mockApplyWarriorTaunt.mockResolvedValue({ success: false, error: 'Taunt target out of range' });
+      mockRedisClient.hGet
+        .mockResolvedValueOnce(JSON.stringify(mockAttacker))
+        .mockResolvedValueOnce(JSON.stringify(mockTarget));
+      mockQuery.mockResolvedValueOnce([{
+        ...mockCard,
+        effect: { type: 'taunt', range: 3 },
+        profession: 'warrior',
+      }]);
+      mockRedisClient.hGetAll
+        .mockResolvedValueOnce(positions)
+        .mockResolvedValueOnce(positions);
+
+      const result = await validateTauntCard(mockBattleId, mockAttackerId, mockCardId, mockTargetId, 1);
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('out of range');
     });
   });
 });

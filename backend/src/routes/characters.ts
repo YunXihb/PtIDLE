@@ -177,7 +177,7 @@ router.put('/:id/deck', authMiddleware, async (req: AuthRequest, res) => {
         res.status(404).json({ error: result.error });
         return;
       }
-      if (result.error?.includes('already assigned') || result.error?.includes('full') || result.error?.includes('not found in')) {
+      if (result.error?.includes('already assigned') || result.error?.includes('full') || result.error?.includes('not found in') || result.error?.includes('profession')) {
         res.status(400).json({ error: result.error });
         return;
       }

@@ -221,3 +221,34 @@
 5. **"retainHandOnStepEnd 隔离 battleId" 测试**：原 plan 是检查"其他战斗 retained / discard / hand 都没被污染"，但当传入的 `hand` 只有 1 张且 retainDeckId 命中时，`discarded=[]` → `addToDiscardPile` 早退不发 rPush，所以**本战斗的 discardStore 也是 undefined**——这本身就是预期行为，不破坏隔离测试的语义，但需要注意：单 hand 用例验证不出"discard 写入"的隔离，只能验证 retained/hand 隔离
 6. **TypeScript 编译**：`npx tsc --noEmit` 全过，exit 0，**无 type 错误**——`redisClient.rPush(key, string[])` 在 v4 typing 中合法（`RedisCommandArgument | RedisCommandArgument[]`）
 
+---
+
+## 2026-06-10 - 任务：战士职业逻辑（T039）
+
+### Prompt
+实施 T039 战士职业逻辑。范围 5 项：(1) 职业卡牌权限校验（deck + 战斗内）；(2) 攻击累计护盾；(3) 嘲讽（挑战卡，tactical 1 费 warrior 专属，3 格 1 round）；(4) 角色状态栏数据层（后端 status 聚合 API）；(5) 抽 statusEffectService 通用框架。先经 4 轮 AskUserQuestion 锁定范围（profession 限制归 T039，T055 缩窄；存储 Redis-only；不写 WS 不写前端 UI）。
+
+### 思考
+- **3 个新 service 文件**：`statusEffectService`（apply/remove/tick/get/clear，Redis LIST）+ `professionMechanicService`（权限 5 API + warrior 机制 1/2）+ `characterStatusService`（聚合 API）
+- **2 个新迁移**：`005_seed_taunt_card.sql` 插入「挑战」（template_no=8）
+- **battleService 注入**：`getPlayerCard` JOIN card_templates 拿 profession+type；`validateAttack` 5 步加 profession + 10 步加 taunt + 13 步加 warrior attack trigger；`validateAOEAttack` 5 步加 profession（不读 taunt）；新增 `validateTauntCard`
+- **characterService 注入**：`assignCardToCharacter` 6 步加 profession 校验
+- **routes/characters.ts**：错误映射加 profession substring 分支
+- **T039/T055 边界**：profession + taunt 全部归 T039，T055 缩窄为手牌归属、状态效果检查、错误信息标准化
+- **同源覆盖语义**：warrior 多次嘲讽同一 target → 后写者赢（removeTauntFromSource 删除同 source 旧 taunt，再写新）
+- **warrior 机制 1 滑动窗口**选「每 2 张触发，counter 归 0」而非滑动窗口：实现简单，节奏感强
+- **护盾 2 round / 嘲讽 1 round**：「1 回合」= 1 个 battle round
+- **taunt.target_id = warrior_id**（强制攻击者改打 warrior），`getTauntRedirect` 读 target 的 active effects 找 taunt
+
+### 意外
+1. **mockResolveOnce 队列泄漏**：`professionMechanicService.test.ts` 第一个 beforeEach 用了 `jest.clearAllMocks()`，但它**不清空** `mockResolvedValueOnce` 队列，导致"should return null when no active taunt"测试错拿上一个测试的 taunt 数据。修复：改用 `mockReset()` 显式重置每个 mock fn，再重设默认值。这是从 T037/T038 沿袭下来的坑
+2. **removeTauntFromSource 用 getActiveEffects 错**：`getActiveEffects` 会按 `expire_round > currentRound` 过滤，但「同源覆盖」需要读所有 taunt（含过期的）。改用直接 `redisClient.lRange` 读 raw 列表，跳过过期过滤。bug 报告通过测试暴露，1 行修复
+3. **characterService.test.ts jest.mock 顺序问题**：原本 `const mockValidateCardForDeckAssignment = jest.fn(); jest.mock(..., () => ({ validateCardForDeckAssignment: mockValidateCardForDeckAssignment, ... }))`，因 jest hoisting 而报 "Cannot access before initialization"。修复：去掉对 `mockValidateCardForDeckAssignment` 的直接引用，改 `import * as professionMechanicService` + `jest.mock({...jest.fn()...})` + `professionMechanicService.validateCardForDeckAssignment as jest.MockedFunction<...>`
+4. **getPlayerCard 改了返回类型，battleService.test.ts 旧 mockCard 不兼容**：`{ id, player_id, cost, effect }` 缺 `type` 和 `profession`，profession check 立刻 fail。修复：在 `mockCard` 顶部加 `type: 'attack', profession: 'common'`，AOE 测试也同步加。AOE 攻击的 profession 校验同单体，所以 mock 默认值就够
+5. **warrior attack trigger 在 validateAttack 末尾**：现有"should accept valid melee attack"测试 attacker=warrior + card.type=attack，会触发 onWarriorAttackCardPlayed → 调 statusEffectService → 调真实 redis 不可行。修复：在 battleService.test.ts 顶部加 `jest.mock('./professionMechanicService', ...)` 全部 mock 掉，保持测试隔离。返回类型加 `shieldGained?` 和 `forcedTarget?` 可选字段，向后兼容
+6. **dynamic import 残留**：初版用 `await import('./statusEffectService')` 想偷懒，结果 CI 跑通但代码有动态 import 异味。最后改成静态 `import { sumActiveShield, removeEffect }` 顶部声明——所有依赖一次解决
+7. **characterStatusService 误导入未导出的 `getBattlePiecesKey`**：直接从 battleService 调内部 helper，但它是 private。修复：inline 写 `battle:${battleId}:pieces` key 字符串，0 依赖
+8. **TypeScript narrowing 在 .find() 谓词中丢失**：`taunt.target_id` 在谓词 `e.type === 'taunt' && e.target_id` 中是 truthy 检查，但 TS 没把窄化保留到 if 块内。修复：把 truthy 检查也写进 if 条件 `if (taunt && taunt.target_id && taunt.target_id !== attackerId)`
+9. **测试统计偏差**：plan 估算「约 100+ tests」，实际 statusEffect(17) + professionMechanic(32) + characterStatus(7) + characterService assignCard(7) + battleService validateAttack profession/taunt/warrior trigger/AOE/taunt(13) + 集成测试(5) = **81 tests**。新加测试都比 plan 估算略多，覆盖更密
+10. **完整 service + routes 测试**：`npx jest src/services/ src/routes/` 共 17 + 6 = 23 suites，**289 + 59 = 348 tests 全过**；`npx tsc --noEmit` 0 错误
+

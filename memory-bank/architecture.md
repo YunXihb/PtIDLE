@@ -576,6 +576,7 @@ backend/
 | 火球术 | attack | 2 | damage: 3, aoe: true | mage | 5 | 5 |
 | 防御 | defense | 1 | shield: 3 | common | 6 | 5 |
 | 治疗 | tactical | 1 | heal: 3 | common | 7 | 5 |
+| 挑战 | tactical | 1 | type: taunt, range: 3, duration: 1 | warrior | 8 | 5 |
 
 #### 卡牌自动排列
 
@@ -887,5 +888,158 @@ T035/T036 history 提到「集成测试 8 个失败」是 PostgreSQL 5433 / Redi
 
 ---
 
-*文档版本：v1.24*
+## T039 新增服务（T039）
+
+### 状态效果服务 (Status Effect Service)
+
+| 文件 | 说明 |
+|------|------|
+| `src/services/statusEffectService.ts` | 通用状态效果框架：apply/remove/tick/get/clear/loadAll |
+| `src/services/statusEffectService.test.ts` | 17 个单测，覆盖 apply/remove/tick/clear/shield 累加 |
+
+#### Redis Key 设计
+
+| Key | 类型 | 用途 | 生命周期 |
+|-----|------|------|----------|
+| `battle:{battleId}:effects:{characterId}` | LIST (JSON StatusEffect) | 状态效果（warrior shield/taunt, future stun/blind/silence） | session |
+
+#### 公共 API
+
+```ts
+applyEffect(battleId, characterId, effect) → StatusEffect
+removeEffect(battleId, characterId, effectId) → boolean
+removeEffectsByType(battleId, characterId, type) → number
+getActiveEffects(battleId, characterId, currentRound) → StatusEffect[]  // 过滤 expire_round > currentRound
+tickEffects(battleId, characterId, currentRound) → StatusEffect[]  // 清理过期
+clearEffects(battleId, characterId) → void
+sumActiveShield(battleId, characterId, currentRound) → number  // 累加所有 active shield.value
+```
+
+#### StatusEffect 类型
+
+```ts
+type StatusEffectType = 'shield' | 'taunt' | 'stun' | 'blind' | 'silence' | 'burn' | 'regen';
+interface StatusEffect {
+  type: StatusEffectType;
+  value?: number;
+  duration_rounds: number;
+  source_id?: string;
+  target_id?: string;
+  expire_round: number;
+  created_round: number;
+  effect_id: string;  // UUID
+}
+```
+
+### 职业机制服务 (Profession Mechanic Service)
+
+| 文件 | 说明 |
+|------|------|
+| `src/services/professionMechanicService.ts` | 5 个权限 API + warrior 机制 1（攻击累计护盾）+ warrior 机制 2（嘲讽） |
+| `src/services/professionMechanicService.test.ts` | 32 个单测 |
+
+#### 权限 API
+
+| 函数 | 用途 |
+|------|------|
+| `canUseProfession(charProf, cardProf)` | 纯函数：common → 任何职业；否则必须严格匹配 |
+| `getCardProfession(playerCardId)` | JOIN card_templates 读 profession |
+| `getCharacterProfession(characterId)` | 从 characters 表读 profession |
+| `validateCardForDeckAssignment(charId, cardId)` | 牌组分配路径的权限校验 |
+| `validateCardForCombat(charId, cardId)` | 战斗内出牌路径的权限校验（与 deck 等价，T040 拆分） |
+
+#### Warrior 机制
+
+| 函数 | 说明 |
+|------|------|
+| `onWarriorAttackCardPlayed(battleId, warriorId, cardCost, currentRound)` | 累加 counter + cost buffer；counter≥2 时触发 shield effect (duration 2) 并重置 |
+| `applyWarriorTaunt(battleId, warriorId, targetId, range, currentRound, getPos, getPiece)` | range + alive + enemy 校验；写入 taunt effect (duration 1) |
+| `getTauntRedirect(battleId, attackerId, intendedTargetId, currentRound)` | 从 target 的 effects 找 active taunt；返回 `mustRedirectTo` + `sourceId` |
+
+#### Warrior 私有 Redis Key
+
+| Key | 类型 | 用途 | 生命周期 |
+|-----|------|------|----------|
+| `battle:{battleId}:warrior_status:{warriorId}` | STRING (JSON) | warrior 私有计数器 `{attack_counter, attack_cost_buffer}` | session |
+
+### 角色状态栏服务 (Character Status Service)
+
+| 文件 | 说明 |
+|------|------|
+| `src/services/characterStatusService.ts` | 聚合 API：基础属性 + active effects + totalShield + isTaunted + taunting 列表 |
+| `src/services/characterStatusService.test.ts` | 7 个单测 |
+
+#### 单一入口
+
+```ts
+getCharacterStatus(battleId, characterId, currentRound) → CharacterStatus | null
+```
+
+#### CharacterStatus 字段
+
+| 字段 | 来源 |
+|------|------|
+| characterId, name, profession, health, maxHealth, energy, maxEnergy, isAlive | `battle:{id}:pieces` (Redis) → 兜底 characters 表 |
+| position | `battle:{id}:positions` 扫一遍 |
+| effects | `statusEffectService.getActiveEffects()` |
+| totalShield | 派生：sum of shield.value |
+| isTaunted | 派生：has any active taunt |
+| taunting | 派生：扫全场 effects 中 source_id === this_character_id 的 target 列表 |
+
+#### 调用方
+
+- T047 WS 路由在 round 推进、出牌后推送 CharacterStatus
+- 当前无 WS 路由（T047 实施）
+
+### T039 battleService 注入
+
+| 改动点 | 文件:行 | 说明 |
+|--------|---------|------|
+| `getPlayerCard` JOIN | `battleService.ts:593-625` | 新增 `LEFT JOIN card_templates` 拿 `profession` + `type` |
+| `validateAttack` profession 校验 | `battleService.ts:5 步` | canUseProfession 拦截；不匹配返回 `Character profession 'X' cannot use card profession 'Y'` |
+| `validateAttack` 嘲讽读取 | `battleService.ts:10 步` | getTauntRedirect 命中时返回 `{valid:false, forcedTarget, error}` |
+| `validateAttack` warrior 触发 | `battleService.ts:13 步` | warrior + attack card 调 onWarriorAttackCardPlayed；返回 `shieldGained` |
+| `validateAOEAttack` profession 校验 | `battleService.ts:5 步` | 同上（AOE 不读 taunt） |
+| `validateTauntCard` | `battleService.ts:855+` | 新函数：warrior 专属 + card effect.type='taunt' + range/alive/enemy 校验 + applyWarriorTaunt |
+
+### T039 characterService 注入
+
+| 改动点 | 文件:行 | 说明 |
+|--------|---------|------|
+| `assignCardToCharacter` profession 校验 | `characterService.ts:6 步` | 在 5 步（deck 已满）之后，调 validateCardForDeckAssignment |
+
+### T039 路由层改动
+
+| 改动点 | 文件:行 | 说明 |
+|--------|---------|------|
+| profession 错误映射 | `routes/characters.ts:180` | `error.includes('profession')` → 400 |
+| 集成测试 | `routes/characters.deck.integration.test.ts` | 5 个用例（成功/profession 错/角色不存在/卡牌不存在/未授权） |
+
+### T039/T055 边界说明
+
+| T055 原计划项 | 当前 T039 已实现 | T055 实施时是否重复 |
+|-------------|----------------|-------------------|
+| 卡牌职业限制 | ✅ `professionMechanicService.validateCardForDeckAssignment/Combat` + `battleService.ts` 5 步 | **跳过**（T039 范围） |
+| 嘲讽读取/重定向 | ✅ `professionMechanicService.getTauntRedirect` + `battleService.ts:10 步` | 跳过 |
+| 攻击累计护盾触发 | ✅ `professionMechanicService.onWarriorAttackCardPlayed` + `battleService.ts:13 步` | 跳过 |
+
+T055 范围缩小为：手牌归属、沉默/眩晕/致盲等状态效果检查、其他错误信息标准化。
+
+### T039 卡牌：挑战（taunt）
+
+| 字段 | 值 |
+|------|-----|
+| template_no | 8 |
+| name | 挑战 |
+| type | tactical |
+| cost | 1 |
+| effect | `{type:"taunt", range:3, duration:1, target:"single_enemy"}` |
+| profession | warrior |
+| max_quantity | 5 |
+
+迁移：`src/migrations/005_seed_taunt_card.sql`
+
+---
+
+*文档版本：v1.25*
 *最后更新：2026-06-10*

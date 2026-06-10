@@ -2,6 +2,7 @@ import { query, execute } from '../config/database';
 import { v4 as uuidv4 } from 'uuid';
 import { getPlayerIdByUserId } from './playerService';
 import { getProfessionByName, Profession } from './professionService';
+import { validateCardForDeckAssignment } from './professionMechanicService';
 
 export interface Character {
   id: string;
@@ -245,7 +246,13 @@ export async function assignCardToCharacter(
       return { success: false, error: `Character deck is full (max ${CHARACTER_DECK_MAX_SIZE} cards)` };
     }
 
-    // 6. 分配卡牌到棋子牌库
+    // 6. T039 职业-卡牌匹配校验
+    const professionCheck = await validateCardForDeckAssignment(characterId, cardId);
+    if (!professionCheck.valid) {
+      return { success: false, error: professionCheck.error };
+    }
+
+    // 7. 分配卡牌到棋子牌库
     const deckId = uuidv4();
     await execute(
       `INSERT INTO character_deck (id, character_id, player_card_id, created_at)

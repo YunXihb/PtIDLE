@@ -1,5 +1,11 @@
 import { redisClient } from '../config/redis';
 import { query } from '../config/database';
+import {
+  canUseProfession,
+  getTauntRedirect,
+  onWarriorAttackCardPlayed,
+  applyWarriorTaunt,
+} from './professionMechanicService';
 
 // ========================================
 // 战棋常量
@@ -529,6 +535,8 @@ export interface AttackValidationResult {
   damage?: number;
   targets?: string[];
   energyCost?: number;
+  forcedTarget?: string;       // T039 嘲讽重定向
+  shieldGained?: number;       // T039 warrior 攻击累计触发
 }
 
 /**
@@ -588,19 +596,31 @@ async function getCharacterPiece(
 }
 
 /**
- * 获取玩家卡牌信息（包含效果）
+ * 获取玩家卡牌信息（包含效果、类型、职业）
+ * T039：LEFT JOIN card_templates 拿 profession 和 type
  */
 async function getPlayerCard(
   playerCardId: string
-): Promise<{ id: string; player_id: string; cost: number; effect: CardEffect } | null> {
+): Promise<{
+  id: string;
+  player_id: string;
+  cost: number;
+  effect: CardEffect;
+  type: string | null;
+  profession: string | null;
+} | null> {
   const result = await query<{
     id: string;
     player_id: string;
     cost: number;
     effect: Record<string, unknown>;
+    type: string | null;
+    profession: string | null;
   }>(
-    `SELECT pc.id, pc.player_id, pc.cost, pc.effect
-     FROM player_cards pc WHERE pc.id = $1`,
+    `SELECT pc.id, pc.player_id, pc.cost, pc.effect, pc.type, ct.profession
+     FROM player_cards pc
+     LEFT JOIN card_templates ct ON pc.card_template_id = ct.id
+     WHERE pc.id = $1`,
     [playerCardId]
   );
 
@@ -614,6 +634,8 @@ async function getPlayerCard(
     player_id: row.player_id,
     cost: row.cost,
     effect: row.effect as CardEffect,
+    type: row.type,
+    profession: row.profession,
   };
 }
 
@@ -674,13 +696,15 @@ async function getTargetsInRange(
  * @param attackerId 攻击者棋子 ID
  * @param cardId 玩家卡牌 ID (player_card_id)
  * @param targetId 目标棋子 ID
+ * @param currentRound 当前 battle round（T039 注入）
  * @returns 验证结果
  */
 export async function validateAttack(
   battleId: string,
   attackerId: string,
   cardId: string,
-  targetId: string
+  targetId: string,
+  currentRound: number = 0
 ): Promise<AttackValidationResult> {
   // 1. 获取攻击者棋子信息
   const attacker = await getCharacterPiece(battleId, attackerId);
@@ -704,7 +728,15 @@ export async function validateAttack(
     return { valid: false, error: 'Card does not belong to attacker' };
   }
 
-  // 5. 能量检查
+  // 5. T039 职业-卡牌匹配校验
+  if (!canUseProfession(attacker.profession, card.profession)) {
+    return {
+      valid: false,
+      error: `Character profession '${attacker.profession}' cannot use card profession '${card.profession}'`,
+    };
+  }
+
+  // 6. 能量检查
   const energyCost = card.cost;
   if (attacker.energy < energyCost) {
     return {
@@ -714,23 +746,33 @@ export async function validateAttack(
     };
   }
 
-  // 6. 获取目标棋子信息
+  // 7. 获取目标棋子信息
   const target = await getCharacterPiece(battleId, targetId);
   if (!target) {
     return { valid: false, error: 'Target not found' };
   }
 
-  // 7. 检查目标是否存活
+  // 8. 检查目标是否存活
   if (!target.is_alive) {
     return { valid: false, error: 'Target is not alive' };
   }
 
-  // 8. 阵营验证（不能攻击己方单位）
+  // 9. 阵营验证（不能攻击己方单位）
   if (target.player_id === attacker.player_id) {
     return { valid: false, error: 'Cannot attack friendly target' };
   }
 
-  // 9. 射程验证
+  // 10. T039 嘲讽读取：若 target 被嘲讽，必须攻击 source warrior
+  const tauntRedirect = await getTauntRedirect(battleId, attackerId, targetId, currentRound);
+  if (tauntRedirect.mustRedirectTo && tauntRedirect.mustRedirectTo !== targetId) {
+    return {
+      valid: false,
+      error: `Target '${targetId}' is taunted by '${tauntRedirect.sourceId}', must attack that warrior instead`,
+      forcedTarget: tauntRedirect.mustRedirectTo,
+    };
+  }
+
+  // 11. 射程验证
   const attackerPos = await getCharacterPosition(battleId, attackerId);
   const targetPos = await getCharacterPosition(battleId, targetId);
 
@@ -757,14 +799,24 @@ export async function validateAttack(
     }
   }
 
-  // 10. 计算伤害
+  // 12. 计算伤害
   const damage = calculateDamage(cardEffect, attacker.profession);
+
+  // 13. T039 warrior 机制 1：攻击累计护盾触发
+  let shieldGained: number | undefined;
+  if (attacker.profession === 'warrior' && card.type === 'attack') {
+    const result = await onWarriorAttackCardPlayed(battleId, attackerId, card.cost, currentRound);
+    if (result.shieldGained > 0) {
+      shieldGained = result.shieldGained;
+    }
+  }
 
   return {
     valid: true,
     damage,
     targets: [targetId],
     energyCost,
+    shieldGained,
   };
 }
 
@@ -802,7 +854,15 @@ export async function validateAOEAttack(
     return { valid: false, error: 'Card does not belong to attacker' };
   }
 
-  // 5. 能量检查
+  // 5. T039 职业-卡牌匹配校验
+  if (!canUseProfession(attacker.profession, card.profession)) {
+    return {
+      valid: false,
+      error: `Character profession '${attacker.profession}' cannot use card profession '${card.profession}'`,
+    };
+  }
+
+  // 6. 能量检查
   const energyCost = card.cost;
   if (attacker.energy < energyCost) {
     return {
@@ -812,34 +872,148 @@ export async function validateAOEAttack(
     };
   }
 
-  // 6. 检查是否为 AOE 卡牌
+  // 7. 检查是否为 AOE 卡牌
   if (!card.effect.aoe) {
     return { valid: false, error: 'Card is not an AOE attack' };
   }
 
-  // 7. 获取射程
+  // 8. 获取射程
   const range = card.effect.range ?? 2; // AOE 默认射程 2
 
-  // 8. 获取攻击者位置
+  // 9. 获取攻击者位置
   const attackerPos = await getCharacterPosition(battleId, attackerId);
   if (!attackerPos) {
     return { valid: false, error: 'Attacker position not found' };
   }
 
-  // 9. 获取范围内所有敌方目标
+  // 10. 获取范围内所有敌方目标
   const targets = await getTargetsInRange(battleId, attackerPos, range, attacker.player_id);
 
   if (targets.length === 0) {
     return { valid: false, error: 'No targets in range' };
   }
 
-  // 10. 计算伤害
+  // 11. 计算伤害
   const damage = calculateDamage(card.effect, attacker.profession);
 
   return {
     valid: true,
     damage,
     targets,
+    energyCost,
+  };
+}
+
+// ========================================
+// T039 Warrior 机制 2：嘲讽（挑战卡）
+// ========================================
+
+/**
+ * 验证并应用「挑战」卡
+ * - warrior 存在 + alive + profession === 'warrior'
+ * - cardId 存在 + effect.type === 'taunt'
+ * - 能量足够
+ * - target 存在 + alive + 是 enemy
+ * - target 在 warrior range 内
+ * - 写入 taunt effect
+ */
+export async function validateTauntCard(
+  battleId: string,
+  warriorId: string,
+  cardId: string,
+  targetId: string,
+  currentRound: number
+): Promise<AttackValidationResult> {
+  // 1. warrior 存在
+  const warrior = await getCharacterPiece(battleId, warriorId);
+  if (!warrior) {
+    return { valid: false, error: 'Warrior not found' };
+  }
+  if (!warrior.is_alive) {
+    return { valid: false, error: 'Warrior is not alive' };
+  }
+  if (warrior.profession !== 'warrior') {
+    return { valid: false, error: 'Taunt card can only be used by warrior' };
+  }
+
+  // 2. card 存在 + 类型校验
+  const card = await getPlayerCard(cardId);
+  if (!card) {
+    return { valid: false, error: 'Card not found' };
+  }
+  if (card.player_id !== warrior.player_id) {
+    return { valid: false, error: 'Card does not belong to warrior' };
+  }
+  // 卡 effect.type 必须是 'taunt'
+  const cardEffectType = (card.effect as { type?: string }).type;
+  if (cardEffectType !== 'taunt') {
+    return { valid: false, error: 'Card is not a taunt card' };
+  }
+  // 职业匹配
+  if (!canUseProfession(warrior.profession, card.profession)) {
+    return {
+      valid: false,
+      error: `Character profession '${warrior.profession}' cannot use card profession '${card.profession}'`,
+    };
+  }
+
+  // 3. 能量检查
+  const energyCost = card.cost;
+  if (warrior.energy < energyCost) {
+    return {
+      valid: false,
+      error: `Not enough energy (need ${energyCost}, have ${warrior.energy})`,
+      energyCost,
+    };
+  }
+
+  // 4. 目标存在 + 存活 + 是 enemy
+  const target = await getCharacterPiece(battleId, targetId);
+  if (!target) {
+    return { valid: false, error: 'Target not found' };
+  }
+  if (!target.is_alive) {
+    return { valid: false, error: 'Target is not alive' };
+  }
+  if (target.player_id === warrior.player_id) {
+    return { valid: false, error: 'Cannot taunt friendly target' };
+  }
+
+  // 5. range 检查 + 写入 effect
+  const range = (card.effect as { range?: number }).range ?? 3;
+  const tauntResult = await applyWarriorTaunt(
+    battleId,
+    warriorId,
+    targetId,
+    range,
+    currentRound,
+    async (b, c) => {
+      const pos = await getCharacterPosition(b, c);
+      return pos;
+    },
+    async (b, c) => {
+      const p = await getCharacterPiece(b, c);
+      if (!p) return null;
+      return {
+        id: p.character_id,
+        profession: p.profession as 'warrior' | 'ranger' | 'mage',
+        is_alive: p.is_alive,
+        health: p.health,
+        max_health: p.max_health,
+        position_x: p.position_x,
+        position_y: p.position_y,
+        player_id: p.player_id,
+      };
+    }
+  );
+
+  if (!tauntResult.success) {
+    return { valid: false, error: tauntResult.error };
+  }
+
+  return {
+    valid: true,
+    targets: [targetId],
     energyCost,
   };
 }
