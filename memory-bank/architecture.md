@@ -758,6 +758,94 @@ backend/
 
 ---
 
+### 手牌服务 (Hand Service)
+
+完整覆盖 **T037（抽牌）+ T038（手牌保留 + 弃牌堆）** 的纯服务层。不依赖也不调用 `battleSessionService`——状态机阶段切换由上层 orchestrator（T051 WS 路由）按时序串联：`drawCards → completeDrawPhase → ... → retainHandOnStepEnd → endCurrentStep`。
+
+#### 文件
+
+| 文件 | 说明 |
+|------|------|
+| `src/services/handService.ts` | 手牌全生命周期：抽牌、读取、保留、弃牌、清理 |
+| `src/services/handService.test.ts` | 44 个单元测试（drawCards 15、getActorHand 4、clearActorHand 2、retainHandOnStepEnd 10、getDiscardPile 4、addToDiscardPile 3、clearDiscardPile 2、drawCards+retained 4） |
+
+#### Redis 键设计（session 生命周期内有效）
+
+| 键 | 类型 | 用途 |
+|----|------|------|
+| `battle:{battleId}:hand:{characterId}` | STRING (JSON HandCard[]) | 当前回合的手牌（每次抽牌覆盖写入） |
+| `battle:{battleId}:retained:{characterId}` | STRING (JSON 单张 HandCard) | 跨回合保留的 1 张牌（下次 `drawCards` 时读取并 DEL） |
+| `battle:{battleId}:discard:{characterId}` | LIST (JSON HandCard 元素) | 弃牌堆（RPUSH 追加保留时序） |
+
+#### HandCard 结构
+
+```ts
+interface HandCard {
+  deck_id: string;          // character_deck.id，手牌唯一标识
+  card_id: string;          // player_card.id
+  name: string;
+  type: 'attack' | 'defense' | 'tactical';
+  cost: number;
+  effect: Record<string, unknown>;
+  template_no: number;      // 卡牌种类编号（UI 排序）
+}
+```
+
+#### 公共 API
+
+| 函数 | 说明 |
+|------|------|
+| `drawCards(battleId, characterId, count=3)` | T037：消费上回合 retained → 查询 character_deck → Fisher-Yates 洗牌 → 抽 N 张 → 合并 retained 到手牌顶部 → 写 hand key。返回 `DrawCardsResult { success, cards, drawn_count, deck_size, retained_from_previous? }`（`drawn_count` 只算新抽的牌） |
+| `getActorHand(battleId, characterId)` | 读取当前手牌；不存在或损坏 JSON 返回 `[]` |
+| `clearActorHand(battleId, characterId)` | DEL hand key |
+| `retainHandOnStepEnd(battleId, characterId, retainDeckId)` | T038：三路径分支——`null` 全弃 / 命中保留 + 其余弃 / 未命中全弃 + error。空 hand no-op |
+| `addToDiscardPile(battleId, characterId, cards)` | RPUSH 多张牌进弃牌堆。空数组 early return（不发 Redis 命令） |
+| `getDiscardPile(battleId, characterId)` | LRANGE 0 -1，损坏 JSON 静默过滤 |
+| `clearDiscardPile(battleId, characterId)` | DEL discard key |
+
+#### 标准时序（一个单位的完整回合）
+
+```
+[N-1 回合 end_step] retainHandOnStepEnd(battleId, charId, 'd2')
+                  └─ retained key: {d2 的牌}
+                  └─ discard list: append 其余手牌
+                  └─ hand key: DEL
+
+[N 回合 draw 阶段] drawCards(battleId, charId, 3)
+                  └─ retained key 读到 + DEL → retainedCard = {d2}
+                  └─ 查 deck → 抽 3 张
+                  └─ hand = [{d2}, ...3 张新抽]
+                  └─ 返回 { drawn_count: 3, retained_from_previous: {d2} }
+
+[N 回合 play 阶段] 上层据 getActorHand 验证打出
+                  （T055 操作合法性校验）
+
+[N 回合 end_step] retainHandOnStepEnd(...) ← 同上循环
+```
+
+#### T037 + T038 范围说明
+
+- ✅ **在 T037/T038 范围内**：
+  - 抽牌（含洗牌、count 校验、空牌库、超量抽取）
+  - 手牌读 / 写 / 清
+  - 回合结束保留 1 张（含未命中安全降级）
+  - 弃牌堆 RPUSH / LRANGE / DEL
+  - retained 跨回合合并到下次手牌顶部
+- ❌ **不在 T037/T038 范围内**：
+  - 弃牌堆 → 牌库回收 / 洗回（未来扩展，specs 未要求）
+  - 手牌 → WebSocket 推送 / UI 序列化（T045-T047, T051）
+  - "卡牌是否在手牌中" 的打牌合法性校验（T055）
+  - 战斗结束时统一清理 hand / retained / discard key（T049 / T054）
+  - 重连恢复时手牌可见性策略（specs 待定）
+
+#### 测试 Mock 注意事项
+
+- 使用 redis v4 camelCase API：`lRange`、`rPush`（不是 v3 的 `lrange`/`rpush`）
+- in-memory 双 store：`stringStore`（hand + retained）和 `discardStore`（discard LIST）
+- `del` mock 必须同时清两个 store，因为 `clearActorHand` 与 `clearDiscardPile` 共享同一个 `del` 调用路径
+
+---
+
 ## 集成测试 Mock 模式
 
 集成测试运行在独立的 Jest 进程，模块单例（`redisClient`、`pool`）不会自动连接。
@@ -799,5 +887,5 @@ T035/T036 history 提到「集成测试 8 个失败」是 PostgreSQL 5433 / Redi
 
 ---
 
-*文档版本：v1.23*
+*文档版本：v1.24*
 *最后更新：2026-06-10*

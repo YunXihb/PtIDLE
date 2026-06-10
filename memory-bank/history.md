@@ -190,3 +190,34 @@
 2. 修复后控制台仍有 `console.error('Error starting gathering:', ...)` 输出——来自「should reject if already has active task」用例的预期错误路径，不是测试失败
 3. authController 单测有「Jest did not exit one second after the test run has completed」警告，是 `redisClient` 单例在进程退出时未 graceful close 的**已存在**问题，与本次修复无关
 4. 5v5 蛇形激活（chunk-based 算法 A-1/B-2/A-2/B-2/A-2/B-1）在 T036 仍标记为「future work」，但 `buildSnakeOrder` 当前 1-单位/步算法不直接支持 chunk 粒度——下一轮 T037 之前需评估是否扩展该函数
+
+---
+
+## 2026-06-10 - 任务：T037 抽牌 + T038 手牌保留机制
+
+### Prompt
+在已存在的 `handService.ts`（T037 基础抽牌）之上扩展，覆盖 T038 回合结束保留 1 张手牌 + 弃牌堆机制；不动 `battleSessionService`（状态机层留给 T051 orchestrator 串联）；只用 Redis 临时态；保留 21 个旧测试全过（向后兼容）。
+
+### 思考
+- **分层决策**：handService 只做"手牌全生命周期"的纯服务，不调用状态机 API。这样 T051 WS 路由层才能自由地按状态机时序串联 `drawCards → completeDrawPhase → ... → retainHandOnStepEnd → endCurrentStep`；如果直接耦合，未来时序变更（如插入二次抽牌）会强迫改 handService
+- **三 Redis 键设计**（命名延续 T036 风格）：
+  - `battle:{id}:hand:{cid}` STRING（每回合覆盖）
+  - `battle:{id}:retained:{cid}` STRING（最多 1 张，下次 draw 读+DEL）
+  - `battle:{id}:discard:{cid}` LIST（RPUSH 保时序，未来 T054 战斗结束统一 DEL）
+- **drawCards 向后兼容核心**：函数开头新增 `consumeRetainedCard` 调用，retained key 不存在时直接返回 null，后续流程完全不变。21 个旧测试不预填充 retained key → 零修改通过
+- **`drawn_count` 语义**：只算新抽的牌，不含合并的 retained。若未来需"手牌总张数"，应新增 `hand_size` 字段而非污染 `drawn_count`
+- **retainHandOnStepEnd 三路径**：
+  - `null` → 全弃，retained:null（玩家不保留）
+  - 命中 → 写 retained key + 其余 RPUSH 弃牌 + DEL hand
+  - 未命中 → 全弃 + error（**安全降级，牌不丢**，用户从 error 文案感知问题）
+- **空数组 RPUSH 早退**：`addToDiscardPile([])` 不发 Redis 命令，避免向 LIST 写 0 长度引发的边界（redis v4 接受但浪费一次网络往返）
+- **损坏 JSON 静默过滤**：`getDiscardPile` 与 `getActorHand` 一致——单条损坏不污染整批读取；`consumeRetainedCard` 损坏时不仅返回 null 还顺手 DEL 清掉
+
+### 意外
+1. **redis v4 camelCase API**：在原 mock 加 `lRange`/`rPush` 时差点写成 v3 的 `lrange`/`rpush`，因为 `idleQueueService` 那边的 mock 也是 v4 风格（`zAdd`/`zRem`），最终统一用 v4。`rPush(key, string[])` 和 `rPush(key, string)` 两种签名都支持，mock 写成兼容两种形态
+2. **`del` mock 必须同时清两个 store**：测试一开始只清 `handStore`，结果 `addToDiscardPile` 后 `clearActorHand` 触发 `del` 但 `discardStore` 没动——表面上没报错，但隔离测试时穿透了不同 `it` 之间的状态。修复为 `del` 一次清 `stringStore + discardStore` 同 key，因为它们在键命名空间上不会冲突（前缀不同）
+3. **stringStore 命名调整**：旧测试用 `handStore`，新测试需要同时操作 hand 与 retained 两个 STRING key。最终重命名为 `stringStore`（hand+retained 共用），并加一行 `handStore = stringStore` 别名让 21 个旧测试零修改通过
+4. **测试数错位**：plan 估算 24 旧 + 23 新 = 47，实际旧测试只有 21（drawCards 15 + getActorHand 4 + clearActorHand 2），最终 21 + 23 = **44 全过**。plan 的估算偏 high，不影响内容
+5. **"retainHandOnStepEnd 隔离 battleId" 测试**：原 plan 是检查"其他战斗 retained / discard / hand 都没被污染"，但当传入的 `hand` 只有 1 张且 retainDeckId 命中时，`discarded=[]` → `addToDiscardPile` 早退不发 rPush，所以**本战斗的 discardStore 也是 undefined**——这本身就是预期行为，不破坏隔离测试的语义，但需要注意：单 hand 用例验证不出"discard 写入"的隔离，只能验证 retained/hand 隔离
+6. **TypeScript 编译**：`npx tsc --noEmit` 全过，exit 0，**无 type 错误**——`redisClient.rPush(key, string[])` 在 v4 typing 中合法（`RedisCommandArgument | RedisCommandArgument[]`）
+
