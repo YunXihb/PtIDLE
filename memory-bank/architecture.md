@@ -1077,6 +1077,119 @@ getCharacterStatus(battleId, characterId, currentRound) → CharacterStatus | nu
 |------|------|
 | `damage_boost` | ranger 攻击累计增伤效果（value=0.5 表示 1.5×）|
 
+## T041 新增服务（T041）
+
+### Mage 机制 2：debuff/灼伤系统（fire mark + burn DoT）
+
+**位置**：`backend/src/services/professionMechanicService.ts`（mageMechanic 命名空间）+ `backend/src/services/battleService.ts`（validateAttack / validateAOEAttack 注入点）
+
+**数据流**：
+```
+mage 攻击命中 target
+  → attachFireMark
+  → RPUSH mark_fire effect (expire_round=99999)
+  → getActiveEffects 读取 mark 数量
+  → 若 mark ≥ 2：LREM 所有 mark_fire + applyEffect 1 个 burn (duration=2, value=1)
+  → 返回 MageMarkResult { marksAdded, burnTriggered, currentMarkCount, currentBurnCount }
+
+T051 orchestrator（ABABAB 行动完后）
+  → applyBurnDamage(battleId, targetId, currentRound)
+  → 返回 BurnDamageResult { totalDamage, burnCount, burnEffectIds }
+  → call site 自行扣血（target.health -= totalDamage）+ 决定是否清理 burn
+```
+
+**设计要点**：
+- mark_fire 无限持续（expire_round=99999），仅在 2 mark 触发 burn 时由 attachFireMark 显式 LREM 清除
+- 2 mark 触发 burn：清除所有 mark + 加 1 burn (value=1, duration=2 round)
+- target 已有 active burn 时新 mark 被忽略（强制语义）
+- AOE 攻击：每个 target 获得 1 个 fire mark（独立计算 burn 触发）
+- 公共池卡不附加 mark（`attachFireMark` 内 `source === 'public_pool'` 早退）
+- 灼伤伤害结算 call site 在 T051 orchestrator（T041 仅提供 `applyBurnDamage` 函数，不调用）
+
+#### 公共 API
+
+| 函数 | 用途 |
+|------|------|
+| `attachFireMark(battleId, targetId, currentRound, source)` | mage 攻击命中 target 后调用 → 附加 fire mark；2 mark 触发 burn 转换 |
+| `applyBurnDamage(battleId, targetId, currentRound)` | 灼伤伤害结算（T051 调用）；返回 damage + burn effect_ids，不修改 Redis |
+| `getMageMarkState(battleId, targetId, currentRound)` | 读取 target 的 mark + burn 状态（调试 / 状态栏聚合用），不修改 Redis |
+
+#### 常量定义
+
+| 常量 | 值 | 用途 |
+|------|-----|------|
+| `MAGE_MARK_NEVER_EXPIRE_ROUND` | 99999 | mark_fire 无限持续占位 |
+| `MAGE_BURN_DURATION_ROUNDS` | 2 | burn 持续 2 个完整 battle round |
+| `MAGE_BURN_DAMAGE_PER_TICK` | 1 | burn 单次 tick 伤害 |
+| `MAGE_MARK_BURN_THRESHOLD` | 2 | mark_fire 触发 burn 阈值 |
+
+#### Redis Keys
+
+- 复用 `battle:{battleId}:effects:{targetId}` LIST（与 warrior shield / ranger damage_boost 共用 key 命名空间）
+- mark_fire：每个 effect = 1 list entry（不限数量叠加，触发 burn 时统一 LREM）
+- burn：每个 effect = 1 list entry（duration=2 自然过期，expire_round = currentRound + 2）
+- **T041 不新增私有 Redis key**
+
+#### StatusEffectType 扩展
+
+| 类型 | 用途 |
+|------|------|
+| `mark_fire` | mage 攻击附加的火球术标记（叠 2 触发 burn）|
+| `burn` | mage 灼伤效果（value=1 表示 1 点/回合，duration=2 round）|
+
+#### T041 battleService 注入
+
+| 改动 | 位置 | 说明 |
+|------|------|------|
+| `AttackValidationResult` 扩展 | `battleService.ts:534-552` | 新增 `mageMarkApplied?` / `mageMarksApplied?` / `mageBurnTriggered?` |
+| `validateAttack` mage 触发 | `battleService.ts:15 步` | mage + attack card + 非 public_pool → 调 attachFireMark；返回 `mageMarkApplied` / `mageBurnTriggered` |
+| `validateAOEAttack` mage 触发 | `battleService.ts:14 步` | mage + AOE attack + 非 public_pool → 循环调 attachFireMark；返回 `mageMarksApplied`（被 burn 拦截的 target 不计）+ `mageBurnTriggered`（任一 target 触发即为 true） |
+
+#### T041 失败路径保护
+
+| 失败场景 | mage mark 行为 |
+|---------|---------------|
+| 能量不足 | **不**附加 mark（在所有校验通过后才附加）|
+| 射程不足 | **不**附加 mark |
+| 职业不匹配 | **不**附加 mark |
+| target 被嘲讽强制重定向 | **不**附加 mark |
+| target 不可达 / 友军 | **不**附加 mark |
+| AOE 无目标 | **不**附加 mark |
+| 公共池卡 | **不**附加 mark（`attachFireMark` 内 source 早退）|
+| target 已有 active burn | **不**附加 mark（`attachFireMark` 内 burn 早退）|
+
+#### T041/T041.5 边界
+
+- T041 仅实现 mage 机制 2（debuff/灼伤系统）
+- 不扩展 `characterStatusService`（用户选「仅机制 2」）
+- 不动 warrior 既有 API（T039）
+- 不动 ranger 既有 API（T040）
+- 不引入 mage 私有计数器（mark 在 target 上，不在 mage 上）
+- AOE 路径下 `currentRound=0` hardcode（T051 衔接时再补参数）
+- `applyBurnDamage` call site 在 T051 orchestrator（T041 不调用）
+- 不实现 mage 机制 1（T041.5 后续可做 AOE 增强 / 范围扩大 / cost reduction 等）
+
+#### T041 多职业互不干扰
+
+- 三个职业的私有状态 key 完全独立：`warrior_status` / `ranger_status`（mage 不需要）
+- 三个职业的 effects 共享 key 命名空间 `effects:{char_id}`，但每角色独立
+- profession check 已有，mage 触发代码只在 `attacker.profession === 'mage'` 分支
+- 测试中 warrior/ranger 测试用例不会触发 attachFireMark（profession !== 'mage'）
+
+#### T041 衔接任务（不实施）
+
+- **T051 (WS 路由 orchestrator)**：AOE 路径补 currentRound 参数；ABABAB 行动完后调 `applyBurnDamage` 结算灼伤
+- **T054 (对战结算)**：clearEffects 清理所有 effects key（含 mark_fire / burn）
+- **T056 (伤害计算权威化)**：applyDamage 实现时读取 mark / burn 状态（如需 burn 减伤抗等）
+- **T041.5**（如做）：mage 机制 1（AOE 增强 / 范围扩大 / cost reduction 等），characterStatusService 扩展 debuffCount 派生
+
+### T041 StatusEffectType 扩展
+
+| 类型 | 用途 |
+|------|------|
+| `mark_fire` | mage 攻击附加的火球术标记（叠 2 触发 burn）|
+| `burn` | mage 灼伤效果（value=1 表示 1 点/回合）|
+
 ### T039/T055 边界说明
 
 | T055 原计划项 | 当前 T039 已实现 | T055 实施时是否重复 |

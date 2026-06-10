@@ -19,10 +19,11 @@ export type StatusEffectType =
   | 'shield'        // 护盾（warrior 攻击累计）
   | 'taunt'         // 嘲讽（warrior 挑战卡）
   | 'damage_boost'  // 攻击累计增伤（ranger 机制 1）
+  | 'mark_fire'     // 火球术标记（mage 机制 2，叠 2 触发 burn）
   | 'stun'          // 眩晕（T040+ 扩展）
   | 'blind'         // 致盲（T040+ 扩展）
   | 'silence'       // 沉默（T040+ 扩展）
-  | 'burn'          // 灼烧（T040+ 扩展）
+  | 'burn'          // 灼烧（mage 机制 2 触发效果，value=1 表示 1 点/回合）
   | 'regen';        // 持续回血（T040+ 扩展）
 
 export interface StatusEffect {

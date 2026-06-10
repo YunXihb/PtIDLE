@@ -93,7 +93,7 @@ PtIDLE 是一款集成战棋玩法的挂机游戏（Idle + Tactical Chess）。�
 | 弓手 | 中 | 中 | 3 | 远程单体 |
 | 法师 | 低 | 低 | 3 | 远程AOE/组合技 |
 
-#### 3.2.1.1 职业机制（T039 + T040 实施）
+#### 3.2.1.1 职业机制（T039 + T040 + T041 实施）
 
 **战士（warrior）**
 - 攻击累计护盾：每打出 2 张攻击卡 → 获得这 2 张卡能量消耗总和的护盾，持续 2 个战斗回合（battle round）
@@ -108,8 +108,21 @@ PtIDLE 是一款集成战棋玩法的挂机游戏（Idle + Tactical Chess）。�
   - 公共池卡不计入 ranger 累积
   - 「主体目标」语义：AOE 取 `targets[0]`（T040.5 后续可优化为「离攻击者最近」或「指定 primary」）
 
-**法师（mage）**
-TBD - T041 实施
+**法师（mage）**（T041 实施）
+- 攻击附加 debuff 标记：每次法师攻击命中目标 → 附加 1 个 fire 标记
+  - 标记存储：每个 mark_fire effect 作为 list entry 存在 target 的 effects LIST
+  - 标记持续时间：不限（仅在 2 mark 触发 burn 时清除）
+  - 公共池卡不附加 mark
+  - AOE 攻击：每个 target 获得 1 个 fire mark
+- 2 mark 触发 burn（fire+fire 灼伤）：
+  - 清除 target 的所有 fire 标记 + 附加 1 个 burn effect (duration=2 round, value=1)
+  - target 已有 burn 时新 mark 被忽略
+- burn 灼伤伤害结算：
+  - 持续 2 个完整 battle round
+  - 每个 round 结算时（ABABAB 行动完后）扣血 = active burn 数量 × 1
+  - 多个 burn 可叠加（例 2 burn = 2 伤害/回合）
+  - 持续 2 round 后由 tickEffects 自然清理
+  - 伤害结算 call site 在 T051 orchestrator（ABABAB 行动完后调用 `applyBurnDamage`）
 
 #### 3.2.2 卡牌系统（机制驱动）
 
@@ -163,8 +176,14 @@ PVP对战（消耗卡牌）
 - **攻击累计增伤**：每打出 2 张攻击卡 → 写入 `damage_boost` 状态效果
 - 下次攻击时消耗，对单体或 AOE 主体目标造成 1.5× 伤害
 
-#### 法师（mage）
-TBD - T041 实施
+#### 法师（mage）（T041 实施）
+- **攻击附加 fire 标记**：每次法师攻击命中目标 → 附加 1 个 fire 标记（不限持续时间）
+- **2 mark 触发灼伤（burn）**：target 被附加第 2 个 fire 标记时 → 清除所有 fire 标记 + 附加 1 个 burn effect
+- **burn 持续伤害**：burn 持续 2 个战斗回合，每回合结算时扣血 = active burn 数量 × 1
+- **mark 被 burn 屏蔽**：target 已有 active burn 时新附加的 fire 标记被忽略
+- **AOE 标记范围**：每个 AOE 目标获得 1 个 fire 标记（独立计算）
+- **公共池卡不附加 mark**
+- **伤害结算时点**：T051 orchestrator 在 ABABAB 行动完后调用 `applyBurnDamage` 结算
 
 ### 3.5 战棋公共池（Public Pool）
 

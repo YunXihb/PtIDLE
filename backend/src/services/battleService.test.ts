@@ -33,6 +33,7 @@ const mockOnWarriorAttackCardPlayed = jest.fn();
 const mockApplyWarriorTaunt = jest.fn();
 const mockOnRangerAttackCardPlayed = jest.fn();
 const mockGetRangerDamageBoost = jest.fn();
+const mockAttachFireMark = jest.fn();
 
 jest.mock('./professionMechanicService', () => ({
   canUseProfession: mockCanUseProfession,
@@ -41,6 +42,7 @@ jest.mock('./professionMechanicService', () => ({
   applyWarriorTaunt: mockApplyWarriorTaunt,
   onRangerAttackCardPlayed: mockOnRangerAttackCardPlayed,
   getRangerDamageBoost: mockGetRangerDamageBoost,
+  attachFireMark: mockAttachFireMark,
 }));
 
 import {
@@ -121,6 +123,13 @@ describe('battleService - attack validation', () => {
     });
     // Default: no active damage_boost
     mockGetRangerDamageBoost.mockResolvedValue(null);
+    // Default: mage mark returns no mark applied (non-mage tests)
+    mockAttachFireMark.mockResolvedValue({
+      marksAdded: false,
+      burnTriggered: false,
+      currentMarkCount: 0,
+      currentBurnCount: 0,
+    });
   });
 
   describe('validateAttack', () => {
@@ -1138,6 +1147,320 @@ describe('battleService - attack validation', () => {
       );
       expect(result.valid).toBe(false);
       expect(mockOnRangerAttackCardPlayed).not.toHaveBeenCalled();
+    });
+  });
+
+  // ========================================
+  // T041: validateAttack 加 mage 机制 2 (fire mark + burn)
+  // ========================================
+  describe('validateAttack - mage fire mark trigger (T041)', () => {
+    const mageAttacker = { ...mockAttacker, profession: 'mage' };
+
+    it('mage 1st attack: valid, mageMarkApplied=true, mageBurnTriggered=false', async () => {
+      mockAttachFireMark.mockResolvedValueOnce({
+        marksAdded: true,
+        burnTriggered: false,
+        currentMarkCount: 0,
+        currentBurnCount: 0,
+      });
+      const positions = { '2,2': mockAttackerId, '3,2': mockTargetId };
+      mockRedisClient.hGet
+        .mockResolvedValueOnce(JSON.stringify(mageAttacker))
+        .mockResolvedValueOnce(JSON.stringify(mockTarget));
+      mockQuery.mockResolvedValueOnce([mockCard]);
+      mockRedisClient.hGetAll
+        .mockResolvedValueOnce(positions)
+        .mockResolvedValueOnce(positions);
+
+      const result = await validateAttack(
+        mockBattleId, mockAttackerId, mockCardId, mockTargetId, 1
+      );
+      expect(result.valid).toBe(true);
+      expect(result.mageMarkApplied).toBe(true);
+      expect(result.mageBurnTriggered).toBe(false);
+      expect(mockAttachFireMark).toHaveBeenCalledWith(
+        mockBattleId, mockTargetId, 1, 'deck'
+      );
+    });
+
+    it('mage 2nd attack (trigger): valid, mageMarkApplied=true, mageBurnTriggered=true', async () => {
+      mockAttachFireMark.mockResolvedValueOnce({
+        marksAdded: true,
+        burnTriggered: true,
+        currentMarkCount: 2,
+        currentBurnCount: 0,
+      });
+      const positions = { '2,2': mockAttackerId, '3,2': mockTargetId };
+      mockRedisClient.hGet
+        .mockResolvedValueOnce(JSON.stringify(mageAttacker))
+        .mockResolvedValueOnce(JSON.stringify(mockTarget));
+      mockQuery.mockResolvedValueOnce([mockCard]);
+      mockRedisClient.hGetAll
+        .mockResolvedValueOnce(positions)
+        .mockResolvedValueOnce(positions);
+
+      const result = await validateAttack(
+        mockBattleId, mockAttackerId, mockCardId, mockTargetId, 1
+      );
+      expect(result.valid).toBe(true);
+      expect(result.mageMarkApplied).toBe(true);
+      expect(result.mageBurnTriggered).toBe(true);
+    });
+
+    it('mage + public_pool attack: should NOT call attachFireMark (mark 字段 undefined)', async () => {
+      const publicPoolCard = { ...mockCard, player_id: null };
+      const positions = { '2,2': mockAttackerId, '3,2': mockTargetId };
+      mockRedisClient.hGet
+        .mockResolvedValueOnce(JSON.stringify(mageAttacker))
+        .mockResolvedValueOnce(JSON.stringify(mockTarget));
+      mockQuery.mockResolvedValueOnce([publicPoolCard]);
+      mockRedisClient.hGetAll
+        .mockResolvedValueOnce(positions)
+        .mockResolvedValueOnce(positions);
+
+      const result = await validateAttack(
+        mockBattleId, mockAttackerId, mockCardId, mockTargetId, 1, 'public_pool'
+      );
+      expect(result.valid).toBe(true);
+      expect(result.mageMarkApplied).toBeUndefined();
+      expect(result.mageBurnTriggered).toBeUndefined();
+      expect(mockAttachFireMark).not.toHaveBeenCalled();
+    });
+
+    it('non-mage (warrior) attack: mageMarkApplied always undefined', async () => {
+      const warriorAtk = { ...mockAttacker, profession: 'warrior' };
+      const positions = { '2,2': mockAttackerId, '3,2': mockTargetId };
+      mockRedisClient.hGet
+        .mockResolvedValueOnce(JSON.stringify(warriorAtk))
+        .mockResolvedValueOnce(JSON.stringify(mockTarget));
+      mockQuery.mockResolvedValueOnce([mockCard]);
+      mockRedisClient.hGetAll
+        .mockResolvedValueOnce(positions)
+        .mockResolvedValueOnce(positions);
+
+      const result = await validateAttack(
+        mockBattleId, mockAttackerId, mockCardId, mockTargetId, 1
+      );
+      expect(result.valid).toBe(true);
+      expect(result.mageMarkApplied).toBeUndefined();
+      expect(result.mageBurnTriggered).toBeUndefined();
+      expect(mockAttachFireMark).not.toHaveBeenCalled();
+    });
+
+    it('non-mage (ranger) attack: mageMarkApplied always undefined', async () => {
+      const rangerAtk = { ...mockAttacker, profession: 'ranger' };
+      const positions = { '2,2': mockAttackerId, '3,2': mockTargetId };
+      mockRedisClient.hGet
+        .mockResolvedValueOnce(JSON.stringify(rangerAtk))
+        .mockResolvedValueOnce(JSON.stringify(mockTarget));
+      mockQuery.mockResolvedValueOnce([mockCard]);
+      mockRedisClient.hGetAll
+        .mockResolvedValueOnce(positions)
+        .mockResolvedValueOnce(positions);
+
+      const result = await validateAttack(
+        mockBattleId, mockAttackerId, mockCardId, mockTargetId, 1
+      );
+      expect(result.valid).toBe(true);
+      expect(result.mageMarkApplied).toBeUndefined();
+      expect(mockAttachFireMark).not.toHaveBeenCalled();
+    });
+
+    it('mage attack failed (insufficient energy): should NOT call attachFireMark', async () => {
+      mockRedisClient.hGet.mockResolvedValueOnce(
+        JSON.stringify({ ...mageAttacker, energy: 0 })
+      );
+      mockQuery.mockResolvedValueOnce([mockCard]);
+
+      const result = await validateAttack(
+        mockBattleId, mockAttackerId, mockCardId, mockTargetId, 1
+      );
+      expect(result.valid).toBe(false);
+      expect(result.mageMarkApplied).toBeUndefined();
+      expect(mockAttachFireMark).not.toHaveBeenCalled();
+    });
+
+    it('mage attack failed (target is taunted): should NOT call attachFireMark', async () => {
+      mockGetTauntRedirect.mockResolvedValue({
+        mustRedirectTo: 'warrior-x',
+        sourceId: 'warrior-x',
+      });
+      mockRedisClient.hGet.mockResolvedValueOnce(JSON.stringify(mageAttacker));
+      mockQuery.mockResolvedValueOnce([{ ...mockCard, type: 'attack' }]);
+
+      const result = await validateAttack(
+        mockBattleId, mockAttackerId, mockCardId, mockTargetId, 1
+      );
+      expect(result.valid).toBe(false);
+      expect(result.mageMarkApplied).toBeUndefined();
+      expect(mockAttachFireMark).not.toHaveBeenCalled();
+    });
+  });
+
+  // ========================================
+  // T041: validateAOEAttack 加 mage 机制 2
+  // ========================================
+  describe('validateAOEAttack - mage fire mark (T041)', () => {
+    const aoeCard = { ...mockCard, effect: { damage: 3, aoe: true, range: 2 }, type: 'attack', profession: 'common' };
+    const mageAt44 = { ...mockAttacker, profession: 'mage', position_x: 4, position_y: 4 };
+    const enemyPiece = {
+      character_id: 'x', player_id: 'player-2', profession: 'mage',
+      name: 'Enemy', health: 12, max_health: 12, movement: 2, energy: 3, max_energy: 3,
+      position_x: 0, position_y: 0, is_alive: true,
+    };
+
+    it('mage AOE 2 targets (no mark): valid, mageMarksApplied=2, mageBurnTriggered=false', async () => {
+      const positions = {
+        '4,4': mockAttackerId,
+        '5,4': 'enemy-1',
+        '4,5': 'enemy-2',
+      };
+      mockAttachFireMark
+        .mockResolvedValueOnce({ marksAdded: true, burnTriggered: false, currentMarkCount: 0, currentBurnCount: 0 })
+        .mockResolvedValueOnce({ marksAdded: true, burnTriggered: false, currentMarkCount: 0, currentBurnCount: 0 });
+      mockRedisClient.hGet.mockResolvedValueOnce(JSON.stringify(mageAt44));
+      mockQuery.mockResolvedValueOnce([aoeCard]);
+      mockRedisClient.hGetAll
+        .mockResolvedValueOnce(positions)
+        .mockResolvedValueOnce(positions);
+      mockRedisClient.hGet
+        .mockResolvedValueOnce(JSON.stringify(mageAt44))
+        .mockResolvedValueOnce(JSON.stringify({ ...enemyPiece, character_id: 'enemy-1' }))
+        .mockResolvedValueOnce(JSON.stringify({ ...enemyPiece, character_id: 'enemy-2' }));
+
+      const result = await validateAOEAttack(mockBattleId, mockAttackerId, mockCardId);
+      expect(result.valid).toBe(true);
+      expect(result.mageMarksApplied).toBe(2);
+      expect(result.mageBurnTriggered).toBe(false);
+      expect(mockAttachFireMark).toHaveBeenCalledTimes(2);
+    });
+
+    it('mage AOE 2 targets (1 already burned): mageMarksApplied=1', async () => {
+      const positions = {
+        '4,4': mockAttackerId,
+        '5,4': 'enemy-1',
+        '4,5': 'enemy-2',
+      };
+      mockAttachFireMark
+        .mockResolvedValueOnce({ marksAdded: false, burnTriggered: false, currentMarkCount: 0, currentBurnCount: 1 })
+        .mockResolvedValueOnce({ marksAdded: true, burnTriggered: false, currentMarkCount: 0, currentBurnCount: 0 });
+      mockRedisClient.hGet.mockResolvedValueOnce(JSON.stringify(mageAt44));
+      mockQuery.mockResolvedValueOnce([aoeCard]);
+      mockRedisClient.hGetAll
+        .mockResolvedValueOnce(positions)
+        .mockResolvedValueOnce(positions);
+      mockRedisClient.hGet
+        .mockResolvedValueOnce(JSON.stringify(mageAt44))
+        .mockResolvedValueOnce(JSON.stringify({ ...enemyPiece, character_id: 'enemy-1' }))
+        .mockResolvedValueOnce(JSON.stringify({ ...enemyPiece, character_id: 'enemy-2' }));
+
+      const result = await validateAOEAttack(mockBattleId, mockAttackerId, mockCardId);
+      expect(result.valid).toBe(true);
+      expect(result.mageMarksApplied).toBe(1);
+      expect(result.mageBurnTriggered).toBe(false);
+    });
+
+    it('mage AOE with burn triggered: mageBurnTriggered=true', async () => {
+      const positions = {
+        '4,4': mockAttackerId,
+        '5,4': 'enemy-1',
+        '4,5': 'enemy-2',
+      };
+      mockAttachFireMark
+        .mockResolvedValueOnce({ marksAdded: true, burnTriggered: true, currentMarkCount: 2, currentBurnCount: 0 })
+        .mockResolvedValueOnce({ marksAdded: true, burnTriggered: false, currentMarkCount: 0, currentBurnCount: 0 });
+      mockRedisClient.hGet.mockResolvedValueOnce(JSON.stringify(mageAt44));
+      mockQuery.mockResolvedValueOnce([aoeCard]);
+      mockRedisClient.hGetAll
+        .mockResolvedValueOnce(positions)
+        .mockResolvedValueOnce(positions);
+      mockRedisClient.hGet
+        .mockResolvedValueOnce(JSON.stringify(mageAt44))
+        .mockResolvedValueOnce(JSON.stringify({ ...enemyPiece, character_id: 'enemy-1' }))
+        .mockResolvedValueOnce(JSON.stringify({ ...enemyPiece, character_id: 'enemy-2' }));
+
+      const result = await validateAOEAttack(mockBattleId, mockAttackerId, mockCardId);
+      expect(result.valid).toBe(true);
+      expect(result.mageBurnTriggered).toBe(true);
+    });
+
+    it('non-mage AOE (warrior): mageMarksApplied undefined, attachFireMark not called', async () => {
+      const warriorAt44 = { ...mockAttacker, profession: 'warrior', position_x: 4, position_y: 4 };
+      const positions = {
+        '4,4': mockAttackerId,
+        '5,4': 'enemy-1',
+      };
+      mockRedisClient.hGet.mockResolvedValueOnce(JSON.stringify(warriorAt44));
+      mockQuery.mockResolvedValueOnce([aoeCard]);
+      mockRedisClient.hGetAll
+        .mockResolvedValueOnce(positions)
+        .mockResolvedValueOnce(positions);
+      mockRedisClient.hGet
+        .mockResolvedValueOnce(JSON.stringify(warriorAt44))
+        .mockResolvedValueOnce(JSON.stringify({ ...enemyPiece, character_id: 'enemy-1' }));
+
+      const result = await validateAOEAttack(mockBattleId, mockAttackerId, mockCardId);
+      expect(result.valid).toBe(true);
+      expect(result.mageMarksApplied).toBeUndefined();
+      expect(mockAttachFireMark).not.toHaveBeenCalled();
+    });
+
+    it('mage AOE failed (no targets): should NOT call attachFireMark', async () => {
+      const mageAt00 = { ...mockAttacker, profession: 'mage', position_x: 0, position_y: 0 };
+      const positions = { '0,0': mockAttackerId };
+      mockRedisClient.hGet.mockResolvedValueOnce(JSON.stringify(mageAt00));
+      mockQuery.mockResolvedValueOnce([aoeCard]);
+      mockRedisClient.hGetAll
+        .mockResolvedValueOnce(positions)
+        .mockResolvedValueOnce(positions);
+
+      const result = await validateAOEAttack(mockBattleId, mockAttackerId, mockCardId);
+      expect(result.valid).toBe(false);
+      expect(result.mageMarksApplied).toBeUndefined();
+      expect(mockAttachFireMark).not.toHaveBeenCalled();
+    });
+  });
+
+  // ========================================
+  // T041: warrior/ranger 不会触发 mage 机制
+  // ========================================
+  describe('validateAttack - warrior/ranger 不应触发 mage mark (T041)', () => {
+    it('warrior attack: mageMarkApplied 始终 undefined', async () => {
+      const warriorAtk = { ...mockAttacker, profession: 'warrior' };
+      const positions = { '2,2': mockAttackerId, '3,2': mockTargetId };
+      mockRedisClient.hGet
+        .mockResolvedValueOnce(JSON.stringify(warriorAtk))
+        .mockResolvedValueOnce(JSON.stringify(mockTarget));
+      mockQuery.mockResolvedValueOnce([mockCard]);
+      mockRedisClient.hGetAll
+        .mockResolvedValueOnce(positions)
+        .mockResolvedValueOnce(positions);
+
+      const result = await validateAttack(
+        mockBattleId, mockAttackerId, mockCardId, mockTargetId, 1
+      );
+      expect(result.valid).toBe(true);
+      expect(result.mageMarkApplied).toBeUndefined();
+      expect(mockAttachFireMark).not.toHaveBeenCalled();
+    });
+
+    it('ranger attack: mageMarkApplied 始终 undefined', async () => {
+      const rangerAtk = { ...mockAttacker, profession: 'ranger' };
+      const positions = { '2,2': mockAttackerId, '3,2': mockTargetId };
+      mockRedisClient.hGet
+        .mockResolvedValueOnce(JSON.stringify(rangerAtk))
+        .mockResolvedValueOnce(JSON.stringify(mockTarget));
+      mockQuery.mockResolvedValueOnce([mockCard]);
+      mockRedisClient.hGetAll
+        .mockResolvedValueOnce(positions)
+        .mockResolvedValueOnce(positions);
+
+      const result = await validateAttack(
+        mockBattleId, mockAttackerId, mockCardId, mockTargetId, 1
+      );
+      expect(result.valid).toBe(true);
+      expect(result.mageMarkApplied).toBeUndefined();
+      expect(mockAttachFireMark).not.toHaveBeenCalled();
     });
   });
 });

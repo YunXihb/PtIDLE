@@ -1,5 +1,5 @@
 // ========================================
-// 职业机制服务 (Profession Mechanic Service) - T039 + T040
+// 职业机制服务 (Profession Mechanic Service) - T039 + T040 + T041
 // ========================================
 // 1) 职业卡牌权限校验（deck 分配 + 战斗内打牌）
 // 2) Warrior 机制 1：攻击累计护盾（每 2 张攻击卡 → 累计 cost 总和护盾，2 round）
@@ -7,6 +7,10 @@
 // 4) Warrior 私有计数器：battle:{id}:warrior_status:{warrior_id}（JSON STRING）
 // 5) Ranger 机制 1：攻击累计增伤（每 2 张攻击卡 → 写入 damage_boost 效果，1.5× 单体/AOE 主体）
 // 6) Ranger 私有计数器：battle:{id}:ranger_status:{ranger_id}（JSON STRING）
+// 7) T041 Mage 机制 2：debuff/灼伤系统（fire mark + burn DoT）
+//    - 攻击附加 fire mark（每个 mark_fire = 1 list entry）
+//    - 2 mark 触发 burn：清 mark + 加 1 burn effect (duration=2 round, value=1)
+//    - target 已有 active burn 时新 mark 被忽略
 //
 // T041 在本文件内加 mageMechanic 命名空间
 
@@ -479,4 +483,137 @@ export async function consumeRangerDamageBoost(
   if (!boost) return null;
   await removeEffect(battleId, rangerId, boost.effect_id);
   return { value: boost.value ?? 0, effectId: boost.effect_id };
+}
+
+// ========================================
+// 7. T041 Mage 机制 2：debuff/灼伤系统（fire mark + burn DoT）
+// ========================================
+
+/** fire 标记的 expire_round：用大数表示「无限持续」（一场战斗最多几十 round） */
+export const MAGE_MARK_NEVER_EXPIRE_ROUND = 99999;
+
+/** burn effect 持续回合数：2 个完整 battle round */
+export const MAGE_BURN_DURATION_ROUNDS = 2;
+
+/** burn effect 单次 tick 伤害 */
+export const MAGE_BURN_DAMAGE_PER_TICK = 1;
+
+/** mark_fire 触发 burn 阈值（2 个 mark 触发灼伤） */
+export const MAGE_MARK_BURN_THRESHOLD = 2;
+
+export interface MageMarkResult {
+  marksAdded: boolean;        // 本次是否真的附加了 1 个 mark
+  burnTriggered: boolean;     // 本次是否触发了 burn 转换
+  currentMarkCount: number;   // 转换前 target 上的 mark_fire 数量
+  currentBurnCount: number;   // target 上的 active burn 数量
+}
+
+/**
+ * mage 攻击命中 target 后调用 → 附加 fire 标记
+ * - 公共池卡直接 return（不入职业机制）
+ * - target 已有 active burn → mark 被忽略
+ * - RPUSH 1 mark_fire effect（expire_round=99999 永远 active）
+ * - 重新读取 active mark_fire 数量
+ * - 若 ≥ 2：LREM 所有 mark_fire + applyEffect 1 个 burn (duration=2, value=1)
+ */
+export async function attachFireMark(
+  battleId: string,
+  targetId: string,
+  currentRound: number,
+  source: 'deck' | 'public_pool'
+): Promise<MageMarkResult> {
+  // 0. 公共池卡直接跳过
+  if (source === 'public_pool') {
+    return { marksAdded: false, burnTriggered: false, currentMarkCount: 0, currentBurnCount: 0 };
+  }
+
+  // 1. 检查 target 是否有 active burn → 有则 mark 被忽略
+  const activeEffects = await getActiveEffects(battleId, targetId, currentRound);
+  const currentBurnCount = activeEffects.filter(e => e.type === 'burn').length;
+  if (currentBurnCount > 0) {
+    return { marksAdded: false, burnTriggered: false, currentMarkCount: 0, currentBurnCount };
+  }
+
+  // 2. RPUSH 1 mark_fire（expire_round=99999 永远 active）
+  await applyEffect(battleId, targetId, {
+    type: 'mark_fire',
+    duration_rounds: MAGE_MARK_NEVER_EXPIRE_ROUND,
+    currentRound,
+  });
+
+  // 3. 重新读取 mark 数量
+  const updatedEffects = await getActiveEffects(battleId, targetId, currentRound);
+  const markEffects = updatedEffects.filter(e => e.type === 'mark_fire');
+  const currentMarkCount = markEffects.length;
+
+  // 4. 触发判断：mark ≥ 2 → LREM 所有 mark + 加 1 burn
+  let burnTriggered = false;
+  if (currentMarkCount >= MAGE_MARK_BURN_THRESHOLD) {
+    for (const mark of markEffects) {
+      await removeEffect(battleId, targetId, mark.effect_id);
+    }
+    await applyEffect(battleId, targetId, {
+      type: 'burn',
+      value: MAGE_BURN_DAMAGE_PER_TICK,
+      duration_rounds: MAGE_BURN_DURATION_ROUNDS,
+      currentRound,
+    });
+    burnTriggered = true;
+  }
+
+  return { marksAdded: true, burnTriggered, currentMarkCount, currentBurnCount };
+}
+
+export interface BurnDamageResult {
+  totalDamage: number;       // 总扣血（=burnCount × MAGE_BURN_DAMAGE_PER_TICK）
+  burnCount: number;         // active burn 数量
+  burnEffectIds: string[];   // burn effect_id 列表（call site 可选清理）
+}
+
+/**
+ * 灼伤伤害结算（T051 orchestrator 在 ABABAB 行动完后调用）
+ * - 读取 target 的 active burn effects
+ * - 计算 damage = count(burn) × MAGE_BURN_DAMAGE_PER_TICK
+ * - 返回伤害值与 burn effect_id 列表（call site 自行扣血 + 可选清理）
+ * - T041 不清理 burn（burn 持续 2 round 自然过期）
+ */
+export async function applyBurnDamage(
+  battleId: string,
+  targetId: string,
+  currentRound: number
+): Promise<BurnDamageResult> {
+  const effects = await getActiveEffects(battleId, targetId, currentRound);
+  const burnEffects = effects.filter(e => e.type === 'burn');
+  const burnCount = burnEffects.length;
+  return {
+    totalDamage: burnCount * MAGE_BURN_DAMAGE_PER_TICK,
+    burnCount,
+    burnEffectIds: burnEffects.map(e => e.effect_id),
+  };
+}
+
+export interface MageMarkState {
+  markCount: number;        // active mark_fire 数量
+  burnCount: number;        // active burn 数量
+  totalBurnDamage: number;  // 当前 burn 总伤害（=burnCount × MAGE_BURN_DAMAGE_PER_TICK）
+}
+
+/**
+ * 读取 target 的 mage debuff 状态（调试 / 状态栏聚合用）
+ * - mark + burn 数量 + 总 burn 伤害
+ * - 不修改 Redis
+ */
+export async function getMageMarkState(
+  battleId: string,
+  targetId: string,
+  currentRound: number
+): Promise<MageMarkState> {
+  const effects = await getActiveEffects(battleId, targetId, currentRound);
+  const markCount = effects.filter(e => e.type === 'mark_fire').length;
+  const burnEffects = effects.filter(e => e.type === 'burn');
+  return {
+    markCount,
+    burnCount: burnEffects.length,
+    totalBurnDamage: burnEffects.length * MAGE_BURN_DAMAGE_PER_TICK,
+  };
 }

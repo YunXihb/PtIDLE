@@ -7,6 +7,7 @@ import {
   applyWarriorTaunt,
   onRangerAttackCardPlayed,
   getRangerDamageBoost,
+  attachFireMark,
 } from './professionMechanicService';
 
 // ========================================
@@ -544,6 +545,10 @@ export interface AttackValidationResult {
   damageBoostValue?: number;   // 增伤比例（如 0.5 表示 1.5×）
   primaryTargetId?: string;    // AOE 主体目标（targets[0]）；单体 = targets[0]
   damagePerTarget?: number[];  // AOE 各 target 最终伤害（含 boost 应用到 primary）
+  // T041 mage 机制 2：debuff/灼伤系统
+  mageMarkApplied?: boolean;   // 单体：本次是否成功附加 1 个 fire mark
+  mageMarksApplied?: number;   // AOE：本次成功附加 mark 的 target 数
+  mageBurnTriggered?: boolean; // 本次是否触发了 burn 转换（任一 target）
 }
 
 /**
@@ -876,6 +881,23 @@ export async function validateAttack(
     }
   }
 
+  // 15. T041 mage 机制 2：附加 fire mark
+  // - mage 攻击命中 target → 附加 1 个 fire mark
+  // - 公共池卡不附加 mark
+  // - target 已有 active burn → mark 被忽略
+  // - 2 mark 触发 burn（attachFireMark 内部处理）
+  let mageMarkApplied: boolean | undefined;
+  let mageBurnTriggered: boolean | undefined;
+  if (
+    attacker.profession === 'mage' &&
+    card.type === 'attack' &&
+    source !== 'public_pool'
+  ) {
+    const result = await attachFireMark(battleId, targetId, currentRound, source);
+    mageMarkApplied = result.marksAdded;
+    mageBurnTriggered = result.burnTriggered;
+  }
+
   return {
     valid: true,
     damage,
@@ -885,6 +907,8 @@ export async function validateAttack(
     damageBoosted,
     damageBoostValue,
     primaryTargetId: targetId,    // 单体主体 = 唯一 target
+    mageMarkApplied,
+    mageBurnTriggered,
   };
 }
 
@@ -996,6 +1020,28 @@ export async function validateAOEAttack(
     );
   }
 
+  // 14. T041 mage 机制 2：AOE 每个 target 附加 fire mark
+  // - mage AOE 攻击命中 → 每个 target 获得 1 个 fire mark
+  // - 公共池卡不附加 mark
+  // - AOE 路径暂 hardcode currentRound=0（T051 衔接时再补参数）
+  let mageMarksApplied: number | undefined;
+  let mageBurnTriggered: boolean | undefined;
+  if (
+    attacker.profession === 'mage' &&
+    card.type === 'attack' &&
+    source !== 'public_pool'
+  ) {
+    let count = 0;
+    let anyBurnTriggered = false;
+    for (const targetId of targets) {
+      const result = await attachFireMark(battleId, targetId, 0, source);
+      if (result.marksAdded) count++;
+      if (result.burnTriggered) anyBurnTriggered = true;
+    }
+    mageMarksApplied = count;
+    mageBurnTriggered = anyBurnTriggered;
+  }
+
   return {
     valid: true,
     damage,
@@ -1005,6 +1051,8 @@ export async function validateAOEAttack(
     damageBoostValue,
     primaryTargetId,
     damagePerTarget,
+    mageMarksApplied,
+    mageBurnTriggered,
   };
 }
 

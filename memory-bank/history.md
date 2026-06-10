@@ -312,3 +312,39 @@
 5. **测试统计偏差**：plan 估算 professionMechanicService 20 个 + battleService 12 个 = 32 个，实际 professionMechanicService(`RANGER_DAMAGE_BOOST_VALUE` 1 + onRangerAttackCardPlayed 2 describe 6 + getRangerDamageBoost 1 describe 5 + consumeRangerDamageBoost 1 describe 4 + ranger 隔离 1) = **17 个** + battleService(ranger trigger 5 + public_pool 1 + AOE 3 + 失败路径 2) = **11 个**。最终 T040 总计 **28 个新测试**（比 plan 少 4 个，因为公共池 vs ranger 测试合并到 1 个，失败路径用了统一 describe）
 6. **完整 service 测试**：`npx jest src/services/` 18 suites / 337 tests 全过；`npx tsc --noEmit` 0 错误
 
+---
+
+## 2026-06-11 - 任务：法师职业机制 2 (T041)
+
+### Prompt
+实施 T041 法师职业机制 2（debuff/灼伤系统）。沿用 T039 + T040 架构：走 `statusEffectService` 通用框架 + `professionMechanicService` mageMechanic 命名空间。规则：法师攻击附加 fire 标记到 target；当 target 累计 2 个 mark 时清除所有 mark + 附加 1 个 burn effect (duration=2 round, value=1)；target 已有 active burn 时新 mark 被忽略；公共池卡不附加 mark；AOE 每个 target 获得 1 个 mark；灼伤伤害结算 call site 在 T051 orchestrator（T041 仅提供 `applyBurnDamage` 函数）。用户选「仅机制 2」——不动 characterStatusService、不加 mage 新卡、不实现 mage 机制 1。
+
+### 思考
+- **mark 存储在 target 上**：与 warrior shield / ranger damage_boost 共享 `battle:{id}:effects:{targetId}` LIST key 命名空间（每角色独立）。每个 mark_fire = 1 list entry；T041 不引入 mage 私有计数器
+- **mark 无限持续占位**：`expire_round=99999` 表示「永不主动过期」；mark 仅在 `attachFireMark` 内部 2 mark 触发 burn 时显式 LREM 清除
+- **2 mark 触发 burn**：`mark_fire` ≥ 2 → LREM 所有 mark_fire + applyEffect 1 个 burn (value=1, duration=2 round)；mark 转换走 `applyEffect` + `removeEffect` LREM 公共 API，不动 statusEffectService
+- **mark + burn 共存强制语义**：target 已有 active burn 时 `attachFireMark` 第 1 步 return early（burn 屏蔽新 mark）。这是用户明确「有 burn 后 mark 被忽略」
+- **AOE 标记范围**：mage AOE 优势 → 每个 target 获得 1 个 fire mark。validateAOEAttack 循环调 attachFireMark，`mageMarksApplied` = 实际成功附加数（被 burn 拦截的不计），`mageBurnTriggered` = 任一 target 触发即为 true
+- **AOE currentRound hardcode=0**：沿用 T040 边界，T051 衔接时再补参数
+- **灼伤伤害结算**：`applyBurnDamage(battleId, targetId, currentRound)` 返回 `{totalDamage, burnCount, burnEffectIds}`；不修改 Redis（call site 自行扣血 + 决定是否清理 burn）。T041 不调用此函数，T051 orchestrator 在 ABABAB 行动完后调用
+- **状态查询辅助**：`getMageMarkState` 读取 mark + burn 状态（调试 / 状态栏聚合用），不修改 Redis
+- **失败路径保护**：能量/射程/职业/taunt/AOE 无目标/公共池卡 → 不附加 mark（在所有校验通过后才附加）；target 已有 burn → 内部早退
+- **公共 API 入口**：
+  - `attachFireMark(battleId, targetId, currentRound, source)` → `MageMarkResult { marksAdded, burnTriggered, currentMarkCount, currentBurnCount }`
+  - `applyBurnDamage(battleId, targetId, currentRound)` → `BurnDamageResult { totalDamage, burnCount, burnEffectIds }`（T051 调用）
+  - `getMageMarkState(battleId, targetId, currentRound)` → `MageMarkState { markCount, burnCount, totalBurnDamage }`
+  - 4 个常量：`MAGE_MARK_NEVER_EXPIRE_ROUND=99999` / `MAGE_BURN_DURATION_ROUNDS=2` / `MAGE_BURN_DAMAGE_PER_TICK=1` / `MAGE_MARK_BURN_THRESHOLD=2`
+- **AttackValidationResult 扩展**：3 个新字段 `mageMarkApplied?`（单体）/ `mageMarksApplied?`（AOE 数量）/ `mageBurnTriggered?`（任一 target 触发）
+- **StatusEffectType 扩展**：2 个新类型 `mark_fire`（T041 新增）/ `burn`（T039 预留，T041 首次实际使用）
+
+### 意外
+1. **battleService test mock 顺序坑（首次执行）**：初版 mage 1st/2nd attack 测试只设了 1 次 hGet mock（attacker），但 `validateAttack` 内部需要 2 次 hGet（attacker + target）+ 2 次 hGetAll（positions 字典）。结果 5 个测试 fail：`expect(result.valid).toBe(true)` 拿到 `false`（因为 target 位置查找返回 undefined，触发 "Character position not found"）。修复：补全 mock 顺序（hGet x2 + hGetAll x2），与现有 "should accept valid melee attack" 测试同模式
+2. **ranger trigger 测试也需要补 mock**：T040 时代 `onRangerAttackCardPlayed` / `getRangerDamageBoost` 是 mock 函数（在 battleService.test.ts 顶部），但 `getRangerDamageBoost` 默认返 null，validateAttack 跳过 boost 分支不调 lRange 也不报错。但 mage 测试必须把 hGet x2 + hGetAll x2 都补齐（attacker → target → positions → positions）
+3. **测试统计偏差**：plan 估算 professionMechanicService 25 个 + battleService 14 个 = 39 个，实际 professionMechanicService(T041 常量 4 + attachFireMark 基础 5 + applyBurnDamage 5 + getMageMarkState 4 + mark+burn 边界 3 + mage 隔离 3) = **24 个** + battleService(mage trigger 7 + mage AOE 5 + warrior/ranger 不触发 2) = **14 个**。最终 T041 总计 **38 个新测试**（比 plan 少 1 个，因为「公共池 vs mage 测试」合并到 1 个）
+4. **完整 service 测试**：`npx jest src/services/` 18 suites / 375 tests 全过（比 T040 末态 337 多 38 个）；`npx tsc --noEmit` 0 错误
+5. **mark_fire 永远 active 设计**：`getActiveEffects` 用 `expire_round > currentRound` 判定，99999 远大于任何合理 battle round（一场最多几十 round）。`tickEffects` 在 round ≥ 99999 时清理 → 实际不会发生。靠 `attachFireMark` 内部 LREM 显式清除是唯一清理路径
+6. **applyBurnDamage 设计选择**：T041 不在 applyBurnDamage 内清理 burn，让 burn 持续 2 round 自然过期（`expire_round = currentRound + 2`，第 2 次结算时 `currentRound + 2 ≤ currentRound` 触发 tickEffects 清理）。语义上 burn 持续 2 个完整 round：第 1 round 结算扣 1 次血，第 2 round 结算扣 1 次血，第 3 round 结算时 burn 已 expire → 扣 0 次
+7. **AOE 失败处理**：`mage AOE 失败（无 targets）` 测试中，validateAOEAttack 在第 10 步就 return，根本走不到 attachFireMark 循环（`mageMarksApplied` 仍为 undefined）。这与 mage 单体失败模式一致
+8. **mock 顺序 vs mage profession check**：battleService 内部 profession check 在 `attacker.profession === 'mage'` 守卫，warrior/ranger 测试（mock 默认 warrior）不会触发 attachFireMark 调用。这避免了在 warrior/ranger 测试中需要 mock attachFireMark（但保险起见 default 仍设了 `marksAdded: false` 返回）
+
+

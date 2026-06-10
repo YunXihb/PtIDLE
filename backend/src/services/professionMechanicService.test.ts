@@ -32,6 +32,13 @@ import {
   getRangerDamageBoost,
   consumeRangerDamageBoost,
   RANGER_DAMAGE_BOOST_VALUE,
+  attachFireMark,
+  applyBurnDamage,
+  getMageMarkState,
+  MAGE_MARK_NEVER_EXPIRE_ROUND,
+  MAGE_BURN_DURATION_ROUNDS,
+  MAGE_BURN_DAMAGE_PER_TICK,
+  MAGE_MARK_BURN_THRESHOLD,
 } from './professionMechanicService';
 
 describe('professionMechanicService', () => {
@@ -621,6 +628,345 @@ describe('professionMechanicService', () => {
       );
       expect(rangerKeyCalls.length).toBe(1);
       expect(warriorKeyCalls.length).toBe(0);
+    });
+  });
+
+  // ========================================
+  // T041: Mage 机制 2 - debuff/灼伤系统
+  // ========================================
+
+  describe('T041 constants', () => {
+    it('MAGE_MARK_NEVER_EXPIRE_ROUND should be 99999', () => {
+      expect(MAGE_MARK_NEVER_EXPIRE_ROUND).toBe(99999);
+    });
+
+    it('MAGE_BURN_DURATION_ROUNDS should be 2', () => {
+      expect(MAGE_BURN_DURATION_ROUNDS).toBe(2);
+    });
+
+    it('MAGE_BURN_DAMAGE_PER_TICK should be 1', () => {
+      expect(MAGE_BURN_DAMAGE_PER_TICK).toBe(1);
+    });
+
+    it('MAGE_MARK_BURN_THRESHOLD should be 2', () => {
+      expect(MAGE_MARK_BURN_THRESHOLD).toBe(2);
+    });
+  });
+
+  describe('attachFireMark - 基础路径', () => {
+    it('public_pool source: should return early without marking', async () => {
+      const result = await attachFireMark('b-1', 't-1', 1, 'public_pool');
+      expect(result.marksAdded).toBe(false);
+      expect(result.burnTriggered).toBe(false);
+      expect(mockRedisClient.rPush).not.toHaveBeenCalled();
+    });
+
+    it('target with 0 mark: should add 1 mark, no burn triggered', async () => {
+      // getActiveEffects (1st): check burn → 0
+      mockRedisClient.lRange.mockResolvedValueOnce([]);
+      // applyEffect 内部不调 lRange
+      // getActiveEffects (2nd): count mark → 0
+      mockRedisClient.lRange.mockResolvedValueOnce([]);
+
+      const result = await attachFireMark('b-1', 't-1', 1, 'deck');
+      expect(result.marksAdded).toBe(true);
+      expect(result.burnTriggered).toBe(false);
+      expect(result.currentMarkCount).toBe(0);  // 转换前 mark 数
+      expect(result.currentBurnCount).toBe(0);
+      expect(mockRedisClient.rPush).toHaveBeenCalledTimes(1);
+      const pushed = JSON.parse(mockRedisClient.rPush.mock.calls[0][1]);
+      expect(pushed.type).toBe('mark_fire');
+      expect(pushed.duration_rounds).toBe(99999);
+    });
+
+    it('target with 1 mark: add 1 mark → trigger burn (mark 清 + 加 1 burn)', async () => {
+      const markJson = JSON.stringify({
+        effect_id: 'mark-1', type: 'mark_fire',
+        duration_rounds: 99999, created_round: 1, expire_round: 99999,
+      });
+      // getActiveEffects (1st): check burn → 0 (只 mark)
+      mockRedisClient.lRange.mockResolvedValueOnce([markJson]);
+      // applyEffect (RPUSH) 不调 lRange
+      // getActiveEffects (2nd): count mark → 1 mark (RPUSH 后再 read 仍 1，因为 mark 列表只反映 LREM 前)
+      // 等等，RPUSH 后再 read 应该 = 2 (1 old + 1 new)
+      // 这里按实现：调用 getActiveEffects → lRange 1 次
+      mockRedisClient.lRange.mockResolvedValueOnce([markJson, markJson]);
+      // removeEffect: lRange + lRem
+      mockRedisClient.lRange
+        .mockResolvedValueOnce([markJson, markJson])  // removeEffect 1st mark
+        .mockResolvedValueOnce([markJson]);          // removeEffect 2nd mark
+      mockRedisClient.lRem.mockResolvedValue(1);
+
+      const result = await attachFireMark('b-1', 't-1', 1, 'deck');
+      expect(result.marksAdded).toBe(true);
+      expect(result.burnTriggered).toBe(true);
+      expect(result.currentMarkCount).toBe(2);
+      // rPush 应当被调用 2 次：1 mark_fire + 1 burn
+      expect(mockRedisClient.rPush).toHaveBeenCalledTimes(2);
+      // 第 2 个 rPush 是 burn
+      const burnPushed = JSON.parse(mockRedisClient.rPush.mock.calls[1][1]);
+      expect(burnPushed.type).toBe('burn');
+      expect(burnPushed.value).toBe(1);
+      expect(burnPushed.duration_rounds).toBe(2);
+    });
+
+    it('target with 2 marks: add 1 mark → trigger burn (same as 1 mark case)', async () => {
+      const markJson1 = JSON.stringify({
+        effect_id: 'mark-1', type: 'mark_fire',
+        duration_rounds: 99999, created_round: 1, expire_round: 99999,
+      });
+      const markJson2 = JSON.stringify({
+        effect_id: 'mark-2', type: 'mark_fire',
+        duration_rounds: 99999, created_round: 1, expire_round: 99999,
+      });
+      // 1st: check burn
+      mockRedisClient.lRange.mockResolvedValueOnce([markJson1, markJson2]);
+      // 2nd: count mark after RPUSH
+      mockRedisClient.lRange.mockResolvedValueOnce([markJson1, markJson2, markJson1]);
+      // removeEffect x2
+      mockRedisClient.lRange.mockResolvedValue([markJson1, markJson2, markJson1]);
+      mockRedisClient.lRem.mockResolvedValue(1);
+
+      const result = await attachFireMark('b-1', 't-1', 1, 'deck');
+      expect(result.marksAdded).toBe(true);
+      expect(result.burnTriggered).toBe(true);
+    });
+
+    it('target with active burn: mark should be ignored (no mark added)', async () => {
+      const burnJson = JSON.stringify({
+        effect_id: 'burn-1', type: 'burn', value: 1,
+        duration_rounds: 2, created_round: 1, expire_round: 5,
+      });
+      mockRedisClient.lRange.mockResolvedValueOnce([burnJson]);
+
+      const result = await attachFireMark('b-1', 't-1', 1, 'deck');
+      expect(result.marksAdded).toBe(false);
+      expect(result.burnTriggered).toBe(false);
+      expect(result.currentBurnCount).toBe(1);
+      // 不应调用 rPush
+      expect(mockRedisClient.rPush).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('applyBurnDamage - 灼伤结算', () => {
+    it('no burn: totalDamage=0, burnCount=0', async () => {
+      mockRedisClient.lRange.mockResolvedValueOnce([]);
+      const result = await applyBurnDamage('b-1', 't-1', 1);
+      expect(result.totalDamage).toBe(0);
+      expect(result.burnCount).toBe(0);
+      expect(result.burnEffectIds).toEqual([]);
+    });
+
+    it('1 burn: totalDamage=1, burnCount=1', async () => {
+      mockRedisClient.lRange.mockResolvedValueOnce([
+        JSON.stringify({
+          effect_id: 'burn-1', type: 'burn', value: 1,
+          duration_rounds: 2, created_round: 1, expire_round: 5,
+        }),
+      ]);
+      const result = await applyBurnDamage('b-1', 't-1', 1);
+      expect(result.totalDamage).toBe(1);
+      expect(result.burnCount).toBe(1);
+      expect(result.burnEffectIds).toEqual(['burn-1']);
+    });
+
+    it('2 burns: totalDamage=2 (stacking)', async () => {
+      mockRedisClient.lRange.mockResolvedValueOnce([
+        JSON.stringify({
+          effect_id: 'burn-1', type: 'burn', value: 1,
+          duration_rounds: 2, created_round: 1, expire_round: 5,
+        }),
+        JSON.stringify({
+          effect_id: 'burn-2', type: 'burn', value: 1,
+          duration_rounds: 2, created_round: 1, expire_round: 5,
+        }),
+      ]);
+      const result = await applyBurnDamage('b-1', 't-1', 1);
+      expect(result.totalDamage).toBe(2);
+      expect(result.burnCount).toBe(2);
+      expect(result.burnEffectIds).toEqual(['burn-1', 'burn-2']);
+    });
+
+    it('burn + shield + mark_fire coexist: only burn counts', async () => {
+      mockRedisClient.lRange.mockResolvedValueOnce([
+        JSON.stringify({
+          effect_id: 's-1', type: 'shield', value: 5,
+          duration_rounds: 2, created_round: 1, expire_round: 5,
+        }),
+        JSON.stringify({
+          effect_id: 'b-1', type: 'burn', value: 1,
+          duration_rounds: 2, created_round: 1, expire_round: 5,
+        }),
+        JSON.stringify({
+          effect_id: 'm-1', type: 'mark_fire',
+          duration_rounds: 99999, created_round: 1, expire_round: 99999,
+        }),
+      ]);
+      const result = await applyBurnDamage('b-1', 't-1', 1);
+      expect(result.totalDamage).toBe(1);
+      expect(result.burnCount).toBe(1);
+      expect(result.burnEffectIds).toEqual(['b-1']);
+    });
+
+    it('burn expired (not in active list): 0 damage', async () => {
+      // getActiveEffects 过滤了过期的 burn
+      mockRedisClient.lRange.mockResolvedValueOnce([]);
+      const result = await applyBurnDamage('b-1', 't-1', 5);
+      expect(result.totalDamage).toBe(0);
+      expect(result.burnCount).toBe(0);
+    });
+  });
+
+  describe('getMageMarkState - 读取', () => {
+    it('empty effects: markCount=0, burnCount=0', async () => {
+      mockRedisClient.lRange.mockResolvedValueOnce([]);
+      const result = await getMageMarkState('b-1', 't-1', 1);
+      expect(result.markCount).toBe(0);
+      expect(result.burnCount).toBe(0);
+      expect(result.totalBurnDamage).toBe(0);
+    });
+
+    it('only marks: markCount=N, burnCount=0, totalBurnDamage=0', async () => {
+      mockRedisClient.lRange.mockResolvedValueOnce([
+        JSON.stringify({
+          effect_id: 'm-1', type: 'mark_fire',
+          duration_rounds: 99999, created_round: 1, expire_round: 99999,
+        }),
+        JSON.stringify({
+          effect_id: 'm-2', type: 'mark_fire',
+          duration_rounds: 99999, created_round: 1, expire_round: 99999,
+        }),
+      ]);
+      const result = await getMageMarkState('b-1', 't-1', 1);
+      expect(result.markCount).toBe(2);
+      expect(result.burnCount).toBe(0);
+      expect(result.totalBurnDamage).toBe(0);
+    });
+
+    it('only burns: markCount=0, burnCount=N, totalBurnDamage=N', async () => {
+      mockRedisClient.lRange.mockResolvedValueOnce([
+        JSON.stringify({
+          effect_id: 'b-1', type: 'burn', value: 1,
+          duration_rounds: 2, created_round: 1, expire_round: 5,
+        }),
+        JSON.stringify({
+          effect_id: 'b-2', type: 'burn', value: 1,
+          duration_rounds: 2, created_round: 1, expire_round: 5,
+        }),
+      ]);
+      const result = await getMageMarkState('b-1', 't-1', 1);
+      expect(result.markCount).toBe(0);
+      expect(result.burnCount).toBe(2);
+      expect(result.totalBurnDamage).toBe(2);
+    });
+
+    it('mark + burn coexist: both returned (test function independence)', async () => {
+      mockRedisClient.lRange.mockResolvedValueOnce([
+        JSON.stringify({
+          effect_id: 'm-1', type: 'mark_fire',
+          duration_rounds: 99999, created_round: 1, expire_round: 99999,
+        }),
+        JSON.stringify({
+          effect_id: 'b-1', type: 'burn', value: 1,
+          duration_rounds: 2, created_round: 1, expire_round: 5,
+        }),
+      ]);
+      const result = await getMageMarkState('b-1', 't-1', 1);
+      expect(result.markCount).toBe(1);
+      expect(result.burnCount).toBe(1);
+      expect(result.totalBurnDamage).toBe(1);
+    });
+  });
+
+  describe('mark + burn 共存边界', () => {
+    it('target with 1 burn + 0 mark: attach mark → ignored', async () => {
+      const burnJson = JSON.stringify({
+        effect_id: 'b-1', type: 'burn', value: 1,
+        duration_rounds: 2, created_round: 1, expire_round: 5,
+      });
+      mockRedisClient.lRange.mockResolvedValueOnce([burnJson]);
+      const result = await attachFireMark('b-1', 't-1', 1, 'deck');
+      expect(result.marksAdded).toBe(false);
+      expect(result.burnTriggered).toBe(false);
+      expect(result.currentBurnCount).toBe(1);
+    });
+
+    it('target with 2 burns + 0 mark: attach mark → ignored', async () => {
+      const burnJson1 = JSON.stringify({
+        effect_id: 'b-1', type: 'burn', value: 1,
+        duration_rounds: 2, created_round: 1, expire_round: 5,
+      });
+      const burnJson2 = JSON.stringify({
+        effect_id: 'b-2', type: 'burn', value: 1,
+        duration_rounds: 2, created_round: 1, expire_round: 5,
+      });
+      mockRedisClient.lRange.mockResolvedValueOnce([burnJson1, burnJson2]);
+      const result = await attachFireMark('b-1', 't-1', 1, 'deck');
+      expect(result.marksAdded).toBe(false);
+      expect(result.burnTriggered).toBe(false);
+      expect(result.currentBurnCount).toBe(2);
+    });
+
+    it('target with 0 burn + 1 mark: attach mark → trigger burn', async () => {
+      const markJson = JSON.stringify({
+        effect_id: 'm-1', type: 'mark_fire',
+        duration_rounds: 99999, created_round: 1, expire_round: 99999,
+      });
+      // 1st: check burn → 0
+      mockRedisClient.lRange.mockResolvedValueOnce([markJson]);
+      // 2nd: count mark after RPUSH
+      mockRedisClient.lRange.mockResolvedValueOnce([markJson, markJson]);
+      // removeEffect
+      mockRedisClient.lRange.mockResolvedValue([markJson, markJson]);
+      mockRedisClient.lRem.mockResolvedValue(1);
+
+      const result = await attachFireMark('b-1', 't-1', 1, 'deck');
+      expect(result.marksAdded).toBe(true);
+      expect(result.burnTriggered).toBe(true);
+      expect(result.currentMarkCount).toBe(2);
+    });
+  });
+
+  describe('mage key 隔离 (与 warrior/ranger)', () => {
+    it('mark_fire should not affect warrior shield', async () => {
+      const shieldJson = JSON.stringify({
+        effect_id: 's-1', type: 'shield', value: 5,
+        duration_rounds: 2, created_round: 1, expire_round: 5,
+      });
+      const markJson = JSON.stringify({
+        effect_id: 'm-1', type: 'mark_fire',
+        duration_rounds: 99999, created_round: 1, expire_round: 99999,
+      });
+      mockRedisClient.lRange.mockResolvedValueOnce([shieldJson]);
+      const result = await getMageMarkState('b-1', 't-1', 1);
+      expect(result.markCount).toBe(0);
+      expect(result.burnCount).toBe(0);
+      // shield 没有被误读为 mark/burn
+    });
+
+    it('mark_fire should not affect ranger damage_boost', async () => {
+      const boostJson = JSON.stringify({
+        effect_id: 'b-1', type: 'damage_boost', value: 0.5,
+        duration_rounds: 1, created_round: 1, expire_round: 5,
+      });
+      const markJson = JSON.stringify({
+        effect_id: 'm-1', type: 'mark_fire',
+        duration_rounds: 99999, created_round: 1, expire_round: 99999,
+      });
+      mockRedisClient.lRange.mockResolvedValueOnce([boostJson]);
+      const result = await getMageMarkState('b-1', 't-1', 1);
+      expect(result.markCount).toBe(0);
+      expect(result.burnCount).toBe(0);
+    });
+
+    it('mark_fire/burn should use effects:{target_id} key (shared with warrior/ranger)', async () => {
+      // attachFireMark 写入的 effect 应该用同一个 effects LIST
+      mockRedisClient.lRange.mockResolvedValueOnce([]);   // check burn
+      mockRedisClient.lRange.mockResolvedValueOnce([]);   // count mark
+      await attachFireMark('b-1', 't-1', 1, 'deck');
+      // rPush 应该用 'battle:b-1:effects:t-1' 这个 key
+      const rPushKey = mockRedisClient.rPush.mock.calls[0][0];
+      expect(rPushKey).toBe('battle:b-1:effects:t-1');
     });
   });
 });
