@@ -62,7 +62,9 @@
 
 ## 问题与解决
 
-<!-- 在此记录开发过程中遇到的问题及解决方案 -->
+| 日期 | 问题 | 解决方案 |
+|------|------|----------|
+| 2026-06-10 | `gathering.integration.test.ts` 3 个用例（开始采集×2、取消采集）因 `ClientClosedError: The client is closed` 失败。根因：集成测试未调用 `connectRedis()`，但 `idleQueueService.zAdd/zRem` 路径要求已连接的单例 | 在测试文件顶部加 `jest.mock('../config/redis', ...)` 覆盖所有用到的 Redis 方法。同步更新 `architecture.md` 增加「集成测试 Mock 模式」章节。详见 history 2026-06-10 条目 |
 
 ---
 

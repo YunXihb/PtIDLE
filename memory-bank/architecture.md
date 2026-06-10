@@ -758,5 +758,46 @@ backend/
 
 ---
 
-*文档版本：v1.22*
-*最后更新：2026-06-09*
+## 集成测试 Mock 模式
+
+集成测试运行在独立的 Jest 进程，模块单例（`redisClient`、`pool`）不会自动连接。
+
+### 已知问题：Redis 单例未连接
+
+`src/config/redis.ts:8` 的 `redisClient` 是 `createClient()` 创建但**未调用 `.connect()`** 的单例。集成测试若不 mock 该模块且不显式调用 `connectRedis()`，任何 Redis 命令都会抛 `ClientClosedError: The client is closed`。
+
+### Mock 约定
+
+集成测试应在所有 imports 之前添加：
+
+```ts
+jest.mock('../config/redis', () => ({
+  redisClient: {
+    zAdd: jest.fn(),
+    zRem: jest.fn(),
+    zRangeByScore: jest.fn(),
+    zRange: jest.fn(),
+    zCard: jest.fn(),
+    set: jest.fn(),
+    del: jest.fn(),
+  },
+  connectRedis: jest.fn(),
+  disconnectRedis: jest.fn(),
+}));
+```
+
+`jest.fn()` 默认返回 `undefined`，对 `await redisClient.zAdd(...)` 这类 void 操作足够。当 `idleQueueService` 引入新方法时，需同步加进 mock 对象。
+
+### 适用范围
+
+- ✅ `src/routes/gathering.integration.test.ts`（2026-06-10 修复）
+- 触发 `idleQueueService` 或 `battleService` Redis 调用的集成测试都应遵循此约定
+
+### T035/T036 history 误读澄清
+
+T035/T036 history 提到「集成测试 8 个失败」是 PostgreSQL 5433 / Redis 6379 端口未启动的**基线连接错误**。环境拉起后，DB 相关全通；Redis 相关暴露真实缺陷——即上文单例未连接问题，**已修复**。
+
+---
+
+*文档版本：v1.23*
+*最后更新：2026-06-10*

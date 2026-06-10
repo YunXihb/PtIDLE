@@ -167,3 +167,26 @@
 4. `endCurrentRound` 必须显式调用才能持久化轮次切换（不自动随 `endCurrentStep` 触发），让上层 orchestrator 决定何时落库（vital for 防回滚和重连恢复）
 5. `finishSession` 是 9 个 API 之外的辅助函数，专为 T052 胜负判定设计，文档已注明用途但不在原计划 9 个之内
 6. 集成测试（authController + gathering）8 个用例失败与 T036 无关，是 PostgreSQL 5433 / Redis 6379 端口未运行的基线环境问题（与 T035 history 记录一致）
+
+---
+
+## 2026-06-10 - 任务：修复 gathering 集成测试 Redis 单例未连接问题
+
+### Prompt
+检查 PTIDLE 本地状态；用户要求处理 T035/T036 history 中提到的「集成测试 8 个失败」，确认是否环境问题
+
+### 思考
+- 执行 `docker compose up -d` 拉起 PostgreSQL 5433 + Redis 6379 容器，状态变 Up
+- 验证环境：authController 单测 15/15、auth 集成 14/14 全过；gathering 集成 6/9，**3 个用例 500 错误**
+- 排除环境基线问题后，根因转向代码：堆栈显示 `idleQueueService.ts:30` `redisClient.zAdd` 抛 `ClientClosedError: The client is closed`
+- 分析：`src/config/redis.ts:8` 的 `redisClient` 是模块单例，`createClient()` 后**未 `.connect()`**；集成测试不调用 `connectRedis()`，命令直接失败
+- 决策：采用**测试侧修复**（mock redis 模块），不修改 `idleQueueService` 生产代码——生产环境正常连接，不引入防御性 `ensureConnected()` 复杂度
+- 修复：在 `gathering.integration.test.ts` 顶部加 `jest.mock('../config/redis', ...)`，覆盖 `idleQueueService` 用到的所有方法（`zAdd`/`zRem`/`zRangeByScore`/`zRange`/`zCard`/`set`/`del`）以及 `connectRedis`/`disconnectRedis`
+- 验证：单文件 9/9，三个文件合计 38/38 全过
+- 同步更新：`architecture.md` 新增「集成测试 Mock 模式」章节（v1.22→v1.23），`progress.md` 问题与解决表新增一行
+
+### 意外
+1. T035/T036 history 中「集成测试 8 个失败」其实是**两个不同问题**叠加误读：6 个是数据库/Redis 端口未启动的 ECONNREFUSED 基线，2 个是 gathering 的真实 500 错误——但当时未拆开，导致「8 个」估算不准
+2. 修复后控制台仍有 `console.error('Error starting gathering:', ...)` 输出——来自「should reject if already has active task」用例的预期错误路径，不是测试失败
+3. authController 单测有「Jest did not exit one second after the test run has completed」警告，是 `redisClient` 单例在进程退出时未 graceful close 的**已存在**问题，与本次修复无关
+4. 5v5 蛇形激活（chunk-based 算法 A-1/B-2/A-2/B-2/A-2/B-1）在 T036 仍标记为「future work」，但 `buildSnakeOrder` 当前 1-单位/步算法不直接支持 chunk 粒度——下一轮 T037 之前需评估是否扩展该函数

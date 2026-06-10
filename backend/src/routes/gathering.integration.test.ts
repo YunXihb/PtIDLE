@@ -16,6 +16,21 @@ jest.mock('../config/database', () => ({
   execute: jest.fn()
 }));
 
+// Mock the redis module (singleton client never gets .connect() in test process)
+jest.mock('../config/redis', () => ({
+  redisClient: {
+    zAdd: jest.fn(),
+    zRem: jest.fn(),
+    zRangeByScore: jest.fn(),
+    zRange: jest.fn(),
+    zCard: jest.fn(),
+    set: jest.fn(),
+    del: jest.fn(),
+  },
+  connectRedis: jest.fn(),
+  disconnectRedis: jest.fn(),
+}));
+
 // Mock auth middleware
 jest.mock('../middleware/auth', () => ({
   authMiddleware: (req: any, _res: any, next: any) => {
