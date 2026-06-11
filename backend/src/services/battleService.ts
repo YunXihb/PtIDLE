@@ -1,5 +1,5 @@
 import { redisClient } from '../config/redis';
-import { query } from '../config/database';
+import { query, queryOne } from '../config/database';
 import {
   canUseProfession,
   getTauntRedirect,
@@ -1168,4 +1168,77 @@ export async function validateTauntCard(
     targets: [targetId],
     energyCost,
   };
+}
+
+// ========================================
+// T044 撮合：battles 行持久化
+// ========================================
+
+/**
+ * battles 表的最小行结构（T044 INSERT 必需字段 + 几个 metadata 字段）
+ */
+export interface PendingBattle {
+  id: string;
+  player1_id: string;
+  player2_id: string;
+  status: 'pending' | 'ongoing' | 'finished';
+  matched_at: Date;
+  started_at: Date | null;
+}
+
+/**
+ * 创建一场 pending 状态的 battle 行（T044 撮合后写入）。
+ *
+ * 字段最小化：仅写 player1/2 + status='pending' + matched_at=NOW()。
+ * 其余字段依赖 schema DEFAULT（current_round=1, current_step=0, current_actor_id=NULL,
+ * current_phase='idle', battle_data='{}', created_at=NOW(), started_at=NULL,
+ * winner_id=NULL, duration=0）。
+ *
+ * 双层防 dup 兜底：
+ *   - 调用方先做「OR player1/2」预查询（防 dup 查询）
+ *   - 本函数使用 ON CONFLICT (player1_id, player2_id) WHERE status='pending' DO NOTHING
+ *     走 partial unique index（migration 007）。如果 INSERT 被 ON CONFLICT 拦截，返回 null。
+ *
+ * @param p1Id player1（先入队者）的 player_id
+ * @param p2Id player2（后入队者）的 player_id
+ * @returns 新 battle id；若被 dup index 拦截返回 null
+ */
+export async function createPendingBattle(
+  p1Id: string,
+  p2Id: string
+): Promise<string | null> {
+  const result = await queryOne<{ id: string }>(
+    `INSERT INTO battles (player1_id, player2_id, status, matched_at)
+     VALUES ($1, $2, 'pending', NOW())
+     ON CONFLICT (player1_id, player2_id) WHERE status = 'pending'
+     DO NOTHING
+     RETURNING id`,
+    [p1Id, p2Id]
+  );
+
+  return result?.id ?? null;
+}
+
+/**
+ * 根据 player_id 查询其作为参与方的 pending battle（T044 LOSER 恢复路径）。
+ *
+ * 返回最新的一行 pending battle（按 matched_at DESC）。
+ *
+ * @param playerId player_id
+ * @returns pending battle 或 null
+ */
+export async function getPendingBattleByPlayerId(
+  playerId: string
+): Promise<PendingBattle | null> {
+  const result = await queryOne<PendingBattle>(
+    `SELECT id, player1_id, player2_id, status, matched_at, started_at
+     FROM battles
+     WHERE (player1_id = $1 OR player2_id = $1)
+       AND status = 'pending'
+     ORDER BY matched_at DESC
+     LIMIT 1`,
+    [playerId]
+  );
+
+  return result;
 }

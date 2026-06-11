@@ -67,6 +67,7 @@
 | T041 | 实现法师职业机制 2（debuff/灼伤系统，fire mark + burn DoT） | 2026-06-11 |
 | T042 | 实现匹配队列 API (POST /api/match/queue) | 2026-06-11 |
 | T043 | 实现匹配状态查询 + 取消匹配 API (GET + DELETE /api/match/queue) | 2026-06-11 |
+| T044 | 实现对手匹配逻辑（tryMatch + Lua 撮合 + battles 行创建 + LOSER 兜底） | 2026-06-11 |
 
 ---
 

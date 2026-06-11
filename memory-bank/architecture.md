@@ -1313,16 +1313,16 @@ UPDATE card_templates SET is_public_pool = TRUE WHERE name = '轻击';
 
 ---
 
-## T042 + T043 新增服务：匹配系统（阶段 4.1）
+## T042 + T043 + T044 新增服务：匹配系统（阶段 4.1）
 
 ### 匹配队列服务 (Matchmaking Service)
 
 **位置**：`src/services/matchmakingService.ts`
 
-PvP 对战入口的第一环。玩家认证后通过 `/api/match/queue` 加入全局匹配队列 / 查询状态 / 取消匹配。
+PvP 对战入口的第一环。玩家认证后通过 `/api/match/queue` 加入全局匹配队列 / 查询状态 / 取消匹配 / 撮合对手。
 - T042：实现 `POST /queue`（入队）
 - T043：实现 `GET /queue`（查询状态）+ `DELETE /queue`（取消匹配）
-- 撮合与 battle 行创建仍留待 T044
+- T044：实现 `tryMatch`（撮合两个等待者 + 创建 battles 行）+ LOSER 兜底查询 + 三个 handler 改造
 
 #### Redis 键
 
@@ -1330,6 +1330,7 @@ PvP 对战入口的第一环。玩家认证后通过 `/api/match/queue` 加入�
 |----|------|------|----------|
 | `idle:matchmaking:queue` | Sorted Set | 全局匹配队列（member = `JSON.stringify({userId, enqueuedAt})`，score = `enqueuedAt` ms） | 进程级 |
 | `idle:matchmaking:lock:{userId}` | String | 单用户去重锁，值固定为 `1` | 600s TTL |
+| `idle:matchmaking:lock:global` | String | 全局撮合锁，值 = `<uuid>` token | 5s TTL（T044 新增） |
 
 `score = enqueuedAt` 兼作排序依据，T044 撮合时 `ZRANGE key 0 0` O(log N) 即可取最久等待者。
 
@@ -1362,6 +1363,76 @@ PvP 对战入口的第一环。玩家认证后通过 `/api/match/queue` 加入�
 | `leaveMatchmaking(userId)` | 离开队列 + 释放锁；不在队列抛 `'不在匹配队列中'` |
 | `getMatchmakingQueueStats()` | `{pendingPlayers, oldestEnqueuedAt, newestEnqueuedAt}` |
 | `clearMatchmakingQueue()` | 删除队列 key（测试用；不清理各玩家 lock keys） |
+| `tryMatch(triggerUserId)` | T044 撮合：抢全局锁 → Lua 找候选 → alive 校验 → 防 dup → INSERT battles → cleanup。返 `TryMatchResult` discriminated union（matched:true 返 battleId+opponentUserId；matched:false 返 rejectionReason） |
+| `getUserPendingBattle(userId)` | T044 LOSER 兜底：根据 userId 查 pending battle（用于 GET /queue 与 DELETE 409） |
+
+### 撮合核心 `tryMatch`（T044）
+
+**为什么用 Lua 脚本**：`node-redis` v4.6.10 支持 `eval` 脚本；Lua 在 Redis 单线程内原子执行，避免「SETNX EX 5s 过期但事务还在跑」的竞态。
+
+**两个 Lua 脚本**（定义在 `matchmakingService.ts` 文件顶部）：
+
+1. **LUA_PICK_CANDIDATE**（5 步原子）：
+   - 验证 token 是当前锁持有者（`GET lock_key` 与 token 比对）
+   - 续期全局锁（`EXPIRE lock_key ttl`，避免长 DB 调用期间过期）
+   - `ZRANGE queue_key 0 max_scan-1` 找候选（解析 JSON `cjson.decode` 拿 userId）
+   - 排除 self（`if user_id ~= self_user`）
+   - 原子认领：`ZREM queue_key entry_str`（先于 DB 查询，避免重复处理）
+   - 返 `{1, picked_userId, picked_entry_str}` 或 `{0, 'NO_CANDIDATE'}` / `{0, 'NOT_HOLDER'}`
+
+2. **LUA_RELEASE_CLEANUP**（撮合成功 / dup 路径，一把梭）：
+   - 验证 token
+   - 兜底 ZREM self + ZREM picked（即使 LUA_PICK_CANDIDATE 已 ZREM，幂等）
+   - `DEL self_lock_key` + `DEL picked_lock_key` + `DEL global_lock_key`
+   - 返 `{1}` 或 `{0, 'NOT_HOLDER'}`
+
+**整体 `tryMatch(triggerUserId)` 流程**：
+1. `SETNX idle:matchmaking:lock:global <uuid_token> EX 5` → 失败返 `lock_failed`
+2. `EVAL LUA_PICK_CANDIDATE` → 返 NO_CANDIDATE 时释放全局锁返 `no_candidate`
+3. Lua 返 picked → 拿 self entry_str（`ZRANGE 0 -1` 扫一次）
+4. 双 alive 校验：`getPlayerIdByUserId × 2` + `countAliveCharacters × 2`（任一 <3 → cleanup + 返 `self_not_eligible` / `opponent_not_eligible`）
+5. 防 dup 预查询：DB `SELECT id FROM battles WHERE (p1=A AND p2=B) OR (p1=B AND p2=A) AND status='pending' LIMIT 1` → 命中返已有 battleId
+6. `createPendingBattle(p1=picked, p2=trigger)` → INSERT ON CONFLICT (player1_id, player2_id) WHERE status='pending' DO NOTHING RETURNING id
+7. 被 unique index 拦截时 dup 兜底查询返已有 id
+8. `EVAL LUA_RELEASE_CLEANUP` 清 queue + lockA + lockB + global
+9. 返 `matched:true { battleId, opponentUserId }`
+
+**p1/p2 决定**：FIFO，先入队者为 p1（对应 pickedUserId），后入队者为 p2（对应 triggerUserId）。`createPendingBattle` 内部明确 `player1_id=picked, player2_id=trigger`。
+
+**双层防 dup（defense in depth）**：
+- (a) Lua 原子 ZREM 候选（抢到候选后立即从队列移除）
+- (b) PostgreSQL partial unique index `idx_battles_pending_unique_p1p2 ON battles(player1_id, player2_id) WHERE status='pending'`（migration 007 新增）
+
+### battles 表 T044 新增字段（migration 007）
+
+| 字段 | 类型 | 默认 | 用途 |
+|------|------|------|------|
+| `matched_at` | TIMESTAMP WITH TIME ZONE | NULL（migration 回填 = `created_at`） | 撮合成功时间（T044 写入） |
+| `started_at` | TIMESTAMP WITH TIME ZONE | NULL | 双方首次进入战场时间（T048 写入） |
+
+**T044 写入 battles 行的最小字段集**（其他依赖 schema DEFAULT）：
+- `player1_id, player2_id, status='pending', matched_at=NOW()`
+- 其余字段（`current_round=1, current_step=0, current_actor_id=NULL, current_phase='idle', battle_data='{}', created_at=NOW(), started_at=NULL, winner_id=NULL, duration=0`）由 schema DEFAULT 兜底
+
+**T048 战场初始化时**会 UPDATE `status='ongoing'` + `current_actor_id=<first char>` + `started_at=NOW()`。
+
+### 三个 Handler 改造（T044）
+
+**POST `/api/match/queue`**：入队 → 同步撮合 → 响应结构
+- 撮合成功：`201 { success:true, matched:true, data:{ battleId, opponentUserId, userId, enqueuedAt } }`
+- self alive<3：`400 { error:'Not enough alive characters (need ≥3)' }`（self 已 cleanup）
+- 其他撮合失败（lock_failed / no_candidate / opponent_not_eligible）：`201 { success:true, matched:false, data:{ userId, enqueuedAt } }`（self 仍在队列）
+- 重复入队：`400 'Already in matchmaking queue'`
+
+**GET `/api/match/queue`**：查询 → LOSER 兜底
+- 在队列：`200 { data:{ inQueue:true, userId, enqueuedAt, waitingSeconds } }`
+- 不在队列但有 pending battle（LOSER 视角）：`200 { data:{ inQueue:false, matched:true, battleId, matchedAt: <ms> } }`
+- 真不在：`200 { data:{ inQueue:false, matched:false } }`
+
+**DELETE `/api/match/queue`**：离开 → LOSER 409
+- 在队列：`200 { status:'left', data: entry }`
+- LOSER 想取消（不在队列但有 pending battle）：`409 { error:'already_matched', data:{ battleId } }` —— HTTP 409 Conflict 语义最准
+- 真不在：`400 'Not in matchmaking queue'`
 
 ### 匹配 API 路由
 
@@ -1369,47 +1440,52 @@ PvP 对战入口的第一环。玩家认证后通过 `/api/match/queue` 加入�
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/api/match/queue` | 加入匹配队列；201 + entry / 400 重复 / 401 未鉴权 |
-| GET | `/api/match/queue` | 查询当前匹配队列状态；200 + `{userId, enqueuedAt, waitingSeconds}` 或 200 + `null`（语义：「查询我的队列状态」始终合法） |
-| DELETE | `/api/match/queue` | 取消匹配；200 + entry / 400 不在队列 / 401 未鉴权 |
+| POST | `/api/match/queue` | 入队 + 撮合；201 / 400 多种 / 401 |
+| GET | `/api/match/queue` | 查询 + LOSER 兜底；200 三种结构 / 401 |
+| DELETE | `/api/match/queue` | 取消 + LOSER 409；200 / 409 / 400 / 401 |
 
 `app.use('/api/match', matchmakingRoutes)` 在 `src/index.ts` 中按字母序插入 gathering 与 skills 之间。
 
-### T042 + T043 边界（明确不做）
+### T044 边界（明确不做）
 
 | # | 不做的内容 | 归属任务 |
 |---|-----------|---------|
-| 1 | 撮合算法（2 玩家配对 + 3v3 角色数量校验） | T044 |
-| 2 | 创建 `battles` 行 / schema 调整 | T044 |
-| 3 | 角色选择 / loadout 校验 | T044/T048 |
-| 4 | 匹配超时 / 强制取消 | T044+ |
-| 5 | WebSocket 推送「匹配成功」 | T045+ |
-| 6 | 持久化到 `players` 表（如 `in_matchmaking` 标志） | 后续 |
-| 7 | 用户已被 T044 撮合走但仍 DELETE 的特殊处理 | T044 实施时回看 |
-| 8 | 孤儿锁清理（lock 存在但队列无 entry） | 现状 600s TTL 自愈，未来若 SLA 提升再优化 |
+| 1 | 撮合超时（撮合后 N 分钟未进入 T048 → 强制退出） | T044+ |
+| 2 | 撮合后通过 WS 实时通知 LOSER | T045 |
+| 3 | 撮合后任一方不响应 → 胜者自动胜利 | T046+ |
+| 4 | 撮合失败告警 / 监控 | T044+ |
+| 5 | O(1) EXISTS 优化（替代 zRange 全扫） | T044+ |
+| 6 | 撮合失败递归找下一个候选 | T044+（MVP 简化：不合格直接 return） |
+| 7 | 撮合锁被占时 client 退避重试 | T044+ |
+| 8 | orphan lock 自愈 cron | T044+ |
 
 服务文件顶部以中文注释完整列出此清单，防止后续误抢跑。
 
-### 并发场景（不做特殊处理）
+### 并发场景
 
 | 场景 | 行为 |
 |------|------|
 | 两个 DELETE 同时到达 | 两者都 zRange 找到 entry。一个 zRem 返回 1，另一个返回 0。两者都 del lock（幂等）。两者都返回 200。语义上「都成功取消」，无副作用。 |
 | GET 与 DELETE 同时到达 | GET 读到 entry，DELETE 删除 entry。若 GET 早于 DELETE 完成 → 显示「等待 X 秒」；晚于 → 显示 null。前端可接受。 |
-| 用户已被 T044 撮合走（未来场景） | T044 实现时会自行 zRem，那时 T043 的 DELETE 会得到 404/400。当前 T043 不预防。 |
+| 两个 POST /queue 同时到达 | 第一个抢到全局锁 → 撮合 picked → 写 battles → release。第二个 SETNX 失败 → 返 `lock_failed` → matched:false（仍在队列）。第二个下一次自然尝试撮合时（GET /queue 触发客户端重试）会成功。 |
+| 撮合进行中玩家被 DELETE | tryMatch 流程期间无并发保护（因为 SETNX NX 已经在排队端去重了，撮合中不该再有 DELETE）。若发生，tryMatch 走 LUA_RELEASE_CLEANUP 一并清掉。 |
+| T044 撮合后 LOSER 想 DELETE | T044 控制器层在 DELETE 抛「不在匹配队列中」后做 LOSER 兜底查询，命中 pending battle 返 409 + battleId。 |
 
 ### 文件清单
 
 | 路径 | 改动 |
 |------|------|
-| `src/services/matchmakingService.ts` | T042 新建 + T043 扩展：新增 `getMatchmakingStatus` / `leaveMatchmaking`；更新 OOS 清单 |
-| `src/services/matchmakingService.test.ts` | T042 5 用例 + T043 7 用例（含「zRem 先于 del」「不在队列时 zRem/del 均未调用」校验） |
-| `src/controllers/matchmakingController.ts` | T042 joinMatchmakingHandler + T043 getMatchmakingStatusHandler / leaveMatchmakingHandler；`includes('不在匹配队列中')` → 400 |
+| `src/services/matchmakingService.ts` | T042 新建 + T043 扩展 + T044 大改：新增 `tryMatch` / `getUserPendingBattle` / 3 个内部辅助（`safeReleaseGlobalLock` / `findAndGetSelfEntryStr` / `cleanupFailedCandidate` / `releaseCleanup`）+ 2 个 Lua 脚本（LUA_PICK_CANDIDATE / LUA_RELEASE_CLEANUP）+ `TryMatchResult` 类型 + 更新 OOS 清单 |
+| `src/services/matchmakingService.test.ts` | T042 5 + T043 7 + T044 8 = **20 用例**（含「Lua token 验证失败抛错」「unique index 触发」边界） |
+| `src/services/battleService.ts` | T044 末尾新增 `createPendingBattle` / `getPendingBattleByPlayerId` + `PendingBattle` 接口 |
+| `src/services/characterService.ts` | T044 新增 `countAliveCharacters` |
+| `src/controllers/matchmakingController.ts` | T042 joinMatchmakingHandler + T043 getMatchmakingStatusHandler / leaveMatchmakingHandler + T044 三 handler 改造（POST 同步撮合 + GET LOSER 兜底 + DELETE LOSER 409） |
 | `src/routes/matchmaking.ts` | T042 POST /queue + T043 GET /queue + DELETE /queue |
-| `src/routes/matchmaking.integration.test.ts` | T042 2 用例 + T043 4 用例 |
+| `src/routes/matchmaking.integration.test.ts` | T042 2 + T043 4 + T044 5 = **11 用例**（POST: 4 + GET: 3 + DELETE: 3，删 1 加 4） |
+| `src/migrations/007_add_match_metadata.sql` | **新建**：battles 表加 `matched_at` / `started_at` + 历史回填 + 3 索引（p1/p2 partial + unique partial） |
 | `src/index.ts` | T042 import + `app.use('/api/match', matchmakingRoutes)` 各 1 行 |
 
 ---
 
-*文档版本：v1.28*
+*文档版本：v1.29*
 *最后更新：2026-06-11*

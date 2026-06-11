@@ -4,13 +4,22 @@ import {
   enqueueMatchmaking,
   getMatchmakingStatus,
   leaveMatchmaking,
+  tryMatch,
+  getUserPendingBattle,
+  MatchQueueStatus,
 } from '../services/matchmakingService';
 
 /**
  * POST /api/match/queue
- * 加入匹配队列
+ * 加入匹配队列，并同步尝试撮合。
  *
- * T042 范围：仅入队。不做 3v3 校验、撮合、battle 行创建（见 matchmakingService.ts 顶部说明）。
+ * T044 范围：
+ *   - 入队（enqueueMatchmaking）
+ *   - 撮合（tryMatch）
+ *   - 任一 alive < 3 → 400
+ *   - 撮合成功 → 201 + { matched: true, data: { battleId, opponentUserId, ...entry } }
+ *   - 撮合失败 → 201 + { matched: false, data: entry }
+ *   - 重复入队 → 400 'Already in matchmaking queue'
  */
 export async function joinMatchmakingHandler(
   req: AuthRequest,
@@ -25,10 +34,39 @@ export async function joinMatchmakingHandler(
     }
 
     const entry = await enqueueMatchmaking(userId);
+    const result = await tryMatch(userId);
 
+    if (result.matched) {
+      res.status(201).json({
+        success: true,
+        matched: true,
+        data: {
+          battleId: result.battleId,
+          opponentUserId: result.opponentUserId,
+          userId: entry.userId,
+          enqueuedAt: entry.enqueuedAt,
+        },
+      });
+      return;
+    }
+
+    // 撮合失败
+    if (result.rejectionReason === 'self_not_eligible') {
+      // self 不合格（alive<3）→ self 已从 queue 中清理
+      res.status(400).json({
+        error: 'Not enough alive characters (need ≥3)',
+      });
+      return;
+    }
+
+    // 其他失败原因（lock_failed / no_candidate / opponent_not_eligible）→ 仍在队列中
     res.status(201).json({
       success: true,
-      data: entry,
+      matched: false,
+      data: {
+        userId: entry.userId,
+        enqueuedAt: entry.enqueuedAt,
+      },
     });
   } catch (error) {
     console.error('Error joining matchmaking queue:', error);
@@ -46,10 +84,12 @@ export async function joinMatchmakingHandler(
 
 /**
  * GET /api/match/queue
- * 查询当前匹配队列状态
+ * 查询当前匹配状态（含 LOSER 兜底）。
  *
- * T043 范围：仅查询，不做撮合、battle 行创建。
- * 语义：「查询我的队列状态」始终是合法操作 —— 在队列返回 200 + status，不在队列返回 200 + null。
+ * T044 范围：
+ *   - 在队列 → 200 + { data: { inQueue: true, ...status } }
+ *   - 不在队列但有 pending battle（LOSER 视角） → 200 + { data: { inQueue: false, matched: true, battleId, matchedAt } }
+ *   - 真不在 → 200 + { data: { inQueue: false, matched: false } }
  */
 export async function getMatchmakingStatusHandler(
   req: AuthRequest,
@@ -65,9 +105,40 @@ export async function getMatchmakingStatusHandler(
 
     const status = await getMatchmakingStatus(userId);
 
+    if (status) {
+      const data: MatchQueueStatus & { inQueue: true } = {
+        ...status,
+        inQueue: true,
+      };
+      res.status(200).json({
+        success: true,
+        data,
+      });
+      return;
+    }
+
+    // 不在队列 → 查 LOSER 兜底
+    const pendingBattle = await getUserPendingBattle(userId);
+    if (pendingBattle) {
+      res.status(200).json({
+        success: true,
+        data: {
+          inQueue: false,
+          matched: true,
+          battleId: pendingBattle.id,
+          matchedAt: new Date(pendingBattle.matched_at).getTime(),
+        },
+      });
+      return;
+    }
+
+    // 真不在
     res.status(200).json({
       success: true,
-      data: status,
+      data: {
+        inQueue: false,
+        matched: false,
+      },
     });
   } catch (error) {
     console.error('Error fetching matchmaking status:', error);
@@ -77,10 +148,12 @@ export async function getMatchmakingStatusHandler(
 
 /**
  * DELETE /api/match/queue
- * 取消匹配，离开队列
+ * 取消匹配 / 处理 LOSER 试图取消的 409。
  *
- * T043 范围：仅离开队列 + 释放锁，不做撮合、battle 行创建、超时强制取消。
- * 对称 T042 语义：玩家不在队列时返回 400 + Error('不在匹配队列中')。
+ * T044 范围：
+ *   - 在队列 → 200 + { status: 'left', ...entry }
+ *   - 不在队列但有 pending battle（LOSER 视角） → 409 + { error: 'already_matched', data: { battleId } }
+ *   - 真不在 → 400 'Not in matchmaking queue'
  */
 export async function leaveMatchmakingHandler(
   req: AuthRequest,
@@ -98,6 +171,7 @@ export async function leaveMatchmakingHandler(
 
     res.status(200).json({
       success: true,
+      status: 'left',
       data: entry,
     });
   } catch (error) {
@@ -106,6 +180,25 @@ export async function leaveMatchmakingHandler(
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
     if (errorMessage.includes('不在匹配队列中')) {
+      // 不在队列 → 走 LOSER 兜底
+      try {
+        const userId = req.user?.userId;
+        if (userId) {
+          const pendingBattle = await getUserPendingBattle(userId);
+          if (pendingBattle) {
+            res.status(409).json({
+              error: 'already_matched',
+              data: {
+                battleId: pendingBattle.id,
+              },
+            });
+            return;
+          }
+        }
+      } catch (innerErr) {
+        console.error('Error checking pending battle on DELETE:', innerErr);
+      }
+
       res.status(400).json({ error: 'Not in matchmaking queue' });
       return;
     }

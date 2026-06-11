@@ -354,6 +354,19 @@ export async function getCharacterDeckCards(characterId: string) {
 }
 
 /**
+ * 统计玩家的存活棋子数量（T044 撮合校验）
+ * @param playerId 玩家 ID
+ * @returns is_alive=TRUE 的棋子数量
+ */
+export async function countAliveCharacters(playerId: string): Promise<number> {
+  const result = await query<{ count: string }>(
+    'SELECT COUNT(*) as count FROM characters WHERE player_id = $1 AND is_alive = TRUE',
+    [playerId]
+  );
+  return parseInt(result[0]?.count || '0', 10);
+}
+
+/**
  * 获取棋子的牌库卡牌数量
  * @param characterId 棋子 ID
  */

@@ -397,6 +397,48 @@
 3. **「ZREM 先于 DEL」用 `invocationCallOrder` 强校验**：plan 强调「用 `mock.invocationCallOrder` 校验」，实现为 `expect(zRemCallOrder).toBeLessThan(delCallOrder)`。这个顺序保证在测试里是**机器可验证的**，不只是代码 review 能看出
 4. **完全顺利**：单元 12/12 通过（5 旧 + 7 新），集成 6/6 通过（2 旧 + 4 新），`npx tsc --noEmit` 0 错误。无 mock 顺序坑、无类型错误、并发场景通过单元测试间接覆盖（两个 DELETE 都能成功的语义与 zRem 返回 0/1 的 mock 一致）
 
+---
+
+## 2026-06-11 - 任务：T044 实现对手匹配逻辑 (撮合 + battles 行 + LOSER 兜底)
+
+### Prompt
+实现 T044「对手匹配逻辑」。前置：T042 入队 + T043 取消/查询。范围：撮合两个等待者 + 创建 battles 行（status=pending） + 通知双方跳战场。触发：入队时同步撮合（POST /queue 内）。算法：纯 FIFO + 双方各 ≥3 alive 校验。Loadout：T044 不选具体 3 个棋子，只校验数量；T048 选定。Schema：Migration 007 加 matched_at + started_at。用户锁定的设计：Lua 脚本 + token 全局锁（避免 SETNX EX 5s 过期竞态）、双层防 dup（Lua ZREM + partial unique index）、LOSER DELETE 返 409、GET /queue 走 DB 兜底、不另设 active-battle endpoint（融入 GET /queue）。
+
+### 思考
+- **Migration 007 最小化**：battles 表加 `matched_at`（回填 = `created_at`）+ `started_at`（NULL）；3 索引（p1/p2 partial + unique partial）。battles 行的 `current_round` 等其他字段不在本任务范围，留给 T048
+- **Lua 原子性核心**：用 `redisClient.eval`（node-redis v4.6.10 支持）。两个脚本：LUA_PICK_CANDIDATE（验证 token + EXPIRE 续期 + ZRANGE 找候选 + ZREM 原子认领）+ LUA_RELEASE_CLEANUP（一把梭清 queue + 所有 lock + global lock）
+- **Lua 选 cjson.decode**：因为 queue member 是 `JSON.stringify({userId, enqueuedAt})` 串。Lua 内置 cjson 库支持 `pcall(cjson.decode, ...)` 容错
+- **p1/p2 决定**：FIFO，先入队者 = p1（picked），后入队者 = p2（trigger）。`createPendingBattle` 内部明确这一语义
+- **alive 校验用 tryMatch 入口双校验**：未来 T046+ 会改 is_alive，撮合是最后关口
+- **不合格处理直接 return 不递归**：MVP 简化。user 等下一次 GET 自然发现 picked 被清理
+- **LOSER DELETE 409**：HTTP 409 Conflict 语义最准，返 `{ error:'already_matched', data:{ battleId } }` 让前端跳战场
+- **LOSER 通知走 DB 兜底**：不依赖 T045 WS，新加 `getPendingBattleByPlayerId(playerId)` 单行 SQL 即可
+- **Lua token 续期**：EXPIRE 在 LUA 内做（长 DB 调用期间避免锁过期被他人抢）。5s TTL 远大于一次 tryMatch 时长
+- **防 dup 双层**：(a) Lua 原子 ZREM 候选（抢到后立即从队列移除）；(b) partial unique index `idx_battles_pending_unique_p1p2 ON (player1_id, player2_id) WHERE status='pending'`。`INSERT ... ON CONFLICT ... DO NOTHING RETURNING id` 是兜底
+- **3 个 handler 改造**：
+  - POST：入队后立刻 `tryMatch` → 201 + matched:true 返 battleId + opponentUserId
+  - GET：在队列 200 + inQueue:true；不在队列但有 pending battle 200 + matched:true + battleId；真不在 200 + matched:false
+  - DELETE：在队列 200 + status:'left'；LOSER 409 + already_matched + battleId；真不在 400
+- **battleService 新增 2 函数**：`createPendingBattle(p1, p2)` 走 ON CONFLICT；`getPendingBattleByPlayerId(playerId)` 单行查询
+- **characterService 新增 1 函数**：`countAliveCharacters(playerId)` 用 COUNT(*) WHERE is_alive=TRUE
+- **mocks 必须先于 imports**：ts-jest 不像 babel-jest 那样对 `const` 提升太友好。把所有 `jest.mock` 和 `const mockXxx` 放在文件最顶部（import 之前），否则报 "Cannot access 'mockXxx' before initialization" TDZ 错
+- **T044 测试统计**：单元 20 用例（5+7+8）+ 集成 11 用例（2+4+5）
+- **测试 mock 调整**：redis mock 加 `eval: jest.fn()`；新增 playerService / characterService / battleService 三组 mock
+- **TryMatchResult discriminated union**：`{matched:true, battleId, opponentUserId} | {matched:false, rejectionReason}`，控制器窄化访问
+- **OOS 8 项**：撮合超时 / WS 推送 / 不响应自动胜 / 告警 / O(1) 优化 / 递归找候选 / 锁占退避 / orphan lock 自愈 → 全部留 T044+
+
+### 意外
+1. **ts-jest TDZ 坑（首次跑测试）**：原以为把 `const mockXxx = jest.fn()` 放在 `jest.mock` 之前能复用 battleService.test.ts 模式，结果 ts-jest 把 imports hoist 到 jest.mock 之前，触发 `ReferenceError: Cannot access 'mockQueryOne' before initialization`。修复：把整块 mock 全部挪到 import 之前，import 放最后，加一个 `const _refs = {...}` 抑制 unused-var lint。这与 battleService.test.ts 不同（后者 import 在 mock 之后）
+2. **LUA_PICK_CANDIDATE cjson 容错**：用 `pcall(cjson.decode, ...)` 避免异常 JSON 拖垮整个 Lua 调用。失败时 parsed 返 nil，自动跳过
+3. **pickedUserId 变量声明遗漏**：初版删除 `pickedUserId` 声明（以为只在 try 块用），结果 cleanup 路径里要用 → 编译报 11 个 TS2304 错。恢复 `let pickedUserId: string | null = null` 即可
+4. **Test 错误路径 console.error 噪音**：DELETE LOSER 测试触发 `Error leaving matchmaking queue: Error: 不在匹配队列中` 日志。这是 controller catch 块的 `console.error`，属于预期行为（非关键 warning，11/11 测试仍通过）
+5. **测试统计微调**：plan 估算 tryMatch 8 unit + 10 integration，实际 tryMatch 8 unit（与 plan 一致）+ 5 integration（POST 4 + GET 3 + DELETE 3 = 10；与 plan 10 一致）。实际 plan 列的 10 个 integration 全部覆盖
+6. **`@typescript-eslint/no-unused-vars` lint 抑制**：`_refs = {...}` 模式 + 变量名加下划线前缀（如 `_pickedEntryStr`）双保险
+7. **完整 service 测试**：`npx jest src/services/` 19 suites / 395 tests 全过；`npx jest src/routes/matchmaking.integration.test.ts` 1 suite / 11 tests 全过；`npx tsc --noEmit` 0 错误
+8. **battleService.test.ts 不受影响**：T044 末尾新增 `createPendingBattle` / `getPendingBattleByPlayerId` 没改任何已有函数，64/64 旧测试照常通过
+9. **characterService.test.ts 不受影响**：新增 `countAliveCharacters` 是孤立函数，16/16 旧测试照常通过
+
+
 
 
 
