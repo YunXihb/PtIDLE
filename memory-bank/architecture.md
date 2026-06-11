@@ -1531,10 +1531,10 @@ PvP 对战入口的第一环。玩家认证后通过 `/api/match/queue` 加入�
 | server → room | `battle:opponent_joined` | `{ userId, username }` | 任一方 join 后,推给房间内另一方 |
 | server → room | `battle:opponent_disconnected` | `{ userId, timestamp }` | 任一方 disconnect 时(socket.data.battleId 存在),推给房间内其他 socket |
 
-### T045 / T046 / T047+ 范围
+### T045 / T046 / T047 范围
 
-| 项 | T045 | T046 | T047+ |
-|----|------|------|-------|
+| 项 | T045 | T046 | T047 |
+|----|------|------|------|
 | 握手期鉴权 | ✅ | — | — |
 | `socket.data.userId/username` | ✅ | — | — |
 | 自动 `socket.join('user:{userId}')` | ❌ | ✅ | — |
@@ -1565,10 +1565,106 @@ PvP 对战入口的第一环。玩家认证后通过 `/api/match/queue` 加入�
 
 ---
 
+## 实时状态广播 (T047)
+
+T047 把"对战进行中的棋盘 / 手牌 / 角色状态"接到 WS 通道上,作为 T049 移动 / T050 出牌 / T051 回合切换的承载层。**T047 本身只提供 broadcaster 函数库 + battle:join 初期推**,不与战斗 action API 联动(那些由后续任务 wire)。
+
+### 事件协议
+
+| 方向 | 事件 | Payload | 推送通道 | 触发方 |
+|------|------|---------|----------|--------|
+| server → client | `battle:state:full` | `{ battleId, board: BoardStateEvent, ownHand: Record<characterId, HandCard[]> }` | `user:{userId}` | `handleBattleJoin` 成功路径(本任务) |
+| server → room | `battle:state:board` | `BoardStateEvent` | `battle:{battleId}` | T051 回合切换 / 整盘变化时调 `broadcastBoardState`(本任务 wire 函数,调用由后续任务) |
+| server → client | `battle:state:hand` | `{ battleId, characterId, hand: HandCard[] }` | `user:{userId}` | T050 出牌后调 `broadcastHandState`(本任务 wire 函数) |
+| server → room | `battle:state:character` | `{ battleId, character: CharacterStatus }` | `battle:{battleId}` | T049 移动 / T050 出牌后调 `broadcastCharacterStatus`(本任务 wire 函数) |
+
+#### Payload 类型
+
+```ts
+interface BoardStateEvent {
+  battleId: string;
+  currentRound: number;
+  currentStep: number;
+  currentPhase: string;
+  currentActorId: string | null;
+  characters: CharacterStatus[];  // 复用 characterStatusService 的聚合
+}
+
+interface HandStateEvent { battleId: string; characterId: string; hand: HandCard[]; }
+interface CharacterStatusEvent { battleId: string; character: CharacterStatus; }
+interface FullStateEvent {
+  battleId: string;
+  board: BoardStateEvent;
+  ownHand: Record<string, HandCard[]>;  // characterId → 手牌;3v3 时 3 个 key
+}
+```
+
+### 隐私边界
+
+| 事件 | 隐私 | 走哪 | 理由 |
+|------|------|------|------|
+| `battle:state:full` | 含 ownHand → self-only | `user:{userId}` | 手牌是隐私,不能 room-wide |
+| `battle:state:hand` | self-only | `user:{userId}` | 单角色手牌仅本人可见 |
+| `battle:state:board` | 双方都看 | `battle:{battleId}` | 棋盘 / 状态效果 / 能量均无隐私 |
+| `battle:state:character` | 双方都看 | `battle:{battleId}` | 角色状态双方都需要(承伤 / 嘲讽目标判定) |
+
+### 复用已有服务
+
+| 函数 | 路径 | 用途 |
+|------|------|------|
+| `getCharacterStatus` | `services/characterStatusService.ts:46` | 角色状态聚合(health/effects/shield/taunt) |
+| `getActorHand` | `services/handService.ts:269` | 单角色手牌读取 |
+| `getDbSessionState` | `services/battleSessionService.ts:437` | battle 元数据(currentRound 等) |
+| `userRoom` / `battleRoom` | `socket/battleRoom.ts:24-25` | 房间命名 |
+| `listCharactersInBattle`(T047 新增) | `services/battleService.ts` | 单次 SQL JOIN 拿双边 character + userId,供 broadcaster 多次使用 |
+
+### 设计决策
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| 事件粒度 | 1 个 mega event (`full`) + 3 个 granular | `full` 走 join 后首屏,granular 走增量 |
+| broadcaster 接口 | 只接 `io`,不接 `socket` | 跟 controller 层 `io.to(...).emit` 模式一致;不依赖具体 socket 实例 |
+| `getCharacterStatus` 复用 | 复用,不另写聚合 | T039 已有完整聚合(health/effects/shield/taunt),T047 不重写 |
+| 失败处理 | `try/catch` 内 `console.error`,不抛 | emit 失败不阻断 join 流程(battle:join:error 是用户错误,emit 失败是基础设施问题) |
+| `listCharactersInBattle` 位置 | 放 `battleService.ts` | 单次 SQL 拿全角色 + userId,供 broadcaster 多次使用 |
+| 多角色手牌 | `ownHand: Record<characterId, HandCard[]>` | 3v3 时每玩家 3 个角色,各有手牌;以 characterId 为 key |
+
+### 失败语义(房间已加入 vs 首屏拉取失败)
+
+- `broadcastFullState` 在 `handleBattleJoin` 成功路径后调,**用独立 `.catch`**(不进 socketServer.ts:55 的统一 try/catch)
+- 理由:统一 try/catch 会发 `join:error`,但这里希望 join 仍算成功,只是首屏状态拉取失败 —— 前端可重试(reconnect 后重发 `battle:join` 即可触发)
+
+### T047 范围外(留给后续)
+
+- ❌ T049 移动后调 `broadcastCharacterStatus` —— T049 实现时再 wire
+- ❌ T050 出牌后调 `broadcastHandState` + `broadcastCharacterStatus` —— T050 实现时再 wire
+- ❌ T051 回合切换调 `broadcastBoardState` —— T051 实现时再 wire
+- ❌ 单独的 `battle:state:session` 事件(round/step/actor 变化)—— T051 设计
+- ❌ 对手断线后的状态冻结 / 自动判胜 —— 业务层
+- ❌ 跨节点 socket.io adapter(Redis adapter)—— 单体 MVP 不做
+- ❌ 增量差分(只推变化字段)—— T047 直接推全量,前端用 shallow equal 即可
+- ❌ 手牌张数提示("对手剩 3 张")—— 隐私设计禁止
+
+### 文件清单(T047)
+
+| 路径 | 改动 |
+|------|------|
+| `src/socket/battleStateBroadcaster.ts` | **新建** —— broadcaster 函数库 + 5 个导出(buildBoardState / broadcastBoardState / broadcastHandState / broadcastCharacterStatus / broadcastFullState)+ 4 个事件类型 |
+| `src/socket/battleStateBroadcaster.test.ts` | **新建** —— 7 个单元测(各函数 happy path / 边界 / 异常) |
+| `src/services/battleService.ts` | 末尾新增 `listCharactersInBattle(battleId)` —— 单次 SQL JOIN 拿双边 character + userId |
+| `src/socket/battleRoom.ts` | `handleBattleJoin` 成功路径后插入 `broadcastFullState(io, battleId, userId)` 调用(独立 `.catch`) |
+| `src/socket/socketServer.test.ts` | 顶部 mock 补全(`listCharactersInBattle` / `getDbSessionState` / `getCharacterStatus` / `getActorHand`)+ 新增 3 个 T047 集成测(后加入者收 full + ownHand 隔离 / 同一 socket 收 join:ok + full / broadcaster 异常时仍 join:ok 不发 join:error) |
+
+---
+
 *文档版本：v1.30*
 *最后更新：2026-06-11*
 
 ---
 
 *文档版本：v1.31*
+*最后更新：2026-06-11*
+
+---
+*文档版本：v1.32*
 *最后更新：2026-06-11*

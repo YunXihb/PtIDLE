@@ -1273,3 +1273,59 @@ export async function getPendingBattleForJoin(
 
   return result;
 }
+
+/**
+ * T047:列出 battle 中所有 character（双边 6 个,3v3 / 不同规模同理）。
+ *
+ * 单次 SQL 往返,JOIN `players` 拿到 userId,直接返回扁平结构。
+ * 主要供 WS broadcaster 用来:
+ *   1. 遍历全场 character 状态(`buildBoardState`)
+ *   2. 反查某 userId 拥有哪些 characterId(`broadcastFullState` 时筛 ownHand)
+ *
+ * 注意:不区分 `is_alive` / `battles.status`,broadcaster 拿到列表后自行过滤。
+ *
+ * @param battleId battle id
+ * @returns [{ characterId, playerId, userId, profession, name }, ...],按 character_id 升序
+ */
+export async function listCharactersInBattle(
+  battleId: string
+): Promise<
+  Array<{
+    characterId: string;
+    playerId: string;
+    userId: string;
+    profession: string;
+    name: string;
+  }>
+> {
+  const result = await query<{
+    character_id: string;
+    player_id: string;
+    user_id: string;
+    profession: string;
+    name: string;
+  }>(
+    `SELECT c.id AS character_id, c.player_id, p.user_id, c.profession, c.name
+     FROM characters c
+     JOIN players p ON p.id = c.player_id
+     WHERE c.player_id IN (
+       SELECT player1_id FROM battles WHERE id = $1
+       UNION
+       SELECT player2_id FROM battles WHERE id = $1
+     )
+     ORDER BY c.id ASC`,
+    [battleId]
+  );
+
+  if (!result) {
+    return [];
+  }
+
+  return result.map((r) => ({
+    characterId: r.character_id,
+    playerId: r.player_id,
+    userId: r.user_id,
+    profession: r.profession,
+    name: r.name,
+  }));
+}

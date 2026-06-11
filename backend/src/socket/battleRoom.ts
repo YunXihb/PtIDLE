@@ -1,5 +1,6 @@
 import { Server as IOServer, Socket } from 'socket.io';
 import { getPendingBattleForJoin } from '../services/battleService';
+import { broadcastFullState } from './battleStateBroadcaster';
 
 /**
  * T046 房间管理 —— 集中 battle 房间相关的 socket.io 操作
@@ -88,6 +89,10 @@ export async function handleBattleJoin(
   if (opponentInRoom) {
     socket.to(battleRoom(battleId)).emit('battle:opponent_joined', { userId, username });
   }
+
+  // 7. T047 推全量首屏状态(含自己手牌,user-room)。
+  //    broadcaster 内部 try/catch 已吞掉异常 + console.error —— 失败不回 join:error(房间已加入,前端可重试)
+  void broadcastFullState(io, battleId, userId);
 }
 
 /**

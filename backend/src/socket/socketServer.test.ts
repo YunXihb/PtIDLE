@@ -1,6 +1,19 @@
 // jest.mock 必须在 import 之前(ts-jest TDZ 坑)
 jest.mock('../services/battleService', () => ({
   getPendingBattleForJoin: jest.fn(),
+  listCharactersInBattle: jest.fn(),
+}));
+
+jest.mock('../services/battleSessionService', () => ({
+  getDbSessionState: jest.fn(),
+}));
+
+jest.mock('../services/characterStatusService', () => ({
+  getCharacterStatus: jest.fn(),
+}));
+
+jest.mock('../services/handService', () => ({
+  getActorHand: jest.fn(),
 }));
 
 import http from 'http';
@@ -15,11 +28,33 @@ import jwt from 'jsonwebtoken';
 import { initializeSocketServer } from './socketServer';
 import { JWT_SECRET } from '../config/jwt';
 import * as battleService from '../services/battleService';
+import * as battleSessionService from '../services/battleSessionService';
+import * as characterStatusService from '../services/characterStatusService';
+import * as handService from '../services/handService';
 
 const mockGetPendingBattleForJoin =
   battleService.getPendingBattleForJoin as jest.MockedFunction<
     typeof battleService.getPendingBattleForJoin
   >;
+
+const mockListCharactersInBattle =
+  battleService.listCharactersInBattle as jest.MockedFunction<
+    typeof battleService.listCharactersInBattle
+  >;
+
+const mockGetDbSessionState =
+  battleSessionService.getDbSessionState as jest.MockedFunction<
+    typeof battleSessionService.getDbSessionState
+  >;
+
+const mockGetCharacterStatus =
+  characterStatusService.getCharacterStatus as jest.MockedFunction<
+    typeof characterStatusService.getCharacterStatus
+  >;
+
+const mockGetActorHand = handService.getActorHand as jest.MockedFunction<
+  typeof handService.getActorHand
+>;
 
 /**
  * T045 + T046 集成测试 —— 真实 socket.io-client 连真实 socket.io server
@@ -77,6 +112,10 @@ describe('T045 + T046 socketServer', () => {
     for (const c of activeClients) c.close();
     activeClients = [];
     mockGetPendingBattleForJoin.mockReset();
+    mockListCharactersInBattle.mockReset();
+    mockGetDbSessionState.mockReset();
+    mockGetCharacterStatus.mockReset();
+    mockGetActorHand.mockReset();
   });
 
   // 工具
@@ -370,5 +409,173 @@ describe('T045 + T046 socketServer', () => {
 
     // 等待 socket 完全断开
     await waitForNoSockets();
+  });
+
+  // ============== T047 tests ==============
+
+  /**
+   * 共享 mock 装配:6 角色(双方各 3),user-room 推手牌用
+   */
+  const setupFullStateMocks = (): {
+    battleId: string;
+    p1: string;
+    p2: string;
+  } => {
+    const battleId = 'battle-t047-1';
+    const p1 = 'user-t047-p1';
+    const p2 = 'user-t047-p2';
+
+    mockGetPendingBattleForJoin.mockResolvedValue({
+      id: battleId,
+      player1_id: 'p1-id',
+      player2_id: 'p2-id',
+      status: 'pending',
+      matched_at: new Date(),
+      started_at: null,
+    });
+
+    mockGetDbSessionState.mockResolvedValue({
+      currentRound: 1,
+      currentStep: 1,
+      currentPhase: 'playing',
+      currentActorId: 'c-p1-1',
+    });
+
+    mockListCharactersInBattle.mockResolvedValue([
+      { characterId: 'c-p1-1', playerId: 'p1-id', userId: p1, profession: 'warrior', name: 'W1' },
+      { characterId: 'c-p1-2', playerId: 'p1-id', userId: p1, profession: 'ranger', name: 'R1' },
+      { characterId: 'c-p1-3', playerId: 'p1-id', userId: p1, profession: 'mage', name: 'M1' },
+      { characterId: 'c-p2-1', playerId: 'p2-id', userId: p2, profession: 'warrior', name: 'W2' },
+      { characterId: 'c-p2-2', playerId: 'p2-id', userId: p2, profession: 'ranger', name: 'R2' },
+      { characterId: 'c-p2-3', playerId: 'p2-id', userId: p2, profession: 'mage', name: 'M2' },
+    ]);
+
+    mockGetCharacterStatus.mockImplementation(async (_b, cid) => ({
+      characterId: cid,
+      name: cid,
+      profession: 'warrior' as const,
+      health: 20,
+      maxHealth: 20,
+      energy: 3,
+      maxEnergy: 3,
+      position: { x: 0, y: 0 },
+      isAlive: true,
+      effects: [],
+      totalShield: 0,
+      isTaunted: false,
+      taunting: [],
+    }));
+
+    mockGetActorHand.mockResolvedValue([]);
+
+    return { battleId, p1, p2 };
+  };
+
+  it('T047: 两个 client 都 join 后,后加入者收到 battle:state:full 且 ownHand 是自己的角色', async () => {
+    const { battleId, p1, p2 } = setupFullStateMocks();
+
+    const client1 = connectClient(generateToken(p1, 'alice'));
+    const client2 = connectClient(generateToken(p2, 'bob'));
+
+    await waitForConnect(client1);
+    await waitForConnect(client2);
+
+    // client1 先 join(broadcaster 走 user-room,client1 是 user:p1 → 也会收到 state:full,
+    // 但本测试不验证 client1 的 ownHand,只验证后加入者 client2 的 ownHand 隔离正确)
+    const ok1Promise = waitForEvent<{ opponentInRoom: boolean }>(client1, 'battle:join:ok');
+    client1.emit('battle:join', { battleId });
+    await ok1Promise;
+
+    // client2 join
+    const ok2Promise = waitForEvent<{ opponentInRoom: boolean }>(client2, 'battle:join:ok');
+    const c2FullPromise = waitForEvent<{ battleId: string; board: { characters: unknown[] }; ownHand: Record<string, unknown> }>(
+      client2,
+      'battle:state:full'
+    );
+
+    client2.emit('battle:join', { battleId });
+    const [ok2Payload, fullPayload] = await Promise.all([ok2Promise, c2FullPromise]);
+
+    expect(ok2Payload.opponentInRoom).toBe(true);
+    expect(fullPayload.battleId).toBe(battleId);
+    expect(fullPayload.board.characters).toHaveLength(6);
+    // client2 自己的 ownHand 应只含 p2 的 3 个 characterId(隐私隔离 —— 不含 p1 的)
+    expect(Object.keys(fullPayload.ownHand).sort()).toEqual(['c-p2-1', 'c-p2-2', 'c-p2-3']);
+  });
+
+  it('T047: 同一 socket join 时同时收到 battle:join:ok 和 battle:state:full', async () => {
+    const { battleId, p1 } = setupFullStateMocks();
+
+    const client = connectClient(generateToken(p1, 'alice'));
+    await waitForConnect(client);
+
+    const okPromise = waitForEvent<{ battleId: string; opponentInRoom: boolean }>(
+      client,
+      'battle:join:ok'
+    );
+    const fullPromise = waitForEvent<{ battleId: string; board: { characters: unknown[] }; ownHand: Record<string, unknown> }>(
+      client,
+      'battle:state:full'
+    );
+
+    client.emit('battle:join', { battleId });
+
+    const [okPayload, fullPayload] = await Promise.all([okPromise, fullPromise]);
+
+    expect(okPayload.battleId).toBe(battleId);
+    expect(okPayload.opponentInRoom).toBe(false);
+    expect(fullPayload.board.characters).toHaveLength(6);
+    // p1 的 ownHand 应有 3 个 characterId
+    expect(Object.keys(fullPayload.ownHand).sort()).toEqual(['c-p1-1', 'c-p1-2', 'c-p1-3']);
+  });
+
+  it('T047: broadcastFullState 内部异常时仍收到 join:ok,不发 join:error', async () => {
+    const battleId = 'battle-t047-err';
+    const userId = 'user-t047-err';
+    const client = connectClient(generateToken(userId, 'eve'));
+    await waitForConnect(client);
+
+    // getPendingBattleForJoin 通过
+    mockGetPendingBattleForJoin.mockResolvedValueOnce({
+      id: battleId,
+      player1_id: 'p1',
+      player2_id: 'p2',
+      status: 'pending',
+      matched_at: new Date(),
+      started_at: null,
+    });
+
+    // broadcastFullState 内部 listCharactersInBattle 抛错
+    mockListCharactersInBattle.mockRejectedValueOnce(new Error('boom'));
+
+    // getDbSessionState 也设个返 null,确保 board 路径不阻塞(error 在 broadcastFullState 的 try/catch 内吞掉)
+    mockGetDbSessionState.mockResolvedValueOnce(null);
+
+    // 静默 console.error(本测试预期它被调用)
+    const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    // 监听 join:ok(应到)
+    const okPromise = waitForEvent<{ battleId: string }>(client, 'battle:join:ok');
+
+    // 监听 join:error(不应到)
+    const errPromise = new Promise<unknown>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('should not receive join:error')), 300);
+      client.once('battle:join:error', (payload) => {
+        clearTimeout(timer);
+        resolve(payload);
+      });
+    });
+
+    client.emit('battle:join', { battleId });
+
+    const okPayload = await okPromise;
+    expect(okPayload.battleId).toBe(battleId);
+
+    // 不应收到 join:error
+    await expect(errPromise).rejects.toThrow('should not receive join:error');
+
+    // console.error 应被调用过(把 boom 记下来)
+    expect(consoleSpy).toHaveBeenCalled();
+    consoleSpy.mockRestore();
   });
 });

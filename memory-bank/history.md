@@ -507,6 +507,34 @@
 7. **getIO 错误信息**：未初始化时 throw `'Socket.io server not initialized. Call initializeSocketServer first.'` —— 防止 controller 在测试或异常路径下踩到空 io
 8. **完全顺利**：T046 范围严格遵守（4 项核心功能），未越界实现 T047 棋盘广播。socket.data 写入 userId/username/battleId?，T047+ 读 battleId 即可
 
+---
+
+## 2026-06-11 - 任务：T047 实现实时状态同步
+
+### Prompt
+实施 T047「实现实时状态同步」。范围：broadcaster 函数库（buildBoardState + broadcastBoardState/Hand/Character/Full）+ battle:join 初期推 full state。新增 `listCharactersInBattle(battleId)` SQL helper 单次 JOIN 拿双边 character + userId。AskUserQuestion 确认 3 项关键决策：scope=broadcaster+初期推 / privacy=手牌 self-only / visibility=状态效果+能量 room-wide。明确不做 T049 移动 wire / T050 出牌 wire / T051 回合切换 wire / 增量差分 / Redis adapter。
+
+### 思考
+- **事件粒度**：1 个 mega event（`full`,join 后首屏）+ 3 个 granular（`board`/`hand`/`character`,增量）。`full` 一次性推 board + ownHand,granular 用于后续 action
+- **隐私边界**：手牌走 `user:{userId}`(self-only),棋盘/状态/能量走 `battle:{battleId}`(room-wide)。`full` 也走 user-room 因为含 ownHand
+- **broadcaster 接口只接 `io` 不接 `socket`**：跟 controller 层 `io.to(...).emit` 一致,不依赖具体 socket 实例。broadcast 路径是 fan-out,不是 point-to-point
+- **`listCharactersInBattle` 放 battleService**：单次 SQL JOIN 拿双边 character + userId,供 broadcaster 多次使用(buildBoardState 1 次 + ownHand 反查 1 次),避免重复查询
+- **复用已有服务**：getCharacterStatus(T039 聚合)/ getActorHand(T037)/ getDbSessionState(T051 也会调)/ userRoom+battleRoom(T046)。T047 不重写聚合逻辑,只做 fan-out
+- **失败处理**：所有 broadcaster 函数用 `try { ... } catch (err) { console.error(...) }` 包住,emit 失败不抛。`handleBattleJoin` 调用时再用独立 `.catch` —— 不进 socketServer.ts:55 的统一 try/catch,因为那里会发 `join:error`,但这里希望 join 仍算成功,首屏拉取失败可由前端重试
+- **多角色手牌 keying**：`ownHand: Record<characterId, HandCard[]>`,3v3 时 3 个 key。避免给每角色单独发 state:hand(3 个事件),full 一次性发
+- **`buildBoardState` 抽出为纯函数(无 emit)**：供测试独立验证聚合逻辑,不依赖 io
+- **测试 mock 形态**：`io.to(room).emit` 链式 mock —— `to: jest.fn(() => ({ emit: mockEmit }))`,直接 spy emit 验证事件 payload
+
+### 意外
+1. **测试 1 (两个 client 后加入者 full state) 一开始断言错误**：原计划 "先加入者**不**收到 full state(因走 user-room)" —— 实际 broadcaster 走 user-room,先加入者也会收到(自己 join 时会触发)。修正为验证"后加入者 ownHand 只含自己的 3 个 characterId" —— 验证隐私隔离而非事件路由
+2. **mockListCharactersInBattle 在测试间串扰**：`afterEach` 漏 reset 导致测试 2/3 用了测试 1 的 listCharactersInBattle mock 返回值。修复:5 个 mock 全部 `mockReset()` 在 afterEach
+3. **3 个新 mock 加在 socketServer.test.ts 顶部**:`battleSessionService` / `characterStatusService` / `handService` 都需要 jest.mock 块 + 强转 `as jest.MockedFunction<...>`。沿用 T039 characterStatusService.test.ts 模式
+4. **错误测试 spy console.error**:测试 3 中 broadcaster 内部抛错会触发 controller 层 console.error。用 `jest.spyOn(console, 'error').mockImplementation(() => undefined)` 静默,断言 `toHaveBeenCalled()` 验证错误被记下
+5. **`getDbSessionState` 在 socketServer.test.ts 旧 0 用例中不需要,但 broadcastFullState 路径上必调**:5 个 mock 全部加完才能让 T047 测试通过,缺一不可
+6. **完整测试统计**:`npx tsc --noEmit` 0 错误;`npx jest socket/` 20/20 (7 broadcaster 单元 + 13 socketServer 集成,后者 3 T045 + 7 T046 + 3 T047);`npx jest` 504/509 通过(5 失败为 T044 历史的 authController baseline,与 T047 无关,已用 git stash 验证)
+7. **broadcaster 文件 234 行 + 7 单元测 277 行**:核心是 buildBoardState 聚合 + 4 个 emit 包装。emit 失败全用 console.error 不抛,与 socketServer.ts 错误处理风格一致
+8. **完全顺利**:T047 范围严格遵守(只做 broadcaster 库 + battle:join wire),未越界实现 T049 移动 wire / T050 出牌 wire / T051 回合切换 wire。T049/050/051 实现时直接调 `broadcastCharacterStatus` / `broadcastHandState` / `broadcastBoardState` 即可
+
 
 
 
