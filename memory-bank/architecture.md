@@ -1313,5 +1313,79 @@ UPDATE card_templates SET is_public_pool = TRUE WHERE name = '轻击';
 
 ---
 
-*文档版本：v1.26*
-*最后更新：2026-06-10*
+## T042 新增服务：匹配系统（阶段 4.1）
+
+### 匹配队列服务 (Matchmaking Service)
+
+**位置**：`src/services/matchmakingService.ts`
+
+PvP 对战入口的第一环。玩家认证后通过 `POST /api/match/queue` 加入全局匹配队列；T042 仅实现「入队」，撮合与 battle 行创建留待 T044。
+
+#### Redis 键
+
+| 键 | 类型 | 用途 | 生命周期 |
+|----|------|------|----------|
+| `idle:matchmaking:queue` | Sorted Set | 全局匹配队列（member = `JSON.stringify({userId, enqueuedAt})`，score = `enqueuedAt` ms） | 进程级 |
+| `idle:matchmaking:lock:{userId}` | String | 单用户去重锁，值固定为 `1` | 600s TTL |
+
+`score = enqueuedAt` 兼作排序依据，T044 撮合时 `ZRANGE key 0 0` O(log N) 即可取最久等待者。
+
+#### 关键顺序：先抢锁、后入队
+
+`enqueueMatchmaking(userId)`：
+1. `SET idle:matchmaking:lock:{userId} 1 NX EX 600` —— 原子去重
+2. 返回非 `'OK'` → 抛 `Error('已在匹配队列中')`（中文子串，控制器映射为 400 `Already in matchmaking queue`）
+3. 返回 `'OK'` → `ZADD idle:matchmaking:queue { score: enqueuedAt, value: JSON.stringify({userId, enqueuedAt}) }`
+4. 返回 `MatchQueueEntry { userId, enqueuedAt }`
+
+反向顺序会破坏并发场景下的去重保证。
+
+#### 公共 API
+
+| 函数 | 行为 |
+|------|------|
+| `enqueueMatchmaking(userId)` | 加入队列，重复抛错 |
+| `isPlayerInQueue(userId)` | 扫描 zRange 全队列，查 userId 是否存在 |
+| `getMatchmakingQueueStats()` | `{pendingPlayers, oldestEnqueuedAt, newestEnqueuedAt}` |
+| `clearMatchmakingQueue()` | 删除队列 key（测试用；不清理各玩家 lock keys） |
+
+### 匹配 API 路由
+
+**位置**：`src/routes/matchmaking.ts` + `src/controllers/matchmakingController.ts`
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/match/queue` | 加入匹配队列；201 + entry / 400 重复 / 401 未鉴权 |
+
+`app.use('/api/match', matchmakingRoutes)` 在 `src/index.ts` 中按字母序插入 gathering 与 skills 之间。
+
+### T042 边界（明确不做）
+
+| # | 不做的内容 | 归属任务 |
+|---|-----------|---------|
+| 1 | 队列状态查询（GET /api/match/queue） | T043 |
+| 2 | 取消匹配（DELETE /api/match/queue） | T043 |
+| 3 | 撮合算法（2 玩家配对 + 3v3 角色数量校验） | T044 |
+| 4 | 创建 `battles` 行（需 schema 调整：`player2_id` NULL 或新增 `searching` 状态） | T044 |
+| 5 | 角色选择 / loadout 校验 | T044/T048 |
+| 6 | 匹配超时 / 强制取消 | T044+ |
+| 7 | WebSocket 推送「匹配成功」 | T045+ |
+| 8 | 持久化到 `players` 表（如 `in_matchmaking` 标志） | 后续 |
+
+服务文件顶部以中文注释完整列出此清单，防止后续误抢跑。
+
+### 文件清单
+
+| 路径 | 改动 |
+|------|------|
+| `src/services/matchmakingService.ts` | **新建**：enqueue / isPlayerInQueue / stats / clear；OOS 清单写在顶部 |
+| `src/services/matchmakingService.test.ts` | **新建**：5 单元测试（含「锁先于 zAdd」「重复入队不调用 zAdd」校验） |
+| `src/controllers/matchmakingController.ts` | **新建**：joinMatchmakingHandler；`includes('已在匹配队列中')` → 400 |
+| `src/routes/matchmaking.ts` | **新建**：authMiddleware + POST /queue |
+| `src/routes/matchmaking.integration.test.ts` | **新建**：2 集成测试（201 + 400） |
+| `src/index.ts` | import + `app.use('/api/match', matchmakingRoutes)` 各 1 行 |
+
+---
+
+*文档版本：v1.27*
+*最后更新：2026-06-11*

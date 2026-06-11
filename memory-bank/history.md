@@ -347,4 +347,28 @@
 7. **AOE 失败处理**：`mage AOE 失败（无 targets）` 测试中，validateAOEAttack 在第 10 步就 return，根本走不到 attachFireMark 循环（`mageMarksApplied` 仍为 undefined）。这与 mage 单体失败模式一致
 8. **mock 顺序 vs mage profession check**：battleService 内部 profession check 在 `attacker.profession === 'mage'` 守卫，warrior/ranger 测试（mock 默认 warrior）不会触发 attachFireMark 调用。这避免了在 warrior/ranger 测试中需要 mock attachFireMark（但保险起见 default 仍设了 `marksAdded: false` 返回）
 
+---
+
+## 2026-06-11 - 任务：T042 实现匹配队列 API (POST /api/match/queue)
+
+### Prompt
+实施 T042 阶段 4.1「匹配系统」第一项：实现 `POST /api/match/queue`，玩家认证后加入 Redis 维护的匹配队列。明确范围限定：T042 仅入队，不做状态查询 / 取消（T043）、不撮合 / 不创建 battles 行（T044）、不做 3v3 角色校验（T044/T048）。原因：`battles` 表 schema 不支持「在队列中」状态（`player2_id NOT NULL` + 状态枚举无 `searching`），强行抢跑会留下半截 battle 行，违反 CLAUDE.md「单步循环、不抢跑」。
+
+### 思考
+- **Redis-only 存储**：与 `idleQueueService` 一致；`battles` 表当前 schema 不适用
+- **两键设计**：`idle:matchmaking:queue`（sorted set，score = enqueuedAt ms）+ `idle:matchmaking:lock:{userId}`（NX EX 600 单用户锁）
+- **score = enqueuedAt**：使 T044 撮合可用 `ZRANGE 0 0` O(log N) 取最久等待者，不需要额外维护时间戳字段
+- **关键顺序：先抢锁、后入队**：`SET NX EX` 抢锁 → 非 `'OK'` 抛 `'已在匹配队列中'` → 否则 `ZADD`。反向顺序会破坏并发去重。这与 `idleQueueService.acquireGatheringLock`「先入队后抢锁」模式不同，因为 idle 任务是用 score 排序到期时间，而 matchmaking 用 score 排序入队时间 + lock 才是去重唯一保证
+- **中文子串异常**：沿用 `gatheringController` 模式，service 抛中文 Error，controller 通过 `errorMessage.includes('已在匹配队列中')` 映射 400。这样保留 service 端语义清晰、controller 端 HTTP 标准化
+- **OOS 清单写在服务文件顶部**：8 项「不做的内容」+ 归属任务直接列在 `matchmakingService.ts` 顶部 docstring，防止后续工作误抢跑 T043/T044
+- **路由按字母序插入**：`gathering` < `match` < `skills`，遵循 `src/index.ts` 现有约定
+- **公共 API**：4 个函数 `enqueueMatchmaking` / `isPlayerInQueue` / `getMatchmakingQueueStats` / `clearMatchmakingQueue`（后两个供测试 + T044 撮合循环复用）
+
+### 意外
+1. **`idleQueueService` 无单元测试**：原以为有现成的服务单元测试模板可对照，结果该文件仅在集成测试中通过 mock 间接验证。最终参考 `processingService.test.ts` 的 jest.mock + 类型断言风格自行编写 5 个用例
+2. **mock 断言粒度选择**：服务测试中验证「锁先于 zAdd」用了两种方式 —— ① `expect(mockedRedis.set).toHaveBeenCalledTimes(1)` 配合 `expect(mockedRedis.zAdd).toHaveBeenCalledTimes(1)`；② 在重复入队用例中 `expect(mockedRedis.zAdd).not.toHaveBeenCalled()`。两者结合能反向证明「set 失败时 zAdd 不被调用」=「先抢锁」
+3. **集成测试用 `import after jest.mock`**：mock 工厂 + `import { redisClient }` 后用类型断言 `as unknown as { ...jest.Mock }` 取出 mock fn。与 `gathering.integration.test.ts` 直接 import 命名 mock 略不同，但 `mockedRedis.set.mockResolvedValueOnce` 行为一致
+4. **完全顺利**：单元 5/5 通过，集成 2/2 通过，`tsc --noEmit` 0 错误。无 mock 顺序坑、无 schema 变更、无跨服务依赖
+
+
 
