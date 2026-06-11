@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { authMiddleware, AuthRequest } from './auth';
+import { JWT_SECRET } from '../config/jwt';
 
 describe('authMiddleware', () => {
   let mockRequest: Partial<AuthRequest>;
@@ -67,7 +68,7 @@ describe('authMiddleware', () => {
     const username = 'testuser';
     const token = jwt.sign(
       { userId, username },
-      process.env.JWT_SECRET || 'your_jwt_secret_change_in_production'
+      JWT_SECRET
     );
 
     mockRequest.headers = {

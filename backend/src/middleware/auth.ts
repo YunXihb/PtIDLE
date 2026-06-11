@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
+import { JWT_SECRET } from '../config/jwt';
 
 export interface AuthRequest extends Request {
   user?: {
@@ -24,8 +25,7 @@ export function authMiddleware(
   const token = authHeader.substring(7); // 移除 'Bearer ' 前缀
 
   try {
-    const secret = process.env.JWT_SECRET || 'your_jwt_secret_change_in_production';
-    const decoded = jwt.verify(token, secret) as { userId: string; username: string };
+    const decoded = jwt.verify(token, JWT_SECRET) as { userId: string; username: string };
 
     // 将用户信息附加到请求对象
     req.user = {

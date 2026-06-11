@@ -1487,5 +1487,59 @@ PvP 对战入口的第一环。玩家认证后通过 `/api/match/queue` 加入�
 
 ---
 
-*文档版本：v1.29*
+## WebSocket 通道 (T045)
+
+为 T046+ 实时推送建立底层连接通道。**T045 仅做"能连上、能鉴权、能断开"**，不订阅房间、不广播事件。
+
+### 整合方式
+
+- 挂载到**同一 HTTP server**（`http.createServer(app).listen()` + `new IOServer(httpServer, { cors: { origin: '*' } })`）
+- 共享端口 + CORS 配置
+- CORS `origin: '*'`：MVP 开发期允许任意前端；生产期改为环境变量
+
+### 鉴权
+
+- **位置**：`socket.handshake.auth.token`（socket.io v4 推荐方式，替代 v3 的 `query.token`）
+- **时机**：`io.use(verifyClientToken)` 握手期
+- **失败**：`next(new Error('...'))` → 客户端收到 `connect_error` 事件 + `error.message` 含原因
+- **秘钥**：复用 `middleware/auth.ts:27` 的 `process.env.JWT_SECRET || 'your_jwt_secret_change_in_production'`，保持两个入口（REST + WS）共用同一常量
+- **成功**：`socket.data.userId` / `socket.data.username` 写入，handler 可直接读
+
+### socket.data 约定
+
+| 字段 | 写入时机 | 读取方 |
+|------|----------|--------|
+| `userId: string` | 握手鉴权通过 | 当前 `connection` / `disconnect` handler；**T046 房间管理基于此推送** |
+| `username: string` | 握手鉴权通过 | 日志 / 调试 |
+| `battleId?: string` | **T046 才写入** | T046+ 房间管理；T045 不写 |
+
+### T045 范围 vs T046+ 范围
+
+| 项 | T045 | T046 | T047 |
+|----|------|------|------|
+| 握手期鉴权 | ✅ | — | — |
+| `socket.data.userId/username` | ✅ | — | — |
+| 房间订阅 / `socket.join(battleId)` | ❌ | ✅ | — |
+| `io.to(userId).emit('battle:matched')` | ❌ | ✅ | — |
+| 棋盘状态 / 手牌 / 能量广播 | ❌ | ❌ | ✅ |
+| 重连 / heartbeat / 速率限制 | ❌ | ❌ | ❌（运维层） |
+| Redis adapter（跨节点） | ❌ | ❌ | ❌（单体 MVP） |
+
+### 文件清单
+
+| 路径 | 改动 |
+|------|------|
+| `src/index.ts` | T045 改造：`app.listen` → `http.createServer(app)` + `new IOServer(httpServer, { cors: { origin: '*' } })` + `httpServer.listen(PORT)` 内调 `initializeSocketServer(io)` |
+| `src/socket/socketServer.ts` | **新建**：`initializeSocketServer(io)` —— `io.use(verifyClientToken)` + `io.on('connection')` 日志 + `socket.on('disconnect')` 日志 |
+| `src/socket/authMiddleware.ts` | **新建**：`verifyClientToken(socket, next)` —— 读 `socket.handshake.auth.token` → `jwt.verify` → 写 `socket.data.userId/username` |
+| `src/socket/socketServer.test.ts` | **新建**：3 个集成测（socket.io-client 真连真断 + `listen(0)` 随机端口隔离） |
+| `src/config/jwt.ts` | **新建**（simplify pass）：集中导出 `JWT_SECRET` / `JWT_EXPIRES_IN`，消除 `process.env.JWT_SECRET || '...'` 重复 3 处 |
+| `src/middleware/auth.ts` | 改 1 行：改用 `import { JWT_SECRET } from '../config/jwt'` |
+| `src/middleware/auth.test.ts` | 改 1 行：改用 `JWT_SECRET` 常量 |
+| `src/services/authService.ts` | 改 3 行：改用 `JWT_SECRET` / `JWT_EXPIRES_IN` 常量 |
+| `backend/package.json` | devDep 新增 `socket.io-client@^4.7.2`（与 server 端 socket.io 4.7.x 同号） |
+
+---
+
+*文档版本：v1.30*
 *最后更新：2026-06-11*

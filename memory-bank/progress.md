@@ -68,6 +68,7 @@
 | T042 | 实现匹配队列 API (POST /api/match/queue) | 2026-06-11 |
 | T043 | 实现匹配状态查询 + 取消匹配 API (GET + DELETE /api/match/queue) | 2026-06-11 |
 | T044 | 实现对手匹配逻辑（tryMatch + Lua 撮合 + battles 行创建 + LOSER 兜底） | 2026-06-11 |
+| T045 | 配置 Socket.io 基础连接（HTTP+WS 同 server + 握手期 JWT 鉴权 + socket.data 元数据） | 2026-06-11 |
 
 ---
 

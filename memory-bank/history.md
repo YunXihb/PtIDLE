@@ -440,5 +440,42 @@
 
 
 
+---
+
+## 2026-06-11 - 任务：T045 配置 Socket.io 基础连接
+
+### Prompt
+实施 T045「配置 Socket.io 基础连接」。范围严格限定：仅 connect + 鉴权 + 断开（3 个用例）；JWT 放 `socket.handshake.auth.token`；`io.use()` 握手期鉴权；`socket.data` 仅持有 `userId/username`（battleId 留给 T046）；服务器整合到同一 HTTP server (`http.createServer(app).listen()` + `new IOServer(httpServer, { cors: { origin: '*' } })`)。room 订阅 / 事件广播 / 撮合 push 全部留 T046/T047。
+
+### 思考
+- **同 HTTP server 整合**：T044 已用 `app.listen`，改造为 `http.createServer(app)` + `new IOServer(httpServer, { cors: { origin: '*' } })` 共用同一端口 + CORS。`initializeSocketServer(io)` 在 `httpServer.listen` 回调内调，与 `initializeApp()` 平行
+- **JWT 秘钥复用**：`verifyClientToken` 直接复用 `middleware/auth.ts:27` 的 `process.env.JWT_SECRET || 'your_jwt_secret_change_in_production'`，两个入口（REST + WS）共用同一常量
+- **socket.data 约定**：`userId/username` 在握手期写入；T046 房间管理（`socket.join(battleId)` + `io.to(userId).emit('battle:matched', ...)`）直接读 `socket.data.userId` 即可
+- **测试用 `io.fetchSockets()`** 验证服务端 `socket.data`：socket.io 4.6+ 官方 API，返回 `RemoteSocket[]` 含 `data` 字段。比手工维护 Map 干净
+- **CORS `origin: '*'`**：MVP 开发期允许任意前端；生产期应改为 `process.env.ALLOWED_ORIGINS`，T045 留 TODO
+- **集成测试用 `socket.io-client`**（4.7.2，与 server 同号），不是 mock。捕获握手 / transport 真实错误
+- **端口隔离**：`httpServer.listen(0)` 随机端口 + `afterAll` 关闭 → 避免与 dev server 冲突
+- **3 个测试场景**：(1) 带有效 JWT connect + 服务端可读 userId/username；(2) 无 token connect_error + message='No token provided'；(3) 客户端 close + 服务端 disconnect handler 被调 + fetchSockets 长度归零
+- **`io.close()` 返 Promise**：socket.io v4 需 `await`，否则 Jest 报 "open handles"。afterAll 用 `async () => { await io.close(); httpServer.close() }` 模式
+- **timeout cleanup**：`waitForConnect` / `waitForConnectError` 的 setTimeout 在 resolve/reject 时必须 `clearTimeout`，否则每个测试残留 3s 定时器被 `detectOpenHandles` 报
+
+### 意外
+1. **Jest afterAll 签名坑**：初版 `afterAll(async (done) => {...})` TS 编译失败，错误 `(done: DoneCallback) => Promise<void>` 不符合 `ProvidesHookCallback` ——Jest 不允许同时 async + done callback。改 `afterAll(async () => { await io.close(); ... })` 解决（`io.close()` 自己 await Promise）
+2. **"Jest did not exit" 警告**：初版 `waitForConnect` 的 setTimeout 残留 3 个定时器未清。`--detectOpenHandles` 准确定位 3 个 Timeout 引用。修复：在 `client.once('connect')` / `client.once('connect_error')` 回调内 `clearTimeout(timer)`，3/3 测试通过且无警告
+3. **pre-existing authController 失败**：5 个 authController 集成测试因 Docker PG/Redis 容器未启动报 500，是 T044 history 已记录的基线环境问题（"PostgreSQL 5433 / Redis 6379 端口未运行"），与 T045 无关
+4. **socket.data 类型断言**：`io.fetchSockets()` 返回 `RemoteSocket<DefaultEventsMap, DefaultEventsMap>[]`，标准类型不含 `data.userId`。测试里用 `as unknown as { data: { userId: string; username: string } }` 强转（生产代码不依赖这个断言，仅测试用）
+5. **完整测试统计**：socket 测试 3/3 新增，`npx tsc --noEmit` 0 错误；`npx jest --testPathIgnorePatterns="integration|authController.test"` 22 suites / 408 tests 全过；`npx jest` 总 30 suites / 492 tests（其中 5 个 authController 失败为基线环境问题，与 T045 无关）
+6. **完全顺利**：T045 范围严格遵守（仅 connect + 鉴权 + 断开），未越界实现 T046 房间管理。socket.data 仅有 userId/username，battleId 留 T046 写入
+7. **simplify 清理 pass**（T045 提交后 review 触发）：
+   - **JWT 秘钥常量去重**：发现 JWT fallback 字符串在 3 处生产代码（`middleware/auth.ts:27` + `services/authService.ts:89` + 新增 `socket/authMiddleware.ts:22`）+ 3 处测试代码中重复。新建 `config/jwt.ts` 集中导出 `JWT_SECRET` / `JWT_EXPIRES_IN`，4 个生产/测试文件改用 import。原 3 处 `process.env.JWT_SECRET || '...'` 表达式归零
+   - **测试 100ms 死等删除**：test 1 不依赖 disconnect 状态，移除 `client.close()` 后的硬睡眠
+   - **测试 200ms 死等 → 事件驱动**：test 3 改用 `waitForNoSockets(maxMs=1000)` 轮询 `io.fetchSockets()` 至 length=0，最快 20ms 完成
+   - **测试 afterEach 防御性 cleanup**：`activeClient` 跟踪当前 client + `afterEach` 关掉，防止测试在 close 前抛错导致 socket 泄漏
+   - **测试 connectClient 工厂**：3 处重复的 `Client(url, { auth, transports })` 调用 → 单一工厂
+   - **类型化 socket.data**：定义 `SocketData { userId, username }` 接口，io 泛型第 4 参数化（`<DefaultEventsMap, DefaultEventsMap, DefaultEventsMap, SocketData>`），handler 内 `socket.data.userId` 类型安全（无需 `as unknown as`）；测试用同一 `AuthedSocket` 类型断言
+   - **验证**：`npx tsc --noEmit` 0 错误；socket 3/3 + auth 4/4 + 全单元 22 suites / 408 tests 全过
+
+
+
 
 

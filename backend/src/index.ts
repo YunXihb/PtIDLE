@@ -1,6 +1,8 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import http from 'http';
+import { Server as IOServer } from 'socket.io';
 import { testConnection as testDb } from './config/database';
 import { connectRedis } from './config/redis';
 import authRoutes from './routes/auth';
@@ -16,6 +18,7 @@ import characterRoutes from './routes/characters';
 import cardRoutes from './routes/cards';
 import { query } from './config/database';
 import { checkAndCompleteGathering, initializeGatheringConfig, processDueGatheringTasks } from './services/gatheringService';
+import { initializeSocketServer } from './socket/socketServer';
 
 dotenv.config();
 
@@ -73,9 +76,16 @@ async function initializeApp() {
   }
 }
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+// T045: 同一 HTTP server 挂 WebSocket,共享端口 + CORS
+const httpServer = http.createServer(app);
+const io = new IOServer(httpServer, {
+  cors: { origin: '*' }, // MVP 开发期允许任意来源,生产期改为环境变量
+});
+
+httpServer.listen(PORT, () => {
+  console.log(`HTTP+WS server running on port ${PORT}`);
   initializeApp();
+  initializeSocketServer(io);
 });
 
 // 采集任务检查定时器（使用 Redis 队列）

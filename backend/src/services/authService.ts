@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
 import { initializePlayer } from './playerService';
+import { JWT_SECRET, JWT_EXPIRES_IN } from '../config/jwt';
 
 export interface User {
   id: string;
@@ -86,13 +87,10 @@ export async function createUser(input: CreateUserInput): Promise<Omit<User, 'pa
 }
 
 function generateToken(userId: string, username: string): string {
-  const secret = process.env.JWT_SECRET || 'your_jwt_secret_change_in_production';
-  const expiresIn = process.env.JWT_EXPIRES_IN || '7d';
-
   return jwt.sign(
     { userId, username },
-    secret,
-    { expiresIn: expiresIn as jwt.SignOptions['expiresIn'] }
+    JWT_SECRET,
+    { expiresIn: JWT_EXPIRES_IN as jwt.SignOptions['expiresIn'] }
   );
 }
 
