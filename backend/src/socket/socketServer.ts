@@ -1,36 +1,71 @@
 import { Server as IOServer, Socket } from 'socket.io';
 import { verifyClientToken } from './authMiddleware';
+import { handleBattleJoin, broadcastOpponentDisconnected, userRoom } from './battleRoom';
 
 /**
- * T045 Socket.io 基础连接入口
+ * T045 + T046 Socket.io 入口
  *
- * 范围（仅 T045）：
+ * T045 范围:
  *   - 握手期 JWT 鉴权（io.use）
  *   - connection / disconnect 日志
- *   - socket.data 写入 userId/username（battleId 留给 T046）
+ *   - socket.data 写入 userId/username
  *
- * 范围外（Out of Scope，留给后续）：
- *   - 房间订阅 / battleId 绑定 / 房间事件广播 → T046
- *   - 棋盘状态实时同步、手牌广播、能量广播 → T047
- *   - 撮合成功后的 push（io.to(userId).emit('battle:matched', ...)）→ T046
- *   - 重连机制 / heartbeat / 速率限制 → 运维层
- *   - 跨节点 socket.io adapter（Redis adapter）→ 单体 MVP 不做
+ * T046 范围（新增）:
+ *   - 连接成功后自动 socket.join(`user:{userId}`) 作为个人推送通道
+ *   - 注册 `battle:join` handler,验证后让 socket 加入 `battle:{battleId}` 房间
+ *   - 导出 io 单例供其他模块（matchmakingController）推送 battle:matched
+ *   - disconnect 时若 socket.data.battleId 存在,推 opponent_disconnected 给房间
+ *
+ * 范围外(Out of Scope,留给后续):
+ *   - 棋盘状态/手牌/能量广播 → T047
+ *   - 回合切换 WS 路由 → T051
+ *   - 重连机制 / heartbeat / 断线超时强制胜利 → T046+
+ *   - 撮合超时(撮合后 N 分钟未进)→ T046+
+ *   - 跨节点 socket.io adapter(Redis adapter)→ 单体 MVP 不做
  */
+
+// 模块级 io 单例 —— controller 层(matcher maker)需要直接 emit 给 user-room
+let ioInstance: IOServer | null = null;
+
+export function getIO(): IOServer {
+  if (!ioInstance) {
+    throw new Error('Socket.io server not initialized. Call initializeSocketServer first.');
+  }
+  return ioInstance;
+}
+
 export function initializeSocketServer(io: IOServer): void {
-  // 1. 全局鉴权中间件（握手期拒绝，无效 client 不消耗 connection slot）
+  ioInstance = io;
+
+  // 1. 全局鉴权中间件(握手期拒绝,无效 client 不消耗 connection slot)
   io.use(verifyClientToken);
 
   // 2. connection handler
   io.on('connection', (socket: Socket) => {
-    console.log(
-      `[WS] Connected: userId=${socket.data.userId} socketId=${socket.id}`
-    );
+    const userId = socket.data.userId as string;
+    const username = socket.data.username as string;
 
-    // T046+ 在此注册房间事件（battle:join / battle:ready / battle:action）
+    console.log(`[WS] Connected: userId=${userId} socketId=${socket.id}`);
+
+    // T046: 自动加入 user-room 作为个人推送通道(支持同 user 多端连接)
+    void socket.join(userRoom(userId));
+
+    // T046: 注册 battle:join handler
+    socket.on('battle:join', (payload: { battleId?: unknown }) => {
+      handleBattleJoin(io, socket, payload).catch((err) => {
+        console.error(`[WS] battle:join error: userId=${userId}`, err);
+        socket.emit('battle:join:error', { error: 'Internal server error' });
+      });
+    });
+
+    // disconnect: 若 socket.data.battleId 存在,推 opponent_disconnected
     socket.on('disconnect', (reason) => {
-      console.log(
-        `[WS] Disconnected: userId=${socket.data.userId} reason=${reason}`
-      );
+      console.log(`[WS] Disconnected: userId=${userId} reason=${reason}`);
+
+      const battleId = socket.data.battleId as string | undefined;
+      if (battleId) {
+        broadcastOpponentDisconnected(io, battleId, userId);
+      }
     });
   });
 }

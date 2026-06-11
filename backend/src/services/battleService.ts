@@ -1242,3 +1242,34 @@ export async function getPendingBattleByPlayerId(
 
   return result;
 }
+
+/**
+ * T046 房间加入鉴权:根据 battleId + userId 验证 user 是该 battle 的参与者。
+ *
+ * - 仅匹配 status='pending' 的 battle（已开始 / 已结束的不允许 join 房间）
+ * - userId 通过 players.user_id 关联到 player1_id / player2_id
+ * - 返回 battle 行（不含任何敏感信息，调用方按需展示）
+ *
+ * @param battleId battle id
+ * @param userId users.id（socket.data.userId）
+ * @returns pending battle 或 null（不参与者 / battle 不存在 / status 非 pending）
+ */
+export async function getPendingBattleForJoin(
+  battleId: string,
+  userId: string
+): Promise<PendingBattle | null> {
+  const result = await queryOne<PendingBattle>(
+    `SELECT b.id, b.player1_id, b.player2_id, b.status, b.matched_at, b.started_at
+     FROM battles b
+     WHERE b.id = $1
+       AND b.status = 'pending'
+       AND (
+         b.player1_id IN (SELECT id FROM players WHERE user_id = $2)
+         OR b.player2_id IN (SELECT id FROM players WHERE user_id = $2)
+       )
+     LIMIT 1`,
+    [battleId, userId]
+  );
+
+  return result;
+}

@@ -477,5 +477,37 @@
 
 
 
+---
+
+## 2026-06-11 - 任务：T046 实现房间管理逻辑
+
+### Prompt
+实施 T046「实现房间管理逻辑」。范围：撮合成功 push battle:matched + battle:join 协议（含 DB 鉴权）+ opponent_joined 广播 + opponent_disconnected 推送。AskUserQuestion 确认 3 项关键决策：push 触发层=controller / join 鉴权=DB 查询 / opponent_disconnected=包含推送。明确不做 T047 棋盘广播 / T051 回合切换 / 重连 / 撮合超时。
+
+### 思考
+- **两类 room 设计**：
+  - `user:{userId}` —— 连接成功后**自动** `socket.join`，作为个人推送通道。支持同 user 多端连接（多 socket 共享 user-room）
+  - `battle:{battleId}` —— 客户端发 `battle:join` 验证 DB 后加入，房间广播用
+- **getIO() 单例模式**：socketServer.ts 维护 `ioInstance`，export `getIO()` 给 controller 用。与项目「模块级单例」风格一致（redisClient, db pool）。controller 拿不到 io 参数时调 `getIO()` 拿
+- **push 触发在 controller 层**（用户确认）：matchmakingService 保持纯函数，controller 拿到 `result.matched` 后 try-catch emit。emit 失败不影响 REST 响应（兜底：REST 409 LOSER 路径）
+- **join 鉴权 DB 查询**（用户确认）：新增 `battleService.getPendingBattleForJoin(battleId, userId)` 验证 user 是参与者且 status='pending'。通过 subquery 关联 players.user_id。~10 行代码 + 1 索引可考虑后续加
+- **opponent_disconnected 包含**（用户确认）：disconnect handler 检查 `socket.data.battleId`，存在则推 `io.in('battle:{id}').emit('battle:opponent_disconnected', { userId, timestamp })`。~3 行代码
+- **socket.data 扩展**：T045 `userId/username` → T046 加 `battleId?`（可选）
+- **opponent_joined 触发条件**：join 验证通过时检查房间内是否已有"其他 user"的 socket，有则推 `socket.to(battleRoom).emit('battle:opponent_joined', { userId, username })` 给房间内除自己外的其他 socket
+- **BattleRoom 单文件拆分**：battleRoom.ts 集中 room 名构造器 + handler + 广播函数。socketServer.ts 保持 connection/disconnect 大局，battle:join 委托给 battleRoom
+- **测试 mock 顺序**：ts-jest TDZ 坑——`jest.mock` 必须在 import 之前，mock factory 用 `jest.fn()` 匿名占位，import 完用 `as jest.MockedFunction<...>` 取回
+
+### 意外
+1. **测试 mock 顺序验证**：用 `jest.mock('../services/battleService', () => ({ getPendingBattleForJoin: jest.fn() }))` 放在 import 之前，然后 `import * as battleService` + `as jest.MockedFunction<typeof battleService.getPendingBattleForJoin>` 强转。这与 T039/T044 沿用的模式一致
+2. **mockReset 在 afterEach**：必须用 `mockReset()` 而非 `clearAllMocks()`，否则 `mockResolvedValue` 跨 test 串扰。这与 T039 professionMechanicService.test.ts 沿用的坑一致
+3. **opponent_joined 测试 race condition**：用 `Promise.all([client1 的 opponent_joined promise, client2 的 join:ok promise])` 同时等待两边，确保事件不丢
+4. **opponent_disconnected 测试**：用 client1 监听事件 + client2 关闭的模式。client2 关闭后需要 `activeClients = activeClients.filter(...)` 防止 afterEach 重复 close 触发 EPIPE
+5. **未设置 battleId 的 disconnect 否定测试**：用 `setTimeout(() => reject('should not receive event'), 300)` 等待 300ms 期望不收到事件，Jest `await expect(...).rejects.toThrow(...)` 模式直接断言。这比加 200ms 死等更可靠（事件驱动 vs 时间驱动）
+6. **完整测试统计**：socket 10/10（3 T045 + 7 T046），`npx tsc --noEmit` 0 错误；`npx jest --testPathIgnorePatterns="integration|authController.test"` 22 suites / 415 tests 全过（+7 vs T045 末态 408）
+7. **getIO 错误信息**：未初始化时 throw `'Socket.io server not initialized. Call initializeSocketServer first.'` —— 防止 controller 在测试或异常路径下踩到空 io
+8. **完全顺利**：T046 范围严格遵守（4 项核心功能），未越界实现 T047 棋盘广播。socket.data 写入 userId/username/battleId?，T047+ 读 battleId 即可
+
+
+
 
 

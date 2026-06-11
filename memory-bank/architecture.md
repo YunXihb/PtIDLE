@@ -1509,18 +1509,39 @@ PvP 对战入口的第一环。玩家认证后通过 `/api/match/queue` 加入�
 
 | 字段 | 写入时机 | 读取方 |
 |------|----------|--------|
-| `userId: string` | 握手鉴权通过 | 当前 `connection` / `disconnect` handler；**T046 房间管理基于此推送** |
-| `username: string` | 握手鉴权通过 | 日志 / 调试 |
-| `battleId?: string` | **T046 才写入** | T046+ 房间管理；T045 不写 |
+| `userId: string` | 握手鉴权通过 | 当前 `connection` / `disconnect` handler；T046 房间管理基于此推送 |
+| `username: string` | 握手鉴权通过 | 日志 / 调试；T046 推 `opponent_joined` 时随 payload 发出 |
+| `battleId?: string` | **T046 客户端发 `battle:join` 验证通过后** | disconnect handler 推 `opponent_disconnected` 时；T047+ 房间广播 |
 
-### T045 范围 vs T046+ 范围
+### 房间命名（T046）
 
-| 项 | T045 | T046 | T047 |
-|----|------|------|------|
+| Room 名 | 加入方式 | 用途 |
+|---------|----------|------|
+| `user:{userId}` | 连接握手成功后**自动** `socket.join` | 个人推送通道（撮合成功 push、对手断线通知）。支持同 user 多端连接（多 socket 共享 user-room） |
+| `battle:{battleId}` | 客户端发 `battle:join { battleId }` 验证通过后加入 | 对战房间广播（对手状态、操作同步） |
+
+### 事件协议（T046）
+
+| 方向 | 事件 | Payload | 触发方 |
+|------|------|---------|--------|
+| server → client | `battle:matched` | `{ battleId, opponentUserId }` | 撮合成功（matchmakingController 调 `io.to(user:{userId}).emit`） |
+| client → server | `battle:join` | `{ battleId }` | 客户端收到 matched 后想入场 |
+| server → client | `battle:join:ok` | `{ battleId, opponentInRoom }` | join 验证通过 + 已加入 room；`opponentInRoom` 表示对手是否已在 room |
+| server → client | `battle:join:error` | `{ battleId?, error }` | join 失败（payload 缺 battleId / 非参与者 / battle 不存在） |
+| server → room | `battle:opponent_joined` | `{ userId, username }` | 任一方 join 后,推给房间内另一方 |
+| server → room | `battle:opponent_disconnected` | `{ userId, timestamp }` | 任一方 disconnect 时(socket.data.battleId 存在),推给房间内其他 socket |
+
+### T045 / T046 / T047+ 范围
+
+| 项 | T045 | T046 | T047+ |
+|----|------|------|-------|
 | 握手期鉴权 | ✅ | — | — |
 | `socket.data.userId/username` | ✅ | — | — |
-| 房间订阅 / `socket.join(battleId)` | ❌ | ✅ | — |
-| `io.to(userId).emit('battle:matched')` | ❌ | ✅ | — |
+| 自动 `socket.join('user:{userId}')` | ❌ | ✅ | — |
+| `io.to(user:{userId}).emit('battle:matched')` | ❌ | ✅ | — |
+| `socket.data.battleId` 写入 | ❌ | ✅ | — |
+| `socket.join('battle:{battleId}')` + DB 鉴权 | ❌ | ✅ | — |
+| `battle:opponent_joined/disconnected` 广播 | ❌ | ✅ | — |
 | 棋盘状态 / 手牌 / 能量广播 | ❌ | ❌ | ✅ |
 | 重连 / heartbeat / 速率限制 | ❌ | ❌ | ❌（运维层） |
 | Redis adapter（跨节点） | ❌ | ❌ | ❌（单体 MVP） |
@@ -1530,10 +1551,13 @@ PvP 对战入口的第一环。玩家认证后通过 `/api/match/queue` 加入�
 | 路径 | 改动 |
 |------|------|
 | `src/index.ts` | T045 改造：`app.listen` → `http.createServer(app)` + `new IOServer(httpServer, { cors: { origin: '*' } })` + `httpServer.listen(PORT)` 内调 `initializeSocketServer(io)` |
-| `src/socket/socketServer.ts` | **新建**：`initializeSocketServer(io)` —— `io.use(verifyClientToken)` + `io.on('connection')` 日志 + `socket.on('disconnect')` 日志 |
+| `src/socket/socketServer.ts` | **新建** + T046 扩展：`initializeSocketServer(io)` + 导出 `getIO()` 单例（matchmakingController 调）+ 自动 `socket.join('user:{userId}')` + `battle:join` handler + disconnect 时 battleId 检测推 `opponent_disconnected` |
 | `src/socket/authMiddleware.ts` | **新建**：`verifyClientToken(socket, next)` —— 读 `socket.handshake.auth.token` → `jwt.verify` → 写 `socket.data.userId/username` |
-| `src/socket/socketServer.test.ts` | **新建**：3 个集成测（socket.io-client 真连真断 + `listen(0)` 随机端口隔离） |
-| `src/config/jwt.ts` | **新建**（simplify pass）：集中导出 `JWT_SECRET` / `JWT_EXPIRES_IN`，消除 `process.env.JWT_SECRET || '...'` 重复 3 处 |
+| `src/socket/battleRoom.ts` | **新建**（T046）：`handleBattleJoin(io, socket, payload)` + `broadcastOpponentDisconnected(io, battleId, userId)` + `userRoom(userId)` / `battleRoom(battleId)` room 名构造器 + `parseUserRoom` / `parseBattleRoom` 反解器 |
+| `src/socket/socketServer.test.ts` | **新建** + T046 扩展：10 个集成测（3 T045 + 7 T046） |
+| `src/services/battleService.ts` | T046 末尾新增 `getPendingBattleForJoin(battleId, userId)` —— DB 验证 user 是 battle 参与者且 status='pending' |
+| `src/controllers/matchmakingController.ts` | T046 改造：tryMatch 撮合成功路径后通过 `getIO().to(userRoom).emit('battle:matched', ...)` 推双方；emit 失败 try-catch 不阻塞 REST 响应 |
+| `src/config/jwt.ts` | **新建**（T045 simplify pass）：集中导出 `JWT_SECRET` / `JWT_EXPIRES_IN`，消除 `process.env.JWT_SECRET || '...'` 重复 3 处 |
 | `src/middleware/auth.ts` | 改 1 行：改用 `import { JWT_SECRET } from '../config/jwt'` |
 | `src/middleware/auth.test.ts` | 改 1 行：改用 `JWT_SECRET` 常量 |
 | `src/services/authService.ts` | 改 3 行：改用 `JWT_SECRET` / `JWT_EXPIRES_IN` 常量 |
@@ -1542,4 +1566,9 @@ PvP 对战入口的第一环。玩家认证后通过 `/api/match/queue` 加入�
 ---
 
 *文档版本：v1.30*
+*最后更新：2026-06-11*
+
+---
+
+*文档版本：v1.31*
 *最后更新：2026-06-11*

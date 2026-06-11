@@ -8,6 +8,8 @@ import {
   getUserPendingBattle,
   MatchQueueStatus,
 } from '../services/matchmakingService';
+import { getIO } from '../socket/socketServer';
+import { userRoom } from '../socket/battleRoom';
 
 /**
  * POST /api/match/queue
@@ -37,6 +39,24 @@ export async function joinMatchmakingHandler(
     const result = await tryMatch(userId);
 
     if (result.matched) {
+      // T046: 撮合成功 → 通过 WS 推 `battle:matched` 给双方（个人 room 通道）
+      // picked 收到 opponentUserId = self (trigger),trigger 收到 opponentUserId = picked
+      // 注:若对方未连接 WS,emit 静默失败,对方仍可走 REST 409 LOSER 兜底发现
+      try {
+        const io = getIO();
+        io.to(userRoom(result.opponentUserId)).emit('battle:matched', {
+          battleId: result.battleId,
+          opponentUserId: userId,
+        });
+        io.to(userRoom(userId)).emit('battle:matched', {
+          battleId: result.battleId,
+          opponentUserId: result.opponentUserId,
+        });
+      } catch (err) {
+        // io 未初始化或 emit 失败 → 仅记录,不阻塞 REST 响应
+        console.error('[matchmaking] Failed to emit battle:matched:', err);
+      }
+
       res.status(201).json({
         success: true,
         matched: true,
