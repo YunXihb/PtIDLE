@@ -66,6 +66,7 @@
 | T040 | 实现弓手职业机制 1（攻击累计增伤，damage_boost 状态效果） | 2026-06-10 |
 | T041 | 实现法师职业机制 2（debuff/灼伤系统，fire mark + burn DoT） | 2026-06-11 |
 | T042 | 实现匹配队列 API (POST /api/match/queue) | 2026-06-11 |
+| T043 | 实现匹配状态查询 + 取消匹配 API (GET + DELETE /api/match/queue) | 2026-06-11 |
 
 ---
 

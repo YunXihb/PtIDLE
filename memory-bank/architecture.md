@@ -1313,13 +1313,16 @@ UPDATE card_templates SET is_public_pool = TRUE WHERE name = '轻击';
 
 ---
 
-## T042 新增服务：匹配系统（阶段 4.1）
+## T042 + T043 新增服务：匹配系统（阶段 4.1）
 
 ### 匹配队列服务 (Matchmaking Service)
 
 **位置**：`src/services/matchmakingService.ts`
 
-PvP 对战入口的第一环。玩家认证后通过 `POST /api/match/queue` 加入全局匹配队列；T042 仅实现「入队」，撮合与 battle 行创建留待 T044。
+PvP 对战入口的第一环。玩家认证后通过 `/api/match/queue` 加入全局匹配队列 / 查询状态 / 取消匹配。
+- T042：实现 `POST /queue`（入队）
+- T043：实现 `GET /queue`（查询状态）+ `DELETE /queue`（取消匹配）
+- 撮合与 battle 行创建仍留待 T044
 
 #### Redis 键
 
@@ -1330,9 +1333,9 @@ PvP 对战入口的第一环。玩家认证后通过 `POST /api/match/queue` 加
 
 `score = enqueuedAt` 兼作排序依据，T044 撮合时 `ZRANGE key 0 0` O(log N) 即可取最久等待者。
 
-#### 关键顺序：先抢锁、后入队
+#### 关键顺序
 
-`enqueueMatchmaking(userId)`：
+**入队（`enqueueMatchmaking`）—— 先抢锁、后入队**：
 1. `SET idle:matchmaking:lock:{userId} 1 NX EX 600` —— 原子去重
 2. 返回非 `'OK'` → 抛 `Error('已在匹配队列中')`（中文子串，控制器映射为 400 `Already in matchmaking queue`）
 3. 返回 `'OK'` → `ZADD idle:matchmaking:queue { score: enqueuedAt, value: JSON.stringify({userId, enqueuedAt}) }`
@@ -1340,12 +1343,23 @@ PvP 对战入口的第一环。玩家认证后通过 `POST /api/match/queue` 加
 
 反向顺序会破坏并发场景下的去重保证。
 
+**取消匹配（`leaveMatchmaking`）—— 先离队、后释锁**（T042「lock first → zAdd」的天然反序）：
+1. `ZRANGE idle:matchmaking:queue 0 -1` 扫描找到 userId 的 entry（拿到完整 JSON 串，`ZREM` 需要）
+2. 未找到 → 抛 `Error('不在匹配队列中')`（中文子串，控制器映射为 400 `Not in matchmaking queue`）
+3. `ZREM idle:matchmaking:queue {完整 JSON 串}`
+4. `DEL idle:matchmaking:lock:{userId}`（幂等 —— 即使锁已过期，DEL 也只是返回 0）
+5. 返回 `MatchQueueEntry { userId, enqueuedAt }`（被移除的 entry，便于审计）
+
+**为什么 ZREM 先、DEL lock 后**：若反过来「先释锁、后离队」，崩溃窗口期内用户可以再次入队成功（锁已释放）→ zAdd 写入新 entry → 紧接着的 zRem 删的还是旧 entry，导致队列残留新 entry + 用户认为已取消 → bug。当前顺序的崩溃窗口仅造成「队列已清、锁残留 ≤600s」，自然过期自愈。
+
 #### 公共 API
 
 | 函数 | 行为 |
 |------|------|
 | `enqueueMatchmaking(userId)` | 加入队列，重复抛错 |
 | `isPlayerInQueue(userId)` | 扫描 zRange 全队列，查 userId 是否存在 |
+| `getMatchmakingStatus(userId)` | 扫描 zRange 找到 userId 后返回 `MatchQueueStatus { userId, enqueuedAt, waitingSeconds }`（含等待秒数，时钟回拨 clamp 至 0）；不在队列返回 `null` |
+| `leaveMatchmaking(userId)` | 离开队列 + 释放锁；不在队列抛 `'不在匹配队列中'` |
 | `getMatchmakingQueueStats()` | `{pendingPlayers, oldestEnqueuedAt, newestEnqueuedAt}` |
 | `clearMatchmakingQueue()` | 删除队列 key（测试用；不清理各玩家 lock keys） |
 
@@ -1356,36 +1370,46 @@ PvP 对战入口的第一环。玩家认证后通过 `POST /api/match/queue` 加
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | POST | `/api/match/queue` | 加入匹配队列；201 + entry / 400 重复 / 401 未鉴权 |
+| GET | `/api/match/queue` | 查询当前匹配队列状态；200 + `{userId, enqueuedAt, waitingSeconds}` 或 200 + `null`（语义：「查询我的队列状态」始终合法） |
+| DELETE | `/api/match/queue` | 取消匹配；200 + entry / 400 不在队列 / 401 未鉴权 |
 
 `app.use('/api/match', matchmakingRoutes)` 在 `src/index.ts` 中按字母序插入 gathering 与 skills 之间。
 
-### T042 边界（明确不做）
+### T042 + T043 边界（明确不做）
 
 | # | 不做的内容 | 归属任务 |
 |---|-----------|---------|
-| 1 | 队列状态查询（GET /api/match/queue） | T043 |
-| 2 | 取消匹配（DELETE /api/match/queue） | T043 |
-| 3 | 撮合算法（2 玩家配对 + 3v3 角色数量校验） | T044 |
-| 4 | 创建 `battles` 行（需 schema 调整：`player2_id` NULL 或新增 `searching` 状态） | T044 |
-| 5 | 角色选择 / loadout 校验 | T044/T048 |
-| 6 | 匹配超时 / 强制取消 | T044+ |
-| 7 | WebSocket 推送「匹配成功」 | T045+ |
-| 8 | 持久化到 `players` 表（如 `in_matchmaking` 标志） | 后续 |
+| 1 | 撮合算法（2 玩家配对 + 3v3 角色数量校验） | T044 |
+| 2 | 创建 `battles` 行 / schema 调整 | T044 |
+| 3 | 角色选择 / loadout 校验 | T044/T048 |
+| 4 | 匹配超时 / 强制取消 | T044+ |
+| 5 | WebSocket 推送「匹配成功」 | T045+ |
+| 6 | 持久化到 `players` 表（如 `in_matchmaking` 标志） | 后续 |
+| 7 | 用户已被 T044 撮合走但仍 DELETE 的特殊处理 | T044 实施时回看 |
+| 8 | 孤儿锁清理（lock 存在但队列无 entry） | 现状 600s TTL 自愈，未来若 SLA 提升再优化 |
 
 服务文件顶部以中文注释完整列出此清单，防止后续误抢跑。
+
+### 并发场景（不做特殊处理）
+
+| 场景 | 行为 |
+|------|------|
+| 两个 DELETE 同时到达 | 两者都 zRange 找到 entry。一个 zRem 返回 1，另一个返回 0。两者都 del lock（幂等）。两者都返回 200。语义上「都成功取消」，无副作用。 |
+| GET 与 DELETE 同时到达 | GET 读到 entry，DELETE 删除 entry。若 GET 早于 DELETE 完成 → 显示「等待 X 秒」；晚于 → 显示 null。前端可接受。 |
+| 用户已被 T044 撮合走（未来场景） | T044 实现时会自行 zRem，那时 T043 的 DELETE 会得到 404/400。当前 T043 不预防。 |
 
 ### 文件清单
 
 | 路径 | 改动 |
 |------|------|
-| `src/services/matchmakingService.ts` | **新建**：enqueue / isPlayerInQueue / stats / clear；OOS 清单写在顶部 |
-| `src/services/matchmakingService.test.ts` | **新建**：5 单元测试（含「锁先于 zAdd」「重复入队不调用 zAdd」校验） |
-| `src/controllers/matchmakingController.ts` | **新建**：joinMatchmakingHandler；`includes('已在匹配队列中')` → 400 |
-| `src/routes/matchmaking.ts` | **新建**：authMiddleware + POST /queue |
-| `src/routes/matchmaking.integration.test.ts` | **新建**：2 集成测试（201 + 400） |
-| `src/index.ts` | import + `app.use('/api/match', matchmakingRoutes)` 各 1 行 |
+| `src/services/matchmakingService.ts` | T042 新建 + T043 扩展：新增 `getMatchmakingStatus` / `leaveMatchmaking`；更新 OOS 清单 |
+| `src/services/matchmakingService.test.ts` | T042 5 用例 + T043 7 用例（含「zRem 先于 del」「不在队列时 zRem/del 均未调用」校验） |
+| `src/controllers/matchmakingController.ts` | T042 joinMatchmakingHandler + T043 getMatchmakingStatusHandler / leaveMatchmakingHandler；`includes('不在匹配队列中')` → 400 |
+| `src/routes/matchmaking.ts` | T042 POST /queue + T043 GET /queue + DELETE /queue |
+| `src/routes/matchmaking.integration.test.ts` | T042 2 用例 + T043 4 用例 |
+| `src/index.ts` | T042 import + `app.use('/api/match', matchmakingRoutes)` 各 1 行 |
 
 ---
 
-*文档版本：v1.27*
+*文档版本：v1.28*
 *最后更新：2026-06-11*

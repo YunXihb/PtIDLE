@@ -9,6 +9,7 @@ jest.mock('../config/redis', () => ({
     zAdd: jest.fn(),
     zRange: jest.fn(),
     zCard: jest.fn(),
+    zRem: jest.fn(),
     set: jest.fn(),
     del: jest.fn(),
   },
@@ -33,6 +34,7 @@ const mockedRedis = redisClient as unknown as {
   zAdd: jest.Mock;
   zRange: jest.Mock;
   zCard: jest.Mock;
+  zRem: jest.Mock;
   del: jest.Mock;
 };
 
@@ -74,6 +76,69 @@ describe('Matchmaking API Integration Tests', () => {
       expect(response.status).toBe(400);
       expect(response.body.error).toBe('Already in matchmaking queue');
       expect(mockedRedis.zAdd).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('GET /api/match/queue', () => {
+    it('在队列：返回 200 + data（含 userId / waitingSeconds）', async () => {
+      const enqueuedAt = Date.now() - 8000;
+      mockedRedis.zRange.mockResolvedValueOnce([
+        JSON.stringify({ userId: 'user-123', enqueuedAt }),
+      ]);
+
+      const response = await request(app).get('/api/match/queue');
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.data).not.toBeNull();
+      expect(response.body.data.userId).toBe('user-123');
+      expect(response.body.data.enqueuedAt).toBe(enqueuedAt);
+      expect(typeof response.body.data.waitingSeconds).toBe('number');
+      expect(response.body.data.waitingSeconds).toBeGreaterThanOrEqual(0);
+    });
+
+    it('不在队列：返回 200 + data: null', async () => {
+      mockedRedis.zRange.mockResolvedValueOnce([]);
+
+      const response = await request(app).get('/api/match/queue');
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.data).toBeNull();
+    });
+  });
+
+  describe('DELETE /api/match/queue', () => {
+    it('在队列：返回 200 + entry，zRem 被调用', async () => {
+      const enqueuedAt = Date.now() - 3000;
+      const entryStr = JSON.stringify({ userId: 'user-123', enqueuedAt });
+      mockedRedis.zRange.mockResolvedValueOnce([entryStr]);
+      mockedRedis.zRem.mockResolvedValueOnce(1);
+      mockedRedis.del.mockResolvedValueOnce(1);
+
+      const response = await request(app).delete('/api/match/queue');
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.data.userId).toBe('user-123');
+      expect(response.body.data.enqueuedAt).toBe(enqueuedAt);
+
+      // zRem 调用：完整 JSON 串
+      expect(mockedRedis.zRem).toHaveBeenCalledTimes(1);
+      expect(mockedRedis.zRem).toHaveBeenCalledWith('idle:matchmaking:queue', entryStr);
+      // 释放锁
+      expect(mockedRedis.del).toHaveBeenCalledWith('idle:matchmaking:lock:user-123');
+    });
+
+    it('不在队列：返回 400 + error', async () => {
+      mockedRedis.zRange.mockResolvedValueOnce([]);
+
+      const response = await request(app).delete('/api/match/queue');
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toBe('Not in matchmaking queue');
+      expect(mockedRedis.zRem).not.toHaveBeenCalled();
+      expect(mockedRedis.del).not.toHaveBeenCalled();
     });
   });
 });

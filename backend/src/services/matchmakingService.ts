@@ -1,16 +1,17 @@
 import { redisClient } from '../config/redis';
 
 /**
- * T042 范围：仅实现「加入匹配队列」。
+ * T042 + T043 范围：实现「加入匹配队列 + 查询队列状态 + 取消匹配」。
  *
  * 明确不做（Out of Scope）：
- *   1. 队列状态查询 / 取消匹配                  -> T043
- *   2. 撮合算法（2 玩家配对 + 3v3 校验）        -> T044
- *   3. 创建 battles 行（需 schema 调整）        -> T044
- *   4. 角色选择 / loadout 校验                  -> T044/T048
- *   5. 匹配超时 / 强制取消                       -> T044+
- *   6. WebSocket 推送「匹配成功」                -> T045+
- *   7. 持久化到 players 表（如 in_matchmaking） -> 后续
+ *   1. 撮合算法（2 玩家配对 + 3v3 角色数量校验）  -> T044
+ *   2. 创建 battles 行 / schema 调整                -> T044
+ *   3. 角色选择 / loadout 校验                      -> T044/T048
+ *   4. 匹配超时 / 强制取消                           -> T044+
+ *   5. WebSocket 推送「匹配成功」                    -> T045+
+ *   6. 持久化到 players 表（如 in_matchmaking）     -> 后续
+ *   7. 用户已被 T044 撮合走但仍 DELETE 的特殊处理    -> T044 实施时回看
+ *   8. 孤儿锁清理（lock 存在但队列无 entry）         -> 现状 600s TTL 自愈
  *
  * 存储：Redis-only（battles 表当前 schema 不支持「在队列中」状态）。
  * 撮合时（T044）可用 ZRANGE key 0 0 O(log N) 取出最久等待者。
@@ -28,6 +29,12 @@ const MATCHMAKING_LOCK_TTL = 600;
 export interface MatchQueueEntry {
   userId: string;
   enqueuedAt: number;
+}
+
+export interface MatchQueueStatus {
+  userId: string;
+  enqueuedAt: number;
+  waitingSeconds: number;
 }
 
 /**
@@ -83,6 +90,73 @@ export async function isPlayerInQueue(userId: string): Promise<boolean> {
   }
 
   return false;
+}
+
+/**
+ * 查询玩家在匹配队列中的状态。
+ *
+ * 注：当前实现扫描全队列。队列规模大时可考虑改为查 lock key 存在性。
+ *
+ * @param userId 玩家用户 ID
+ * @returns MatchQueueStatus（含 waitingSeconds）；不在队列返回 null
+ */
+export async function getMatchmakingStatus(userId: string): Promise<MatchQueueStatus | null> {
+  const allEntries = await redisClient.zRange(MATCHMAKING_QUEUE_KEY, 0, -1);
+
+  for (const entryStr of allEntries) {
+    const entry = JSON.parse(entryStr) as MatchQueueEntry;
+    if (entry.userId === userId) {
+      // waitingSeconds clamp 至 ≥0（防时钟回拨）
+      const waitingSeconds = Math.max(0, Math.floor((Date.now() - entry.enqueuedAt) / 1000));
+      return {
+        userId: entry.userId,
+        enqueuedAt: entry.enqueuedAt,
+        waitingSeconds,
+      };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * 取消匹配（离开队列 + 释放锁）。
+ *
+ * 关键顺序：必须「先离队、后释锁」，反向顺序会导致崩溃窗口期内用户重新入队后队列残留旧 entry。
+ * 当前顺序的崩溃窗口仅造成「队列已清、锁残留 ≤600s」，自然过期自愈。
+ *
+ * @param userId 玩家用户 ID
+ * @returns 被移除的 entry（便于审计）
+ * @throws Error('不在匹配队列中') 当玩家不在队列时
+ */
+export async function leaveMatchmaking(userId: string): Promise<MatchQueueEntry> {
+  // 1. 先扫描找到该 userId 的 entry（拿到完整 JSON 串，因为 zRem 需要）
+  const allEntries = await redisClient.zRange(MATCHMAKING_QUEUE_KEY, 0, -1);
+
+  let targetEntry: MatchQueueEntry | null = null;
+  let targetEntryStr: string | null = null;
+
+  for (const entryStr of allEntries) {
+    const entry = JSON.parse(entryStr) as MatchQueueEntry;
+    if (entry.userId === userId) {
+      targetEntry = entry;
+      targetEntryStr = entryStr;
+      break;
+    }
+  }
+
+  if (!targetEntry || targetEntryStr === null) {
+    throw new Error('不在匹配队列中');
+  }
+
+  // 2. ZREM 先、DEL lock 后（T042「lock first → zAdd」的天然反序）
+  await redisClient.zRem(MATCHMAKING_QUEUE_KEY, targetEntryStr);
+
+  // 3. 释放锁（幂等 —— 即使锁已过期，DEL 也只是返回 0）
+  const lockKey = `${MATCHMAKING_LOCK_PREFIX}${userId}`;
+  await redisClient.del(lockKey);
+
+  return targetEntry;
 }
 
 /**

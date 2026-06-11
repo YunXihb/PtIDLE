@@ -370,5 +370,33 @@
 3. **集成测试用 `import after jest.mock`**：mock 工厂 + `import { redisClient }` 后用类型断言 `as unknown as { ...jest.Mock }` 取出 mock fn。与 `gathering.integration.test.ts` 直接 import 命名 mock 略不同，但 `mockedRedis.set.mockResolvedValueOnce` 行为一致
 4. **完全顺利**：单元 5/5 通过，集成 2/2 通过，`tsc --noEmit` 0 错误。无 mock 顺序坑、无 schema 变更、无跨服务依赖
 
+---
+
+## 2026-06-11 - 任务：T043 实现匹配状态查询 + 取消匹配 API (GET + DELETE /api/match/queue)
+
+### Prompt
+补全 T042 入队的反向操作和状态查询。T042 OOS 清单明确把「队列状态查询」和「取消匹配」归到 T043。范围决策已与用户 AskUserQuestion 确认：GET + DELETE 都做、DELETE 不在队列返回 400、Redis 操作顺序 ZREM 先 DEL lock 后。明确不做：撮合 / battles 行 / 3v3 校验 / WS 推送 / 超时强制取消。
+
+### 思考
+- **`MatchQueueStatus` 新增字段**：`waitingSeconds = max(0, floor((Date.now() - enqueuedAt) / 1000))`，clamp 至 ≥0 防时钟回拨
+- **`leaveMatchmaking` 必须先 zRange 找到 entry**：因为 `ZREM` 需要完整 JSON 串作为 member（不是 userId）；不找到就 zRem 等于 0，影响删除
+- **ZREM 先、DEL lock 后（T042 反序）**：崩溃窗口内若先 del lock 再 zRem，外部可能趁窗口重新入队成功（锁已释放）→ zAdd 写新 entry → 后续 zRem 删旧 entry（score 不同）→ 队列残留新 entry + 用户认为已取消 → bug
+- **不抽公共 helper**：plan 明确「复用 `isPlayerInQueue` 内部 zRange + JSON.parse 扫描模式，但不要抽公共 helper，重复 ~5 行更直观」—— 接受
+- **测试顺序校验**：用 `mock.invocationCallOrder` 数字大小比较，验证 zRem 的 invocationCallOrder < del 的 invocationCallOrder
+- **3 种用户场景**：
+  - 「查询我的队列状态」始终是合法操作（GET 不在队列返 200 + null）
+  - 「取消匹配」若不在队列是错误操作（DELETE 返 400 + 'Not in matchmaking queue'）
+  - 这与 T042「POST 重复返 400」对称
+- **路由顺序无关**：GET / POST / DELETE 三个方法不冲突，但都注册到 `/queue` 路径
+- **OOS 清单 8 项**：6 项 + 2 项 T043 衍生（撮合走但仍 DELETE 场景、孤儿锁清理）
+- **不做撮合走但仍 DELETE 特殊处理**：T044 实现撮合时会自行 zRem，彼时本任务的 DELETE 会拿到 400，留给 T044 决定是否需要 409 Conflict 之类的精细错误码
+
+### 意外
+1. **测试数比 plan 多**：plan 估算「4-5 + 3-4 用例」= 7-9 总，实际 `getMatchmakingStatus` 多加了「空队列」「时钟回拨」2 用例（边界覆盖），`leaveMatchmaking` 多加了「队列中只有其他玩家」1 用例（与「空队列」形成对照）。最终 7 + 4 = **11 新增用例**，总 12 unit + 6 integration 全过
+2. **T042 history 风格延续**：沿用 T042「中文子串 + 控制器映射 400」模式，DELETE 的 `errorMessage.includes('不在匹配队列中')` 完全是 T042 模式的对称镜像
+3. **「ZREM 先于 DEL」用 `invocationCallOrder` 强校验**：plan 强调「用 `mock.invocationCallOrder` 校验」，实现为 `expect(zRemCallOrder).toBeLessThan(delCallOrder)`。这个顺序保证在测试里是**机器可验证的**，不只是代码 review 能看出
+4. **完全顺利**：单元 12/12 通过（5 旧 + 7 新），集成 6/6 通过（2 旧 + 4 新），`npx tsc --noEmit` 0 错误。无 mock 顺序坑、无类型错误、并发场景通过单元测试间接覆盖（两个 DELETE 都能成功的语义与 zRem 返回 0/1 的 mock 一致）
+
+
 
 
