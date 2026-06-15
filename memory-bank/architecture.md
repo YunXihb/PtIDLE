@@ -1764,7 +1764,7 @@ executeMove(
 ): Promise<MoveResult>
 ```
 
-`MoveResult` 为 `{ ok: true }` 或 `{ ok: false, error: MoveError }`。
+`MoveResult` 为 `{ success: true }` 或 `{ success: false, error: MoveError }`。
 
 ### `MoveError` 联合类型
 `not_in_move_phase` | `not_current_actor` | `not_owner` | `invalid_path` | `move_failed`
@@ -1781,7 +1781,7 @@ executeMove(
 
 ### 6 步验证流水（`executeMove` 内部）
 
-1. `getDbSessionState(battleId)` — null 抛 `not_in_move_phase`
+1. `getDbSessionState(battleId)` — null 抛 `Error`（异常路径，由 socketServer `.catch` 转为 `internal_error`）
 2. `session.currentPhase !== 'move'` → `not_in_move_phase`
 3. `session.currentActorId !== characterId` → `not_current_actor`
 4. `character.userId !== userId` → `not_owner`（防同房间对手冒充）
@@ -1822,7 +1822,7 @@ executeMove(
 | `src/socket/battleRoom.ts` | 新增 `handleBattleMove` handler（47 行），导出供 socketServer wire |
 | `src/socket/battleRoom.test.ts` | 末尾追加 7 个 `handleBattleMove` 单测（happy / 4 invalid_payload / 2 business error） |
 | `src/socket/socketServer.ts` | 注册 `socket.on('battle:move', handleBattleMove)` |
-| `src/socket/socketServer.test.ts` | 末尾追加 1 个集成测（battle:move 事件注册 + payload 透传） |
+| `src/socket/socketServer.test.ts` | 顶部 `jest.mock` 补全 `../services/battleActionService`（无新增测，复用 T047 集成测试） |
 
 ---
 
