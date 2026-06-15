@@ -1,4 +1,3 @@
-import { redisClient } from '../config/redis';
 import type { Server as IOServer } from 'socket.io';
 import { getDbSessionState, completeMovePhase } from './battleSessionService';
 import { listCharactersInBattle, validateMovement, moveCharacter, getCharacterPosition } from './battleService';
