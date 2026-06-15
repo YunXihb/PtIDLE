@@ -748,4 +748,17 @@ T034 需要实现棋子移动验证，包括 BFS 寻路算法。
 
 ---
 
+## 2026-06-15 - 任务：T049 Task 3 - executeMove error branches (TDD regression tests)
+
+### Prompt
+为已实现的 executeMove 函数追加 6 个错误分支回归测试：not_in_move_phase / not_current_actor / not_owner / invalid_path / move_failed (concurrent occupy) / move_failed (no from position)。
+
+### 思考
+Task 2 已实现 executeMove 的 6 步验证 + 2 步副作用流水，本任务仅追加 describe('executeMove — error branches') 块。沿用现有 mock 基础设施：beforeEach 设置 happy path 默认桩，每个测试通过 mockX.mockResolvedValue(...) 覆盖特定桩实现回归断言。
+
+### 意外
+无。8 个测试全部一次通过，tsc --noEmit 无报错。
+
+---
+
 *日志持续更新中...*
