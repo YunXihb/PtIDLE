@@ -121,3 +121,44 @@ describe('initBattleField happy path', () => {
     expect(mockBroadcastFullState).toHaveBeenNthCalledWith(2, FAKE_IO, 'b1', 'u2');
   });
 });
+
+describe('initBattleField insufficient characters', () => {
+  it('should return failedStep=2 when p1 has only 2 characters', async () => {
+    jest.clearAllMocks();
+    mockInitializeBoard.mockResolvedValue({} as any);
+    mockQueryOne.mockReset();
+    mockQuery.mockReset();
+    mockQueryOne.mockResolvedValueOnce({ player1_id: 'p1', player2_id: 'p2' });
+    mockQuery.mockResolvedValueOnce(P1_CHARS.slice(0, 2));  // p1 only has 2
+    mockQuery.mockResolvedValueOnce(P2_CHARS);
+
+    const result = await initBattleField(FAKE_IO, 'b1');
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.failedStep).toBe(2);
+      expect(result.error).toMatch(/Insufficient characters.*p1=2/);
+    }
+    // Should NOT continue to subsequent steps
+    expect(mockSetEnergy).not.toHaveBeenCalled();
+    expect(mockDrawCards).not.toHaveBeenCalled();
+  });
+
+  it('should return failedStep=2 when p2 has 0 characters', async () => {
+    jest.clearAllMocks();
+    mockInitializeBoard.mockResolvedValue({} as any);
+    mockQueryOne.mockReset();
+    mockQuery.mockReset();
+    mockQueryOne.mockResolvedValueOnce({ player1_id: 'p1', player2_id: 'p2' });
+    mockQuery.mockResolvedValueOnce(P1_CHARS);
+    mockQuery.mockResolvedValueOnce([]);  // p2 has 0
+
+    const result = await initBattleField(FAKE_IO, 'b1');
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.failedStep).toBe(2);
+      expect(result.error).toMatch(/p2=0/);
+    }
+  });
+});
