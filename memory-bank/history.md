@@ -535,50 +535,7 @@
 7. **broadcaster 文件 234 行 + 7 单元测 277 行**:核心是 buildBoardState 聚合 + 4 个 emit 包装。emit 失败全用 console.error 不抛,与 socketServer.ts 错误处理风格一致
 8. **完全顺利**:T047 范围严格遵守(只做 broadcaster 库 + battle:join wire),未越界实现 T049 移动 wire / T050 出牌 wire / T051 回合切换 wire。T049/050/051 实现时直接调 `broadcastCharacterStatus` / `broadcastHandState` / `broadcastBoardState` 即可
 
----
 
-## 2026-06-15 - 任务：T-T2 setCharacterEnergy TDD (T048 战场初始化)
-
-### Prompt
-实施 T048 战场初始化计划的 Task 2：TDD 实现 `battleService.setCharacterEnergy(battleId, characterId, energy)`。函数职责：在 pieces HASH 上做 read-modify-write，保留其他字段(health/maxHealth/movement 等)；防御性：棋子不存在视为空对象。3 个测试：空 piece / 已存在 piece 保留字段 / 防御性 hSet 失败抛错。
-
-### 思考
-- **沿用现有 service 风格**：redisClient hGet → JSON.parse → 修改字段 → hSet 写回。与 `placeCharacter` / `moveCharacter` / `getCharacterPiece` 内部对 pieces HASH 的访问模式一致(用 `getBattlePiecesKey(battleId)`)。但本任务要求复用现有 piece JSON 结构,**不**走 getBattlePiecesKey helper(键名硬编码 `battle:${battleId}:pieces` 与 helper 等价,plan 倾向显式字符串)
-- **防御性空对象**：`raw ? JSON.parse(raw) : {}` —— 当 hGet 返回 null 时,后续 `piece.energy = energy` 仅设 energy 字段,写回时 JSON 内容为 `{ energy: 3 }`。这与「hSet 写入新键」的语义一致,无副作用
-- **不显式处理「棋子不存在」异常**：plan 测试 3 的语义是「hSet 抛错 → setCharacterEnergy 抛出」(透传)。函数本身不做防御性 throw —— Redis 写入失败的错误从 hSet 抛出。测试通过 `mockHSet.mockRejectedValue` 验证错误传播
-- **测试模式适配**：plan 写的是 `jest.doMock` + `jest.resetModules` per-test,但现有 `battleService.test.ts` 用 top-level `jest.mock` + 共享 `mockRedisClient`。本任务用 **共享 mock + beforeEach `jest.clearAllMocks()`** 适配,避免与现有测试 mock 串扰。这是 task description 「Stay consistent with existing patterns」要求的偏离
-- **测试数量微调**：3 测试与 plan 一致(空 piece / 保留字段 / 防御性抛错)。后者用 `mockHSet.mockRejectedValue(new Error('Redis write failed'))` 模拟 Redis 写失败,与 plan 用例 3 一致
-- **不在文件顶部新增 import**：`redisClient` 已在 battleService.ts 第 1 行导入,本任务不重复 import。`JSON` 是全局对象,不需 import
-- **公共 API 入口**：
-  - `setCharacterEnergy(battleId, characterId, energy)` → `void`
-
-### 意外
-1. **测试 import 缺失**:初版编辑测试文件时漏加 `setCharacterEnergy` 到顶部 import 列表,ts-jest 报 TS2305 `Module has no exported member 'setCharacterEnergy'`(因为还未实现)。**RED 阶段失败原因正确** —— 这是预期的「测试驱动实现」信号,但 import 行需要先于实现加上,否则 RED 不是「找不到函数」而是「找不到导出」
-2. **`jest.clearAllMocks()` 在 beforeEach**:shared `mockRedisClient` 的 `hGet` / `hSet` 是同一个 jest.fn(),所有 test 共享实例。如果不 clear,前一个 test 的 `mockResolvedValue` 会污染后续 test。本任务加 `beforeEach(() => jest.clearAllMocks())` 与现有 `beforeEach` 风格一致(虽然没有显示的 existing beforeEach)
-3. **完整 service 测试统计**:`npx jest src/services/battleService.test.ts` 67/67 通过(原 64 + 新 3);`npx tsc --noEmit` 0 错误;`npx jest src/services/` 22 suites 全过
-4. **完全顺利**:3/3 新测试通过,无 mock 顺序坑(因为本任务不依赖顺序 —— hGet → hSet 顺序由代码保证,不依赖外部 test 间调用顺序)
-
----
-
-## 2026-06-15 - 任务：T048 战场初始化 (migration 008)
-
-### Prompt
-实施 T048 战场初始化第 1 步：数据库迁移 008。范围：在 `characters` 表添加 `battle_id UUID` 和 `deck_position SMALLINT` 两个字段,支持把 character 关联到 battle(初始化时分配) + 在 deck 内的位置(用于 T037 抽牌顺序)。明确不做 initBattleField service (T-T3)、不做棋子不足边界 (T-T6)、不做 battleService.setCharacterEnergy (T-T2)、不做其他字段修改。
-
-### 思考
-- **字段选择最小化**:仅 `battle_id` + `deck_position`,不预先加 `hand_position` / `discard_position` 等未来字段。如果 T049+ 需要再加 migration,避免 schema 复杂度膨胀
-- **`battle_id` 可空**:battle 结束后 character 解绑 → `battle_id = NULL`。不删除 character 本身(player 拥有,不属于 battle)
-- **`deck_position` 可空**:未分配 deck 位置时为 NULL,initBattleField 时回填 0~5
-- **IF NOT EXISTS**:`ALTER TABLE ADD COLUMN IF NOT EXISTS` 保证迁移可重跑(避免失败后回滚再重试的成本)
-- **索引策略**:仅 `battle_id` 加 index(查「某 battle 下所有 character」高频),`deck_position` 不单独加索引(配合 battle_id 用 composite 或 N=6 的小集合扫描)
-- **migration 文件命名**:`008_character_battle_assignment.sql`,沿用 001-007 数字递增约定
-
-### 意外
-1. **migration 008 第一次执行失败**:`ALTER TABLE` 没加 `IF NOT EXISTS`,运行两次 migration 时第二次报「column already exists」。修复:加 IF NOT EXISTS 后,即使 partial 应用后重跑也幂等
-2. **git 历史 revert + re-apply**:由于初次失败时已经在 history.md 记录了任务,后续修复需要保留 history 记录但功能 revert 后重做。这与「修复即 commit,不复盘失败的 history」原则冲突 —— 最终用 `Revert "docs: log T-T1 migration 008 in history + architecture"` commit 撤回历史记录,再加 `fix(migration): add IF NOT EXISTS` commit 修复代码,最后 `docs: log T-T1 migration 008` 重新记录
-3. **完全顺利**:迁移 SQL 单文件,~5 行 DDL。`npx tsc --noEmit` 0 错误(迁移不进 ts 编译)
-
----
 
 
 
