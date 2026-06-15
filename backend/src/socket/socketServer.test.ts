@@ -16,6 +16,10 @@ jest.mock('../services/handService', () => ({
   getActorHand: jest.fn(),
 }));
 
+jest.mock('../services/battleActionService', () => ({
+  executeMove: jest.fn(),
+}));
+
 jest.mock('../config/database', () => ({
   query: jest.fn(),
   queryOne: jest.fn().mockResolvedValue({ status: 'pending' }),

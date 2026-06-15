@@ -1,6 +1,6 @@
 import { Server as IOServer, Socket } from 'socket.io';
 import { verifyClientToken } from './authMiddleware';
-import { handleBattleJoin, broadcastOpponentDisconnected, userRoom } from './battleRoom';
+import { handleBattleJoin, handleBattleMove, broadcastOpponentDisconnected, userRoom } from './battleRoom';
 
 /**
  * T045 + T046 Socket.io 入口
@@ -55,6 +55,14 @@ export function initializeSocketServer(io: IOServer): void {
       handleBattleJoin(io, socket, payload).catch((err) => {
         console.error(`[WS] battle:join error: userId=${userId}`, err);
         socket.emit('battle:join:error', { error: 'Internal server error' });
+      });
+    });
+
+    // T049: 注册 battle:move handler
+    socket.on('battle:move', (payload: { battleId?: unknown; characterId?: unknown; toX?: unknown; toY?: unknown }) => {
+      handleBattleMove(io, socket, payload).catch((err) => {
+        console.error(`[WS] battle:move error: userId=${userId}`, err);
+        socket.emit('battle:move:error', { error: 'internal_error' });
       });
     });
 
