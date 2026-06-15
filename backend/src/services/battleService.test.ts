@@ -50,6 +50,7 @@ import {
   validateAOEAttack,
   validateTauntCard,
   euclideanDistance,
+  setCharacterEnergy,
   BoardPosition,
 } from './battleService';
 
@@ -1462,5 +1463,42 @@ describe('battleService - attack validation', () => {
       expect(result.mageMarkApplied).toBeUndefined();
       expect(mockAttachFireMark).not.toHaveBeenCalled();
     });
+  });
+});
+
+// ========================================
+// T048: setCharacterEnergy（read-modify-write 复用 pieces HASH）
+// ========================================
+describe('setCharacterEnergy', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('should set energy on empty piece', async () => {
+    mockRedisClient.hGet.mockResolvedValue(null);
+    await setCharacterEnergy('b1', 'c1', 3);
+    expect(mockRedisClient.hGet).toHaveBeenCalledWith('battle:b1:pieces', 'c1');
+    expect(mockRedisClient.hSet).toHaveBeenCalledWith(
+      'battle:b1:pieces',
+      'c1',
+      JSON.stringify({ energy: 3 })
+    );
+  });
+
+  it('should preserve existing piece fields when updating energy', async () => {
+    mockRedisClient.hGet.mockResolvedValue(
+      JSON.stringify({ health: 20, maxHealth: 20, energy: 0 })
+    );
+    await setCharacterEnergy('b1', 'c1', 3);
+    const written = JSON.parse(mockRedisClient.hSet.mock.calls[0][2]);
+    expect(written).toEqual({ health: 20, maxHealth: 20, energy: 3 });
+  });
+
+  it('should throw on non-existent character (defensive — pieces HASH empty)', async () => {
+    mockRedisClient.hGet.mockResolvedValue(null);
+    mockRedisClient.hSet.mockRejectedValue(new Error('Redis write failed'));
+    await expect(setCharacterEnergy('b1', 'ghost', 3)).rejects.toThrow(
+      'Redis write failed'
+    );
   });
 });

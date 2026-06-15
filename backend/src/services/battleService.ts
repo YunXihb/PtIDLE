@@ -1329,3 +1329,24 @@ export async function listCharactersInBattle(
     name: r.name,
   }));
 }
+
+// ========================================
+// T048: setCharacterEnergy（read-modify-write 复用 pieces HASH）
+// ========================================
+
+/**
+ * 设置棋子能量（read-modify-write 复用 pieces HASH）
+ * - 若棋子不存在则视为空对象（防御性）
+ * - 保留其他字段（health / maxHealth / movement / 等）
+ */
+export async function setCharacterEnergy(
+  battleId: string,
+  characterId: string,
+  energy: number
+): Promise<void> {
+  const key = `battle:${battleId}:pieces`;
+  const raw = await redisClient.hGet(key, characterId);
+  const piece = raw ? JSON.parse(raw) : {};
+  piece.energy = energy;
+  await redisClient.hSet(key, characterId, JSON.stringify(piece));
+}
