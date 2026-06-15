@@ -17,6 +17,7 @@ const mockRedisClient = {
   hGet: jest.fn(),
   hSet: jest.fn(),
 };
+const mockRedisDel = mockRedisClient.del;
 
 jest.mock('./battleService', () => ({
   initializeBoard: mockInitializeBoard,
@@ -160,5 +161,69 @@ describe('initBattleField insufficient characters', () => {
       expect(result.failedStep).toBe(2);
       expect(result.error).toMatch(/p2=0/);
     }
+  });
+});
+
+describe('cleanupPartialInit ladder cleanup', () => {
+  it('should DEL only positions when lastStep=1', async () => {
+    mockRedisDel.mockClear();
+    await cleanupPartialInit('b1', 1);
+    expect(mockRedisDel).toHaveBeenCalledTimes(1);
+    expect(mockRedisDel).toHaveBeenCalledWith('battle:b1:positions');
+    // 不应回滚 battles（lastStep < 6）
+    expect(mockQuery).not.toHaveBeenCalledWith(expect.stringContaining('UPDATE battles SET status'), expect.anything());
+  });
+
+  it('should DEL positions + pieces when lastStep=2', async () => {
+    mockRedisDel.mockClear();
+    await cleanupPartialInit('b1', 2);
+    expect(mockRedisDel).toHaveBeenCalledWith('battle:b1:pieces');
+    expect(mockRedisDel).toHaveBeenCalledWith('battle:b1:positions');
+  });
+
+  it('should DEL hand/retained/discard keys for all 6 chars when lastStep=4', async () => {
+    jest.clearAllMocks();
+    mockQueryOne.mockReset();
+    mockQuery.mockReset();
+    // cleanupPartialInit 内部会调 loadBattleCharacters → 需要 mock
+    mockQueryOne.mockResolvedValueOnce({ player1_id: 'p1', player2_id: 'p2' });
+    mockQuery.mockResolvedValueOnce(P1_CHARS);
+    mockQuery.mockResolvedValueOnce(P2_CHARS);
+    mockQuery.mockResolvedValueOnce({ rowCount: 6 });  // UPDATE characters.battle_id
+
+    mockRedisDel.mockClear();
+    await cleanupPartialInit('b1', 4);
+    // 6 chars × 3 keys (hand/retained/discard) = 18 个 DEL
+    expect(mockRedisDel.mock.calls.length).toBeGreaterThanOrEqual(18);
+  });
+
+  it('should DEL session key when lastStep=5', async () => {
+    mockRedisDel.mockClear();
+    await cleanupPartialInit('b1', 5);
+    expect(mockRedisDel).toHaveBeenCalledWith('battle:b1:session');
+  });
+
+  it('should UPDATE battles rollback when lastStep=6', async () => {
+    jest.clearAllMocks();
+    mockQueryOne.mockReset();
+    mockQuery.mockReset();
+    mockQueryOne.mockResolvedValueOnce({ player1_id: 'p1', player2_id: 'p2' });
+    mockQuery.mockResolvedValueOnce(P1_CHARS);
+    mockQuery.mockResolvedValueOnce(P2_CHARS);
+    mockQuery.mockResolvedValueOnce({ rowCount: 6 });
+
+    await cleanupPartialInit('b1', 6);
+    expect(mockQuery).toHaveBeenCalledWith(
+      expect.stringContaining(`UPDATE battles SET status='pending'`),
+      ['b1']
+    );
+  });
+
+  it('should swallow cleanup errors (loadBattleCharacters fails → no throw)', async () => {
+    jest.clearAllMocks();
+    mockQueryOne.mockReset();
+    mockQueryOne.mockRejectedValue(new Error('PG down'));
+    // 不应 throw
+    await expect(cleanupPartialInit('b1', 4)).resolves.toBeUndefined();
   });
 });

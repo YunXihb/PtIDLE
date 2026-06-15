@@ -127,7 +127,48 @@ export async function initBattleField(io: IOServer, battleId: string): Promise<I
 
 // ─── 反向清理 ──────────────────────────────────────────────
 export async function cleanupPartialInit(battleId: string, lastSuccessfulStep: number): Promise<void> {
-  throw new Error('cleanupPartialInit: not yet implemented');
+  try {
+    // 步骤 6+ 失败 → 回滚 battles 行
+    if (lastSuccessfulStep >= 6) {
+      await query(
+        `UPDATE battles SET status='pending', started_at=NULL,
+             current_actor_id=NULL, current_phase=NULL,
+             current_round=1, current_step=0
+         WHERE id=$1 AND status='ongoing'`,
+        [battleId]
+      );
+    }
+
+    // 步骤 5+ 失败 → DEL session
+    if (lastSuccessfulStep >= 5) {
+      await redisClient.del(`battle:${battleId}:session`);
+    }
+
+    // 步骤 4+ 失败 → DEL 6 个 hand/retained/discard
+    if (lastSuccessfulStep >= 4) {
+      const { p1Chars, p2Chars } = await loadBattleCharacters(battleId).catch(() => ({
+        p1Chars: [] as CharacterRow[],
+        p2Chars: [] as CharacterRow[],
+      }));
+      for (const c of [...p1Chars, ...p2Chars]) {
+        await redisClient.del(`battle:${battleId}:hand:${c.id}`);
+        await redisClient.del(`battle:${battleId}:retained:${c.id}`);
+        await redisClient.del(`battle:${battleId}:discard:${c.id}`);
+      }
+    }
+
+    // 步骤 2+ 失败 → DEL pieces + positions
+    if (lastSuccessfulStep >= 2) {
+      await redisClient.del(`battle:${battleId}:pieces`);
+      await redisClient.del(`battle:${battleId}:positions`);
+    } else if (lastSuccessfulStep === 1) {
+      // 步骤 1 失败 → 仅 positions 初始化但为空
+      await redisClient.del(`battle:${battleId}:positions`);
+    }
+  } catch (err) {
+    console.error(`[cleanupPartialInit:${battleId}] cleanup error:`, err);
+    // 不 rethrow，best-effort
+  }
 }
 
 // ─── 内部辅助：取前 3 个 alive 棋子 + 绑定 battle_id ──────
