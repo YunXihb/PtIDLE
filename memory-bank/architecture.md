@@ -1483,6 +1483,7 @@ PvP 对战入口的第一环。玩家认证后通过 `/api/match/queue` 加入�
 | `src/routes/matchmaking.ts` | T042 POST /queue + T043 GET /queue + DELETE /queue |
 | `src/routes/matchmaking.integration.test.ts` | T042 2 + T043 4 + T044 5 = **11 用例**（POST: 4 + GET: 3 + DELETE: 3，删 1 加 4） |
 | `src/migrations/007_add_match_metadata.sql` | **新建**：battles 表加 `matched_at` / `started_at` + 历史回填 + 3 索引（p1/p2 partial + unique partial） |
+| `src/migrations/008_t048_battle_init.sql` | **新建（T-T1）**：characters 表加 `battle_id` (FK→battles ON DELETE SET NULL) + `deck_position` INTEGER + 索引 `idx_characters_battle_id`；battles 加索引 `idx_battles_started_at` |
 | `src/index.ts` | T042 import + `app.use('/api/match', matchmakingRoutes)` 各 1 行 |
 
 ---

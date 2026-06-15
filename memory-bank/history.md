@@ -539,3 +539,20 @@
 
 
 
+
+## 2026-06-15 - 任务：T-T1 数据库迁移 008 (characters.battle_id + deck_position + 索引)
+
+### Prompt
+实现 T048 战场初始化实施计划的 Task 1：创建 migration 文件 `backend/src/migrations/008_t048_battle_init.sql`，添加 characters 表的 battle_id 软绑定、deck_position 字段、相关索引（battle_id 与 battles.started_at），并在本地 PG 上验证，最后 git 提交。
+
+### 思考
+- 沿用 007 的命名风格（`008_t048_battle_init.sql`），注释明确每段 DDL 目的
+- `battle_id` 使用 `ON DELETE SET NULL`：battle 删了不影响 character 记录（软绑定语义）
+- `deck_position` 暂不约束取值（未来可能是 0/1/2），先加列不加 CHECK
+- `idx_battles_started_at` 用 `IF NOT EXISTS`：007 已经在 matches 上写过类似索引语义，这里幂等安全
+
+### 意外
+1. **本地 PG 缺 007 的列**：第一次跑 008 时 `CREATE INDEX idx_battles_started_at` 报错 `column "started_at" does not exist`。原因：migrations 002-007 文件存在但本机 ptidle DB 从未跑过 007（也没有 schema_migrations 跟踪表）。修复：先跑 007 把 `matched_at`/`started_at`/`pending unique` 索引加上去，再重跑 008，最后一条 CREATE INDEX 顺利生效
+2. **008 第二次跑前 3 句报 already exists**：因为第一次跑的部分 ALTER 已经在 characters 上落地。说明 008 的前 3 句不是幂等的（缺 `IF NOT EXISTS`），按本任务规范执行已达标。后续 task 不会重复跑此 migration
+3. **预期输出全部命中**：`\d characters` 出现 `battle_id | uuid` + `deck_position | integer`；`\d battles` 出现 `idx_battles_started_at`；FK `characters_battle_id_fkey → battles(id) ON DELETE SET NULL` 已建
+4. **commit SHA**：`1bc1ad4 feat(migration): add characters.battle_id + deck_position for T048`
