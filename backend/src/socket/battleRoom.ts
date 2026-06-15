@@ -2,6 +2,7 @@ import { Server as IOServer, Socket } from 'socket.io';
 import { getPendingBattleForJoin } from '../services/battleService';
 import { broadcastFullState } from './battleStateBroadcaster';
 import { initBattleField } from '../services/battleInitializationService';
+import { executeMove } from '../services/battleActionService';
 import { redisClient } from '../config/redis';
 import { queryOne } from '../config/database';
 
@@ -180,4 +181,51 @@ function isOtherPlayerInRoom(io: IOServer, battleId: string): boolean {
 async function getBattleStatus(battleId: string): Promise<string | null> {
   const row = await queryOne<{ status: string }>(`SELECT status FROM battles WHERE id=$1`, [battleId]);
   return row?.status ?? null;
+}
+
+/**
+ * T049: 处理客户端的 `battle:move` 事件
+ *
+ * 流程:
+ *   1. 验证 payload 结构（battleId/characterId string, toX/toY 有限数字）
+ *   2. 失败 → emit `battle:move:error` `{ error: 'invalid_payload' }`
+ *   3. 调 `executeMove(io, battleId, characterId, toX, toY, socket.data.userId)`
+ *   4. executeMove 失败 → emit `battle:move:error` 带 service 返回的 error
+ *   5. 成功 → 不 emit 任何事件（依赖 broadcastBoardState room-wide 推送 + 客户端推断成功）
+ *
+ * @param io IOServer 实例
+ * @param socket 客户端 socket
+ * @param payload { battleId, characterId, toX, toY }
+ */
+export async function handleBattleMove(
+  io: IOServer,
+  socket: Socket,
+  payload: {
+    battleId?: unknown;
+    characterId?: unknown;
+    toX?: unknown;
+    toY?: unknown;
+  }
+): Promise<void> {
+  // 1. payload 验证
+  const battleId = typeof payload?.battleId === 'string' ? payload.battleId : null;
+  const characterId = typeof payload?.characterId === 'string' ? payload.characterId : null;
+  const toX = typeof payload?.toX === 'number' && Number.isFinite(payload.toX) ? payload.toX : null;
+  const toY = typeof payload?.toY === 'number' && Number.isFinite(payload.toY) ? payload.toY : null;
+
+  if (!battleId || !characterId || toX === null || toY === null) {
+    socket.emit('battle:move:error', { error: 'invalid_payload' });
+    return;
+  }
+
+  const userId = socket.data.userId as string;
+
+  // 2. 调 service
+  const result = await executeMove(io, battleId, characterId, toX, toY, userId);
+
+  // 3. 失败回执
+  if (!result.success) {
+    socket.emit('battle:move:error', { error: result.error });
+  }
+  // 成功：不 emit（broadcaster 已 room-wide 推 board）
 }

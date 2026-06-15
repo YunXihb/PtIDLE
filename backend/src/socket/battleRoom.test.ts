@@ -24,16 +24,21 @@ jest.mock('./battleStateBroadcaster', () => ({
   broadcastHandState: jest.fn(),
   broadcastCharacterStatus: jest.fn(),
 }));
+jest.mock('../services/battleActionService', () => ({
+  executeMove: jest.fn(),
+}));
 
-import { handleBattleJoin } from './battleRoom';
+import { handleBattleJoin, handleBattleMove } from './battleRoom';
 import { initBattleField, cleanupPartialInit } from '../services/battleInitializationService';
 import { broadcastFullState } from './battleStateBroadcaster';
+import { executeMove } from '../services/battleActionService';
 import { redisClient } from '../config/redis';
 import { queryOne } from '../config/database';
 
 const mockInit = initBattleField as jest.MockedFunction<typeof initBattleField>;
 const mockCleanup = cleanupPartialInit as jest.MockedFunction<typeof cleanupPartialInit>;
 const mockBroadcast = broadcastFullState as jest.MockedFunction<typeof broadcastFullState>;
+const mockExecuteMove = executeMove as jest.MockedFunction<typeof executeMove>;
 const mockRedisSet = redisClient.set as jest.MockedFunction<typeof redisClient.set>;
 const mockRedisDel = redisClient.del as jest.MockedFunction<typeof redisClient.del>;
 const mockQueryOne = queryOne as jest.MockedFunction<typeof queryOne>;
@@ -121,5 +126,117 @@ describe('handleBattleJoin — tryInitBattleField', () => {
     await handleBattleJoin(io, socket, { battleId: 'b1' });
     await new Promise(r => setTimeout(r, 150));
     expect(mockInit).not.toHaveBeenCalled();
+  });
+});
+
+// ========================================
+// T049: handleBattleMove
+// ========================================
+describe('handleBattleMove', () => {
+  beforeEach(() => {
+    mockExecuteMove.mockReset();
+  });
+
+  it('should call executeMove with io, battleId, characterId, toX, toY, userId on valid payload', async () => {
+    mockExecuteMove.mockResolvedValue({ success: true });
+    const io = createMockIO();
+    const { socket } = createMockSocket();
+    socket.data.userId = 'u1';
+
+    await handleBattleMove(io, socket, {
+      battleId: 'b1',
+      characterId: 'c1',
+      toX: 5,
+      toY: 3,
+    });
+
+    expect(mockExecuteMove).toHaveBeenCalledWith(io, 'b1', 'c1', 5, 3, 'u1');
+    expect(socket.emit).not.toHaveBeenCalledWith('battle:move:error', expect.anything());
+  });
+
+  it('should emit battle:move:error with invalid_payload when battleId is not string', async () => {
+    const io = createMockIO();
+    const { socket } = createMockSocket();
+    socket.data.userId = 'u1';
+
+    await handleBattleMove(io, socket, { characterId: 'c1', toX: 5, toY: 3 });
+
+    expect(socket.emit).toHaveBeenCalledWith('battle:move:error', { error: 'invalid_payload' });
+    expect(mockExecuteMove).not.toHaveBeenCalled();
+  });
+
+  it('should emit battle:move:error with invalid_payload when characterId is not string', async () => {
+    const io = createMockIO();
+    const { socket } = createMockSocket();
+    socket.data.userId = 'u1';
+
+    await handleBattleMove(io, socket, { battleId: 'b1', characterId: 123, toX: 5, toY: 3 });
+
+    expect(socket.emit).toHaveBeenCalledWith('battle:move:error', { error: 'invalid_payload' });
+    expect(mockExecuteMove).not.toHaveBeenCalled();
+  });
+
+  it('should emit battle:move:error with invalid_payload when toX is not finite number', async () => {
+    const io = createMockIO();
+    const { socket } = createMockSocket();
+    socket.data.userId = 'u1';
+
+    await handleBattleMove(io, socket, {
+      battleId: 'b1',
+      characterId: 'c1',
+      toX: '5', // 字符串
+      toY: 3,
+    });
+
+    expect(socket.emit).toHaveBeenCalledWith('battle:move:error', { error: 'invalid_payload' });
+    expect(mockExecuteMove).not.toHaveBeenCalled();
+  });
+
+  it('should emit battle:move:error with invalid_payload when toY is NaN', async () => {
+    const io = createMockIO();
+    const { socket } = createMockSocket();
+    socket.data.userId = 'u1';
+
+    await handleBattleMove(io, socket, {
+      battleId: 'b1',
+      characterId: 'c1',
+      toX: 5,
+      toY: NaN,
+    });
+
+    expect(socket.emit).toHaveBeenCalledWith('battle:move:error', { error: 'invalid_payload' });
+    expect(mockExecuteMove).not.toHaveBeenCalled();
+  });
+
+  it('should emit battle:move:error with service error when executeMove returns failure', async () => {
+    mockExecuteMove.mockResolvedValue({ success: false, error: 'not_in_move_phase' });
+    const io = createMockIO();
+    const { socket } = createMockSocket();
+    socket.data.userId = 'u1';
+
+    await handleBattleMove(io, socket, {
+      battleId: 'b1',
+      characterId: 'c1',
+      toX: 5,
+      toY: 3,
+    });
+
+    expect(socket.emit).toHaveBeenCalledWith('battle:move:error', { error: 'not_in_move_phase' });
+  });
+
+  it('should not emit anything on success (rely on broadcastBoardState room-wide)', async () => {
+    mockExecuteMove.mockResolvedValue({ success: true });
+    const io = createMockIO();
+    const { socket } = createMockSocket();
+    socket.data.userId = 'u1';
+
+    await handleBattleMove(io, socket, {
+      battleId: 'b1',
+      characterId: 'c1',
+      toX: 5,
+      toY: 3,
+    });
+
+    expect(socket.emit).not.toHaveBeenCalled();
   });
 });
