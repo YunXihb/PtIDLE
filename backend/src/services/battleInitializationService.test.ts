@@ -29,6 +29,7 @@ jest.mock('./handService', () => ({
 jest.mock('./battleSessionService', () => ({
   initializeSession: mockInitSession,
   getActivationOrder: mockGetOrder,
+  buildSnakeOrder: (...args: any[]) => mockGetOrder(...args),
 }));
 jest.mock('../config/database', () => ({
   query: mockQuery,
@@ -38,8 +39,16 @@ jest.mock('../config/database', () => ({
 jest.mock('../config/redis', () => ({
   redisClient: mockRedisClient,
 }));
+jest.mock('../socket/battleStateBroadcaster', () => ({
+  broadcastFullState: jest.fn(),
+  broadcastBoardState: jest.fn(),
+  broadcastHandState: jest.fn(),
+  broadcastCharacterStatus: jest.fn(),
+}));
 
 import { initBattleField, cleanupPartialInit } from './battleInitializationService';
+
+const mockBroadcastFullState = require('../socket/battleStateBroadcaster').broadcastFullState as jest.MockedFunction<any>;
 
 const mockBroadcast = jest.fn();
 const FAKE_IO: any = { to: jest.fn().mockReturnThis(), emit: mockBroadcast };
@@ -72,9 +81,43 @@ beforeEach(() => {
   mockQuery.mockResolvedValueOnce({ rowCount: 1 });
 });
 
-describe('loadBattleCharacters (via initBattleField happy path)', () => {
-  // 测试会在 Task 5 中添加，本 task 只建立 mock 基础设施
-  it('placeholder — actual tests in Task 5+', () => {
-    expect(true).toBe(true);
+describe('initBattleField happy path', () => {
+  it('should execute all 7 steps and return success', async () => {
+    const result = await initBattleField(FAKE_IO, 'b1');
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.actorId).toBe('c1');
+      expect(result.startedAt).toBeInstanceOf(Date);
+    }
+
+    // 步骤 1: initializeBoard
+    expect(mockInitializeBoard).toHaveBeenCalledWith('b1');
+    // 步骤 2: placeCharacter × 6
+    expect(mockPlaceCharacter).toHaveBeenCalledTimes(6);
+    expect(mockPlaceCharacter).toHaveBeenNthCalledWith(1, 'b1', 'c1', 6, 0);
+    expect(mockPlaceCharacter).toHaveBeenNthCalledWith(2, 'b1', 'c4', 0, 8);
+    expect(mockPlaceCharacter).toHaveBeenNthCalledWith(6, 'b1', 'c6', 2, 8);
+    // 步骤 3: setCharacterEnergy × 6
+    expect(mockSetEnergy).toHaveBeenCalledTimes(6);
+    expect(mockSetEnergy).toHaveBeenCalledWith('b1', 'c1', 3);
+    // 步骤 4: drawCards × 6
+    expect(mockDrawCards).toHaveBeenCalledTimes(6);
+    expect(mockDrawCards).toHaveBeenCalledWith('b1', 'c1', 3);
+    // 步骤 5: initializeSession
+    expect(mockInitSession).toHaveBeenCalledWith(
+      'b1',
+      ['c1', 'c2', 'c3'],
+      ['c4', 'c5', 'c6']
+    );
+    // 步骤 6: UPDATE battles
+    expect(mockQuery).toHaveBeenCalledWith(
+      expect.stringContaining(`UPDATE battles`),
+      expect.arrayContaining(['c1', 'b1'])
+    );
+    // 步骤 7: broadcastFullState × 2
+    expect(mockBroadcastFullState).toHaveBeenCalledTimes(2);
+    expect(mockBroadcastFullState).toHaveBeenNthCalledWith(1, FAKE_IO, 'b1', 'u1');
+    expect(mockBroadcastFullState).toHaveBeenNthCalledWith(2, FAKE_IO, 'b1', 'u2');
   });
 });

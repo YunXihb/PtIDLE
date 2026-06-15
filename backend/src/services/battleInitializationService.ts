@@ -19,6 +19,7 @@ import * as handService from './handService';
 import * as battleSessionService from './battleSessionService';
 import { query, queryOne } from '../config/database';
 import { redisClient } from '../config/redis';
+import { broadcastFullState } from '../socket/battleStateBroadcaster';
 
 // ─── 公共类型 ──────────────────────────────────────────────
 export type InitResult =
@@ -49,7 +50,79 @@ const DEFAULT_P2_POSITIONS_3V3: Array<{ x: number; y: number }> = [
 
 // ─── 主入口 ────────────────────────────────────────────────
 export async function initBattleField(io: IOServer, battleId: string): Promise<InitResult> {
-  throw new Error('initBattleField: not yet implemented');
+  let lastStep = 0;
+
+  try {
+    // ── 步骤 1: 棋盘初始化 ─────────────────────────────────
+    lastStep = 1;
+    await battleService.initializeBoard(battleId);
+
+    // ── 步骤 2: 6 个棋子放置到默认位置 ──────────────────────
+    lastStep = 2;
+    const { p1Chars, p2Chars } = await loadBattleCharacters(battleId);
+    if (p1Chars.length < 3 || p2Chars.length < 3) {
+      return {
+        success: false,
+        failedStep: 2,
+        error: `Insufficient characters: p1=${p1Chars.length}, p2=${p2Chars.length}`,
+      };
+    }
+    for (let i = 0; i < 3; i++) {
+      await battleService.placeCharacter(battleId, p1Chars[i].id, DEFAULT_P1_POSITIONS_3V3[i].x, DEFAULT_P1_POSITIONS_3V3[i].y);
+      await battleService.placeCharacter(battleId, p2Chars[i].id, DEFAULT_P2_POSITIONS_3V3[i].x, DEFAULT_P2_POSITIONS_3V3[i].y);
+    }
+
+    // ── 步骤 3: 设置初始能量（满能量 3 点） ────────────────
+    lastStep = 3;
+    for (const c of [...p1Chars, ...p2Chars]) {
+      await battleService.setCharacterEnergy(battleId, c.id, 3);
+    }
+
+    // ── 步骤 4: 6 个棋子各抽 3 张初始手牌 ─────────────────
+    lastStep = 4;
+    for (const c of [...p1Chars, ...p2Chars]) {
+      await handService.drawCards(battleId, c.id, 3);
+    }
+
+    // ── 步骤 5: 初始化状态机（蛇形顺序） ──────────────────
+    lastStep = 5;
+    const p1Ids = p1Chars.map(c => c.id);
+    const p2Ids = p2Chars.map(c => c.id);
+    await battleSessionService.initializeSession(battleId, p1Ids, p2Ids);
+
+    // ── 步骤 6: 持久化 battles 行（pending → ongoing） ──────
+    lastStep = 6;
+    const order = battleSessionService.buildSnakeOrder(p1Ids, p2Ids);
+    const startedAt = new Date();
+    const result = await query(
+      `UPDATE battles
+       SET status='ongoing', started_at=$1, current_actor_id=$2,
+           current_phase='idle', current_round=1, current_step=0,
+           updated_at=NOW()
+       WHERE id=$3 AND status='pending'`,
+      [startedAt, order[0], battleId]
+    );
+    if ((result as unknown as { rowCount: number }).rowCount !== 1) {
+      return { success: false, failedStep: 6, error: 'battle_row_not_updated' };
+    }
+
+    // ── 步骤 7: 广播全量状态给双端 ─────────────────────────
+    lastStep = 7;
+    try {
+      await broadcastFullState(io, battleId, p1Chars[0].user_id);
+      await broadcastFullState(io, battleId, p2Chars[0].user_id);
+    } catch (broadcastErr) {
+      console.error(`[initBattleField:${battleId}] broadcast failed:`, broadcastErr);
+    }
+
+    return { success: true, startedAt, actorId: order[0] };
+
+  } catch (err) {
+    await cleanupPartialInit(battleId, lastStep).catch(cleanupErr => {
+      console.error(`[initBattleField:${battleId}] cleanup also failed:`, cleanupErr);
+    });
+    return { success: false, failedStep: lastStep, error: (err as Error).message };
+  }
 }
 
 // ─── 反向清理 ──────────────────────────────────────────────
@@ -62,5 +135,40 @@ async function loadBattleCharacters(battleId: string): Promise<{
   p1Chars: CharacterRow[];
   p2Chars: CharacterRow[];
 }> {
-  throw new Error('loadBattleCharacters: not yet implemented');
+  const battleRow = await queryOne<{ player1_id: string; player2_id: string }>(
+    `SELECT player1_id, player2_id FROM battles WHERE id=$1`,
+    [battleId]
+  );
+  if (!battleRow) {
+    throw new Error(`Battle ${battleId} not found`);
+  }
+  const p1Chars = await query<CharacterRow>(
+    `SELECT c.id, c.player_id, u.id AS user_id, c.name, c.profession,
+            c.health, c.max_health, c.movement, c.energy, c.max_energy, c.is_alive
+     FROM characters c
+     JOIN players p ON p.id = c.player_id
+     JOIN users u ON u.id = p.user_id
+     WHERE c.player_id=$1 AND c.is_alive=TRUE
+     ORDER BY c.created_at ASC LIMIT 3`,
+    [battleRow.player1_id]
+  );
+  const p2Chars = await query<CharacterRow>(
+    `SELECT c.id, c.player_id, u.id AS user_id, c.name, c.profession,
+            c.health, c.max_health, c.movement, c.energy, c.max_energy, c.is_alive
+     FROM characters c
+     JOIN players p ON p.id = c.player_id
+     JOIN users u ON u.id = p.user_id
+     WHERE c.player_id=$1 AND c.is_alive=TRUE
+     ORDER BY c.created_at ASC LIMIT 3`,
+    [battleRow.player2_id]
+  );
+  // 绑定 battle_id（步骤 6 之前完成）
+  const allIds = [...p1Chars, ...p2Chars].map(c => c.id);
+  if (allIds.length > 0) {
+    await query(
+      `UPDATE characters SET battle_id=$1 WHERE id = ANY($2::uuid[])`,
+      [battleId, allIds]
+    );
+  }
+  return { p1Chars, p2Chars };
 }
