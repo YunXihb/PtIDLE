@@ -1667,4 +1667,71 @@ interface FullStateEvent {
 
 ---
 *文档版本：v1.32*
+
+---
+
+## T048 战场初始化 (Battle Initialization)
+
+### 触发时机
+双方都 `battle:join` 成功后自动触发，由 `tryInitBattleField` 在 SETNX 锁内执行。
+
+### 模块
+| 文件 | 角色 |
+|------|------|
+| `src/services/battleInitializationService.ts` | `initBattleField` 7 步流水 + `cleanupPartialInit` 阶梯清理 |
+| `src/socket/battleRoom.ts` | `tryInitBattleField` 锁 + 双 join 检测 |
+| `src/migrations/008_t048_battle_init.sql` | `characters.battle_id` + `deck_position` + 索引 |
+
+### 7 步流水
+1. `initializeBoard` — 9×9 空棋盘
+2. `placeCharacter × 6` — 双方各 3 个棋子到默认位置（P1 `(6,0)(7,0)(8,0)`, P2 `(0,8)(1,8)(2,8)`）
+3. `setCharacterEnergy × 6` — 满能量 3
+4. `drawCards × 6` — 各抽 3 张初始手牌
+5. `initializeSession` — 蛇形 ABABAB 顺序 + phase=idle
+6. `UPDATE battles SET status='ongoing'` — pending → ongoing
+7. `broadcastFullState × 2` — 双方各一份（ownHand 隔离）
+
+### 失败处理
+- 步骤 1-6 失败 → `cleanupPartialInit(lastStep)` 阶梯反向 DEL + 回滚 battles.status='pending'
+- 步骤 7 失败 → **不回滚**（PG 已固化），console.error，依赖客户端重 join 触发重 broadcast
+- `cleanupPartialInit` 自身失败 → 吞错 console.error（best-effort）
+
+### 并发保护
+- Redis `SETNX battle:{id}:init_lock EX 30`
+- SETNX 输者 sleep 100ms + 读 status 决定 broadcast / wait
+- `battles.status='pending'` 二次检查保证幂等
+
+### 棋子选取策略
+按 `characters.created_at ASC LIMIT 3` 取每方前 3 个 alive 棋子（每个玩家独立）。T008 注册时已建 1 warrior + 1 ranger + 1 mage → 默认平衡。后续 T048.5 可扩展「玩家手动选 3 个棋子」。
+
+### 数据库改动 (Migration 008)
+- `characters.battle_id UUID` — 软绑定，NULL 表示未入战
+- `characters.deck_position INTEGER` — 3v3 位序（预留未来）
+- `idx_characters_battle_id` + `idx_battles_started_at` — 查询加速
+
+### 设计决策
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| 棋子默认位置 | 硬编码 P1 右下角 / P2 左上角 | T048 仅做自动初始化，预留 T048.5 让玩家自选 |
+| 错误传播 | `initBattleField` 失败时 catch 调 cleanupPartialInit 并返回 failure result | 调用方 handleBattleJoin 不感知内部步骤失败 |
+| 调用方保护 | handleBattleJoin 用 try/catch 包 tryInitBattleField | 即使 init 抛错也不发 join:error 给前端（房间已加入） |
+| mock 模式 | socketServer 集成测试顶部 mock queryOne + battleInitializationService | 集成测试不走真实 PG/Redis |
+
+### 文件清单(T048)
+| 路径 | 改动 |
+|------|------|
+| `src/migrations/008_t048_battle_init.sql` | **新建** — `characters.battle_id` + `deck_position` + 2 索引（带 IF NOT EXISTS 幂等保护） |
+| `src/services/battleInitializationService.ts` | **新建** — `initBattleField` 7 步 orchestrator + `loadBattleCharacters` JOIN 查询 + `cleanupPartialInit` 阶梯清理 |
+| `src/services/battleInitializationService.test.ts` | **新建** — 11 单测（1 happy + 2 insufficient chars + 6 cleanup ladder + 2 failure paths） |
+| `src/services/battleService.ts` | 末尾新增 `setCharacterEnergy(battleId, characterId, energy)` — read-modify-write 复用 pieces HASH |
+| `src/services/battleService.test.ts` | 末尾新增 3 个 setCharacterEnergy 单测 |
+| `src/socket/battleRoom.ts` | 新增 `tryInitBattleField` + `isOtherPlayerInRoom` + `getBattleStatus`；handleBattleJoin 末尾 wire 调用（带独立 try/catch 保护） |
+| `src/socket/battleRoom.test.ts` | **新建** — 5 单测（first join no init / second join init / status=ongoing 跳过 / init throw 仍 release lock / SETNX 失败 100ms 重查） |
+| `src/socket/battleRoom.integration.test.ts` | **新建** — 骨架（占位 test，详细端到端验证由开发者手动跑） |
+| `src/socket/socketServer.test.ts` | 顶部 mock 补全 `../config/database` (queryOne 返回 `{status:'pending'}`) + `../services/battleInitializationService` |
+
+---
+
+*文档版本：v1.33*
+*最后更新：2026-06-15*
 *最后更新：2026-06-11*

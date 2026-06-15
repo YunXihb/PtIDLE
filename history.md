@@ -720,4 +720,32 @@ T034 需要实现棋子移动验证，包括 BFS 寻路算法。
 
 ---
 
+## 2026-06-15 - 任务：T048 战场初始化
+
+### Prompt
+实施 T048 战场初始化。范围：双方都 battle:join 后自动触发 initBattleField；7 步流水（initializeBoard / placeCharacter × 6 / setEnergy × 6 / drawCards × 6 / initializeSession / UPDATE battles status=ongoing / broadcastFullState × 2）；3v3 硬编码；默认位置 P1 右下角 / P2 左上角；棋子按 created_at ASC LIMIT 3 取前 3 个 alive；失败时 cleanupPartialInit 阶梯式反向清理；Redis SETNX init_lock 防并发。
+
+### 思考
+- 新建 service 文件，orchestrator 风格，调用既有 battleService / handService / battleSessionService，不持有私有 Redis key 命名空间
+- 「生产 vs 应用」分离：步骤 6 UPDATE battles 是 PG 唯一状态切换点；步骤 7 broadcast 失败不回滚 PG
+- 阶梯式 cleanupPartialInit 用 `if (>= N)` 而非 else-if 链，确保任意步骤失败时所有上游写入都能回滚
+- 棋子选取走"取前 3 个 alive"，T008 已创建 1w+1r+1m 默认平衡；未来 T048.5 加手动选择 UI
+- 新增 characters.battle_id 软绑定字段，NULL 表示未入战；T048 步骤 2 一次性 UPDATE 6 个棋子的 battle_id
+- migration 008 加 deck_position 字段（3v3 位序 0/1/2）预留未来使用
+- battleRoom.ts 新增 tryInitBattleField，handleBattleJoin 末尾 wire 一行调用
+- 沿用项目惯例：jest.mock 必须在 import 之前；用 import * as + as jest.MockedFunction 强制断言
+- 步骤 1-5 全部失败时 cleanupPartialInit 也可能失败（Redis 同样挂），try/catch 吞错 console.error
+- battleService.setCharacterEnergy 走 read-modify-write 模式复用 pieces HASH
+
+### 意外
+1. 既有 battleService.test.ts 不存在 setCharacterEnergy 测试，新增 3 个 TDD 流程独立
+2. battleInitializationService.test.ts 顶层 mock 设置必须在 import 之前（ts-jest TDZ 坑）
+3. cleanupPartialInit 在 lastStep=4/5/6 时会再次调 loadBattleCharacters（重新查 PG 拿 character ids）—— mock 在每个测试 beforeEach 重置
+4. handleBattleJoin 既有 socketServer 集成测试因新增 tryInitBattleField 调用需在顶部补 mock initBattleField + queryOne
+5. Plan 中 `getActivationOrder(battleId)` 实际不存在，改用 `buildSnakeOrder(p1Ids, p2Ids)`（plan bug）；`initializeSession` 实际签名收 `string[]` 而非 CharacterRow[]
+6. Plan 中 SQL 多行 `UPDATE battles\nSET status='pending'` 导致 stringContaining 不匹配，改为单行（SQL 语义等价）
+7. 集成测试需要完整 app bootstrap（PG+Redis+真实用户），本任务仅建立骨架
+
+---
+
 *日志持续更新中...*

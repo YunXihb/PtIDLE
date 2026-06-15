@@ -71,6 +71,7 @@
 | T045 | 配置 Socket.io 基础连接（HTTP+WS 同 server + 握手期 JWT 鉴权 + socket.data 元数据） | 2026-06-11 |
 | T046 | 实现房间管理逻辑（user-room 推送通道 + battle:join 鉴权 + 撮合 push + 断线通知） | 2026-06-11 |
 | T047 | 实现实时状态同步（broadcaster 函数库 + battle:join 初期推 full state） | 2026-06-11 |
+| T048 | 实现战场初始化（双 join 触发 + 7 步流水 + 失败回滚） | 2026-06-15 |
 
 ---
 
