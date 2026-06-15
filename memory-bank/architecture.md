@@ -1636,7 +1636,7 @@ interface FullStateEvent {
 
 ### T047 范围外(留给后续)
 
-- ❌ T049 移动后调 `broadcastCharacterStatus` —— T049 实现时再 wire
+- ✅ T049 移动后调 `broadcastBoardState`（移动改整盘位置，不用 character 单播）—— T049 已实现
 - ❌ T050 出牌后调 `broadcastHandState` + `broadcastCharacterStatus` —— T050 实现时再 wire
 - ❌ T051 回合切换调 `broadcastBoardState` —— T051 实现时再 wire
 - ❌ 单独的 `battle:state:session` 事件(round/step/actor 变化)—— T051 设计
@@ -1735,3 +1735,96 @@ interface FullStateEvent {
 *文档版本：v1.33*
 *最后更新：2026-06-15*
 *最后更新：2026-06-11*
+
+---
+
+## T049 移动操作同步 (Movement Sync)
+
+### 范围
+玩家发 `battle:move` 事件 → 服务端 6 步验证合法性 → 执行棋子移动 → 广播棋盘状态 → 自动推进 phase `move` → `play`。
+
+### 模块
+
+| 文件 | 角色 |
+|------|------|
+| `src/services/battleActionService.ts` | **新建** —— `executeMove(io, battleId, characterId, toX, toY, userId)` 6 步验证 + 2 步副作用；`MoveError` 联合类型 |
+| `src/socket/battleRoom.ts` | `handleBattleMove` handler —— payload 结构验证 + 转发 `executeMove` + emit `battle:move:error` |
+| `src/socket/socketServer.ts` | 注册 `socket.on('battle:move', ...)` |
+
+### `executeMove` 签名
+
+```typescript
+executeMove(
+  io: IOServer,
+  battleId: string,
+  characterId: string,
+  toX: number,
+  toY: number,
+  userId: string
+): Promise<MoveResult>
+```
+
+`MoveResult` 为 `{ ok: true }` 或 `{ ok: false, error: MoveError }`。
+
+### `MoveError` 联合类型
+`not_in_move_phase` | `not_current_actor` | `not_owner` | `invalid_path` | `move_failed`
+
+### WS 事件
+
+| 方向 | 事件 | Payload | 触发 |
+|------|------|---------|------|
+| client → server | `battle:move` | `{ battleId, characterId, toX, toY }` | 玩家发起移动 |
+| server → client | `battle:move:error` | `{ error: 'invalid_payload' \| MoveError \| 'internal_error' }` | 失败回执（仅失败时） |
+| server → room | `battle:state:board` | `BoardStateEvent`（T047 已定义） | 成功后 broadcaster 自动推 |
+
+成功路径无回执，依赖 `broadcastBoardState` room-wide 推送。
+
+### 6 步验证流水（`executeMove` 内部）
+
+1. `getDbSessionState(battleId)` — null 抛 `not_in_move_phase`
+2. `session.currentPhase !== 'move'` → `not_in_move_phase`
+3. `session.currentActorId !== characterId` → `not_current_actor`
+4. `character.userId !== userId` → `not_owner`（防同房间对手冒充）
+5. `validateMovement(...)` 返回 `!valid` → `invalid_path`
+6. `getCharacterPosition(...)` 为 null **或** `moveCharacter(...)` 返回 false → `move_failed`（含并发占用防御）
+
+### 成功副作用（按顺序执行）
+
+1. `broadcastBoardState(io, battleId)` —— 客户端先看到新棋盘
+2. `completeMovePhase(battleId)` —— session 切到 `play` 阶段
+
+> 顺序在测试中显式断言：先 broadcast，再 phase 推进。
+
+### 架构决策
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| Broadcaster 选择 | 仅 `broadcastBoardState`（不调 `broadcastCharacterStatus`） | 移动改整盘位置，全量 board 推送；character 单播冗余 |
+| Phase 推进责任 | T049 在 `executeMove` 内部调 `completeMovePhase` | 防「move 阶段可重复走棋」race；handler 不持有 phase 知识 |
+| Session 广播 | T049 不调 session 推送 | session 推送是 T051 范围，解耦 |
+| executeMove 签名 | 6 参数（spec 原 5 参数 + `io`） | `broadcastBoardState` 必传 `io`，handler 从 socket 拿 |
+| 错误广播范围 | `battle:move:error` 仅发给当前 socket | 错误是用户行为结果，无须 room-wide |
+| Handler 薄壳 | `handleBattleMove` 只做 payload 结构验证 + emit 错误 | 业务逻辑全部下沉到 `executeMove` |
+
+### `handleBattleMove` 责任
+
+1. payload 结构验证：`battleId`/`characterId` 是 string，`toX`/`toY` 是有限 number
+2. 失败 → emit `battle:move:error` `{ error: 'invalid_payload' }`
+3. 调 `executeMove(...)` → 业务失败转发对应 `MoveError`
+4. 成功 → 不 emit（依赖 broadcaster room-wide 推送）
+
+### 文件清单 (T049)
+
+| 路径 | 改动 |
+|------|------|
+| `src/services/battleActionService.ts` | **新建** —— `executeMove` 6 步验证 + 2 步副作用 + `MoveError` 类型 |
+| `src/services/battleActionService.test.ts` | **新建** —— 8 单测（2 happy + 6 error branches） |
+| `src/socket/battleRoom.ts` | 新增 `handleBattleMove` handler（47 行），导出供 socketServer wire |
+| `src/socket/battleRoom.test.ts` | 末尾追加 7 个 `handleBattleMove` 单测（happy / 4 invalid_payload / 2 business error） |
+| `src/socket/socketServer.ts` | 注册 `socket.on('battle:move', handleBattleMove)` |
+| `src/socket/socketServer.test.ts` | 末尾追加 1 个集成测（battle:move 事件注册 + payload 透传） |
+
+---
+
+*文档版本：v1.34*
+*最后更新：2026-06-15*

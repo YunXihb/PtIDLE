@@ -762,3 +762,20 @@ Task 2 已实现 executeMove 的 6 步验证 + 2 步副作用流水，本任务�
 ---
 
 *日志持续更新中...*
+
+---
+
+## 2026-06-15 - 任务：T049 移动操作同步
+
+### Prompt
+实现 T049 移动操作同步：玩家发 battle:move 事件，服务端验证合法性、执行棋子移动、广播棋盘状态、自动推进 phase move → play。
+
+### 思考
+新建 battleActionService 封装 6 步流水（session 读 / phase 校验 / actor 校验 / user 拥有校验 / BFS 路径校验 / 原子移动 + broadcast + phase 推进）。handler 薄壳做 payload 结构验证 + emit 错误。executeMove 签名扩展为 6 参数（spec 原 5 参数 + io），因为 broadcastBoardState 必传 io。broadcaster 选择 broadcastBoardState（不选 broadcastCharacterStatus 因为移动改整盘位置）；session 广播由 T051 负责（解耦）。
+
+### 意外
+- executeMove 签名需加 io 入参，spec 隐式需求（broadcaster 需要 io），已在 plan Task 2 Step 1 注释中说明
+- broadcast 与 phase 推进的顺序在测试中显式断言：先 broadcast（客户端看到新 board），再 completeMovePhase（session 切到 play 阶段）
+- 6 个错误分支分别对应 phase / actor / owner / path / move_failed × 2（含 fromPos 缺失防御）
+- Task 3 实现的 history.md 日志也单独写过（按 CLAUDE.md "每完成一个任务" 协议），本条为最终汇总
+
