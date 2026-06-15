@@ -16,6 +16,17 @@ jest.mock('../services/handService', () => ({
   getActorHand: jest.fn(),
 }));
 
+jest.mock('../config/database', () => ({
+  query: jest.fn(),
+  queryOne: jest.fn().mockResolvedValue({ status: 'pending' }),
+  execute: jest.fn(),
+}));
+
+jest.mock('../services/battleInitializationService', () => ({
+  initBattleField: jest.fn().mockResolvedValue({ success: true, startedAt: new Date(), actorId: 'c1' }),
+  cleanupPartialInit: jest.fn(),
+}));
+
 import http from 'http';
 import express from 'express';
 import {

@@ -1,6 +1,9 @@
 import { Server as IOServer, Socket } from 'socket.io';
 import { getPendingBattleForJoin } from '../services/battleService';
 import { broadcastFullState } from './battleStateBroadcaster';
+import { initBattleField } from '../services/battleInitializationService';
+import { redisClient } from '../config/redis';
+import { queryOne } from '../config/database';
 
 /**
  * T046 房间管理 —— 集中 battle 房间相关的 socket.io 操作
@@ -93,6 +96,13 @@ export async function handleBattleJoin(
   // 7. T047 推全量首屏状态(含自己手牌,user-room)。
   //    broadcaster 内部 try/catch 已吞掉异常 + console.error —— 失败不回 join:error(房间已加入,前端可重试)
   void broadcastFullState(io, battleId, userId);
+
+  // 8. T048: 双 join 后触发战场初始化
+  try {
+    await tryInitBattleField(io, battleId, userId);
+  } catch (initErr) {
+    console.error(`[handleBattleJoin] tryInitBattleField failed:`, initErr);
+  }
 }
 
 /**
@@ -113,4 +123,61 @@ export function broadcastOpponentDisconnected(
     userId,
     timestamp: Date.now(),
   });
+}
+
+/**
+ * T048: 双方都在 battle 房间后，调用 initBattleField 初始化战场
+ * - SETNX init_lock 防止并发
+ * - 检查 status='pending' 才执行（idempotent re-join 直接 broadcast）
+ */
+export async function tryInitBattleField(
+  io: IOServer,
+  battleId: string,
+  joiningUserId: string
+): Promise<void> {
+  const lockToken = `${Date.now()}-${Math.random()}`;
+  const locked = await redisClient.set(
+    `battle:${battleId}:init_lock`,
+    lockToken,
+    { NX: true, EX: 30 }
+  );
+
+  if (!locked) {
+    // 别人正在 init，sleep 100ms 后读 status
+    await new Promise(r => setTimeout(r, 100));
+    const status = await getBattleStatus(battleId);
+    if (status === 'ongoing') {
+      await broadcastFullState(io, battleId, joiningUserId).catch(err =>
+        console.error(`[tryInitBattleField:${battleId}] broadcast after lock-loss:`, err)
+      );
+    }
+    return;
+  }
+
+  try {
+    const otherInRoom = isOtherPlayerInRoom(io, battleId);
+    const status = await getBattleStatus(battleId);
+
+    if (otherInRoom && status === 'pending') {
+      await initBattleField(io, battleId).catch(err => {
+        console.error(`[tryInitBattleField:${battleId}] init failed:`, err);
+      });
+    } else {
+      await broadcastFullState(io, battleId, joiningUserId).catch(err =>
+        console.error(`[tryInitBattleField:${battleId}] broadcast:`, err)
+      );
+    }
+  } finally {
+    await redisClient.del(`battle:${battleId}:init_lock`);
+  }
+}
+
+function isOtherPlayerInRoom(io: IOServer, battleId: string): boolean {
+  const room = io.sockets.adapter.rooms.get(`battle:${battleId}`);
+  return (room?.size ?? 0) > 1;
+}
+
+async function getBattleStatus(battleId: string): Promise<string | null> {
+  const row = await queryOne<{ status: string }>(`SELECT status FROM battles WHERE id=$1`, [battleId]);
+  return row?.status ?? null;
 }
