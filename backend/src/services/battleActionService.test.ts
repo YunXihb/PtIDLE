@@ -113,3 +113,80 @@ describe('executeMove — happy path', () => {
     expect(mockBroadcastBoardState).toHaveBeenCalledWith(io, 'b1');
   });
 });
+
+describe('executeMove — error branches', () => {
+  it('should return not_in_move_phase when currentPhase !== move', async () => {
+    mockGetDbSessionState.mockResolvedValue({
+      currentRound: 1,
+      currentStep: 0,
+      currentActorId: 'c1',
+      currentPhase: 'play', // 不是 move
+    });
+    const { executeMove } = await import('./battleActionService');
+    const io = createMockIO();
+    const result = await executeMove(io, 'b1', 'c1', 5, 3, 'u1');
+    expect(result).toEqual({ success: false, error: 'not_in_move_phase' });
+    expect(mockValidateMovement).not.toHaveBeenCalled();
+    expect(mockMoveCharacter).not.toHaveBeenCalled();
+    expect(mockBroadcastBoardState).not.toHaveBeenCalled();
+    expect(mockCompleteMovePhase).not.toHaveBeenCalled();
+  });
+
+  it('should return not_current_actor when characterId does not match currentActorId', async () => {
+    mockGetDbSessionState.mockResolvedValue({
+      currentRound: 1,
+      currentStep: 0,
+      currentActorId: 'c2', // 不是 c1
+      currentPhase: 'move',
+    });
+    const { executeMove } = await import('./battleActionService');
+    const io = createMockIO();
+    const result = await executeMove(io, 'b1', 'c1', 5, 3, 'u1');
+    expect(result).toEqual({ success: false, error: 'not_current_actor' });
+    expect(mockListCharactersInBattle).not.toHaveBeenCalled();
+  });
+
+  it('should return not_owner when userId does not own the character', async () => {
+    mockListCharactersInBattle.mockResolvedValue([
+      { characterId: 'c1', playerId: 'p1', userId: 'u_other', profession: 'warrior', name: 'A' },
+    ]);
+    const { executeMove } = await import('./battleActionService');
+    const io = createMockIO();
+    const result = await executeMove(io, 'b1', 'c1', 5, 3, 'u1');
+    expect(result).toEqual({ success: false, error: 'not_owner' });
+    expect(mockValidateMovement).not.toHaveBeenCalled();
+  });
+
+  it('should return invalid_path when validateMovement returns invalid', async () => {
+    mockValidateMovement.mockResolvedValue({
+      valid: false,
+      error: 'Target too far (distance: 10, movement: 3)',
+    });
+    const { executeMove } = await import('./battleActionService');
+    const io = createMockIO();
+    const result = await executeMove(io, 'b1', 'c1', 5, 3, 'u1');
+    expect(result).toEqual({ success: false, error: 'invalid_path' });
+    expect(mockMoveCharacter).not.toHaveBeenCalled();
+    expect(mockBroadcastBoardState).not.toHaveBeenCalled();
+    expect(mockCompleteMovePhase).not.toHaveBeenCalled();
+  });
+
+  it('should return move_failed when moveCharacter returns false (concurrent occupy)', async () => {
+    mockMoveCharacter.mockResolvedValue(false);
+    const { executeMove } = await import('./battleActionService');
+    const io = createMockIO();
+    const result = await executeMove(io, 'b1', 'c1', 5, 3, 'u1');
+    expect(result).toEqual({ success: false, error: 'move_failed' });
+    expect(mockBroadcastBoardState).not.toHaveBeenCalled();
+    expect(mockCompleteMovePhase).not.toHaveBeenCalled();
+  });
+
+  it('should return move_failed when character has no from position (defensive)', async () => {
+    mockGetCharacterPosition.mockResolvedValue(null);
+    const { executeMove } = await import('./battleActionService');
+    const io = createMockIO();
+    const result = await executeMove(io, 'b1', 'c1', 5, 3, 'u1');
+    expect(result).toEqual({ success: false, error: 'move_failed' });
+    expect(mockMoveCharacter).not.toHaveBeenCalled();
+  });
+});
