@@ -227,3 +227,57 @@ describe('cleanupPartialInit ladder cleanup', () => {
     await expect(cleanupPartialInit('b1', 4)).resolves.toBeUndefined();
   });
 });
+
+describe('initBattleField failure paths', () => {
+  it('should return failedStep=1 when initializeBoard throws', async () => {
+    jest.clearAllMocks();
+    mockInitializeBoard.mockReset();
+    mockInitializeBoard.mockRejectedValue(new Error('Redis ECONNRESET'));
+    // mock cleanup 调用
+    mockQueryOne.mockReset();
+    mockQuery.mockReset();
+    mockRedisDel.mockReset();
+    mockRedisDel.mockResolvedValue(1);
+
+    const result = await initBattleField(FAKE_IO, 'b1');
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.failedStep).toBe(1);
+      expect(result.error).toMatch(/Redis ECONNRESET/);
+    }
+  });
+
+  it('should return failedStep=6 and rollback UPDATE when step 6 UPDATE returns 0 rows', async () => {
+    jest.clearAllMocks();
+    mockInitializeBoard.mockResolvedValue({} as any);
+    mockPlaceCharacter.mockResolvedValue({} as any);
+    mockSetEnergy.mockResolvedValue(undefined);
+    mockDrawCards.mockResolvedValue({} as any);
+    mockInitSession.mockResolvedValue(undefined);
+    mockGetOrder.mockReturnValue(['c1', 'c4', 'c2', 'c5', 'c3', 'c6']);
+    mockQueryOne.mockReset();
+    mockQuery.mockReset();
+    // loadBattleCharacters 3 queries
+    mockQueryOne.mockResolvedValueOnce({ player1_id: 'p1', player2_id: 'p2' });
+    mockQuery.mockResolvedValueOnce(P1_CHARS);
+    mockQuery.mockResolvedValueOnce(P2_CHARS);
+    mockQuery.mockResolvedValueOnce({ rowCount: 6 });  // UPDATE characters.battle_id
+    // step 6 UPDATE battles returns 0 rows (race condition)
+    mockQuery.mockResolvedValueOnce({ rowCount: 0 });
+    // cleanup 调用的 query
+    mockQueryOne.mockReset();
+    mockQueryOne.mockResolvedValueOnce({ player1_id: 'p1', player2_id: 'p2' });
+    mockQuery.mockResolvedValueOnce(P1_CHARS);
+    mockQuery.mockResolvedValueOnce(P2_CHARS);
+    mockQuery.mockResolvedValueOnce({ rowCount: 6 });
+
+    const result = await initBattleField(FAKE_IO, 'b1');
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.failedStep).toBe(6);
+      expect(result.error).toMatch(/battle_row_not_updated/);
+    }
+  });
+});
