@@ -18,14 +18,14 @@
 │  5. 人类运行测试验证                                     │
 │  6. 测试通过后，AI 更新 progress.md 和 architecture.md │
 │  7. Git 提交代码                                         │
-│  8. 记录 Prompt 日志（追加到 history.md）              │
+│  8. 记录 Prompt 日志（追加到 memory-bank/history.md）              │
 │  9. 清理上下文，进入下一步循环                           │
 └─────────────────────────────────────────────────────────┘
 ```
 
 ## 工作流日志记录协议
 
-每个任务收尾时，必须在 `history.md` 末尾追加以下格式的日志：
+每个任务收尾时，必须在 `memory-bank/history.md` 末尾追加以下格式的日志：
 
 ```markdown
 ## {{YYYY-MM-DD}} - 任务：{{自动推断的当前任务简明名称}}
