@@ -47,4 +47,4 @@
 - `memory-bank/implementation-plan.md` - 实施计划
 - `memory-bank/architecture.md` - 架构文档（需持续更新）
 - `memory-bank/progress.md` - 执行进度记录
-- `history.md` - 工作流日志
+- `memory-bank/history.md` - 工作流日志
