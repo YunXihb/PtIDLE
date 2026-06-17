@@ -117,13 +117,81 @@ function positionsKey(battleId: string): string {
 // ========================================
 
 /**
- * T052 §3.1: 应用击杀 star — 见 Task 3 完整实现
+ * T052 §3.1: 应用击杀 star
+ *
+ * 对比「调用前 is_alive 快照」与「当前 pieces HASH」，捕获本步新增死亡数，
+ * 给击杀方 +1 star/次。
+ *
+ * 流程：
+ *   1. listCharactersInBattle 拿全部 6 角色
+ *   2. hGetAll pieces HASH 拿当前 is_alive
+ *   3. 比对 preStepAliveMap vs 当前 → 找出本步新增死亡 (pre=true AND cur=false)
+ *   4. 按 player_id 分组：p1 死 → p2 +1; p2 死 → p1 +1
+ *   5. persistStars 写回 Redis + DB
+ *   6. decrementAlive 更新 alive 计数
+ *
+ * @param battleId battle id
+ * @param preStepAliveMap 调用方快照（characterId → is_alive）
+ * @returns { p1Delta, p2Delta, p1StarsAfter, p2StarsAfter }
  */
 export async function applyKillStars(
   battleId: string,
   preStepAliveMap: Record<string, boolean>
 ): Promise<KillStarDelta> {
-  throw new Error('applyKillStars: not implemented');
+  // 1. 拿所有角色
+  const characters = await listCharactersInBattle(battleId);
+  if (characters.length === 0) {
+    return { p1Delta: 0, p2Delta: 0, p1StarsAfter: 0, p2StarsAfter: 0 };
+  }
+
+  // 2. 读当前 pieces
+  const piecesRaw = await redisClient.hGetAll(piecesKey(battleId));
+
+  // 3. 找本步新增死亡
+  let p1Killed = 0; // p1 棋子死亡数（p2 击杀敌数）
+  let p2Killed = 0; // p2 棋子死亡数（p1 击杀敌数）
+  for (const c of characters) {
+    const wasAlive = preStepAliveMap[c.characterId] === true;
+    const curRaw = piecesRaw[c.characterId];
+    if (!curRaw) continue;
+    const cur = JSON.parse(curRaw);
+    const isAliveNow = cur.is_alive === true;
+    if (wasAlive && !isAliveNow) {
+      if (c.playerId === 'p1') p1Killed++;
+      else p2Killed++;
+    }
+  }
+
+  // 4-5. 累加 star + 同步 DB
+  let p1StarsAfter = 0;
+  let p2StarsAfter = 0;
+  if (p2Killed > 0) {
+    const r = await persistStars(battleId, 'p1', p2Killed);
+    p1StarsAfter = r.newStars;
+    await decrementAlive(battleId, 'p2');
+  }
+  if (p1Killed > 0) {
+    const r = await persistStars(battleId, 'p2', p1Killed);
+    p2StarsAfter = r.newStars;
+    await decrementAlive(battleId, 'p1');
+  }
+
+  // 读其他方 stars (若无累加)
+  if (p2Killed === 0) {
+    const v = await redisClient.get(starsKey(battleId, 'p1'));
+    p1StarsAfter = v === null ? 0 : parseInt(v, 10);
+  }
+  if (p1Killed === 0) {
+    const v = await redisClient.get(starsKey(battleId, 'p2'));
+    p2StarsAfter = v === null ? 0 : parseInt(v, 10);
+  }
+
+  return {
+    p1Delta: p2Killed,
+    p2Delta: p1Killed,
+    p1StarsAfter,
+    p2StarsAfter,
+  };
 }
 
 /**
@@ -163,12 +231,17 @@ async function persistStars(
   side: Side,
   incrementBy: number
 ): Promise<{ newStars: number }> {
-  throw new Error('persistStars: not implemented');
+  const newStars = await redisClient.incrBy(starsKey(battleId, side), incrementBy);
+  await execute(
+    `UPDATE battles SET ${side}_stars = $1, updated_at = NOW() WHERE id = $2`,
+    [newStars, battleId]
+  );
+  return { newStars };
 }
 
 /**
  * 内部：把 pN alive 计数 -1
  */
 async function decrementAlive(battleId: string, side: Side): Promise<void> {
-  throw new Error('decrementAlive: not implemented');
+  await redisClient.decr(aliveKey(battleId, side));
 }
