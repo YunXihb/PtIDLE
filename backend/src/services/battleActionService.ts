@@ -1,5 +1,6 @@
 import type { Server as IOServer } from 'socket.io';
-import { getDbSessionState, completeMovePhase, completePlayPhase } from './battleSessionService';
+import { getDbSessionState, completeMovePhase, completePlayPhase, endCurrentStep, activateCurrentUnit, completeDrawPhase, endCurrentRound } from './battleSessionService';
+import type { BattleSessionState } from './battleSessionService';
 import {
   listCharactersInBattle,
   validateMovement,
@@ -13,8 +14,9 @@ import {
 } from './battleService';
 import type { AttackValidationResult } from './battleService';
 import type { HandCard } from './handService';
-import { getActorHand, addToDiscardPile } from './handService';
-import { broadcastBoardState, broadcastHandState, broadcastCharacterStatus } from '../socket/battleStateBroadcaster';
+import { getActorHand, addToDiscardPile, retainHandOnStepEnd, drawCards } from './handService';
+import { tickBurnDamageOnTarget } from './professionMechanicService';
+import { broadcastBoardState, broadcastHandState, broadcastCharacterStatus, broadcastSessionState } from '../socket/battleStateBroadcaster';
 import { redisClient } from '../config/redis';
 
 /**
@@ -283,4 +285,52 @@ export async function executePlayCard(
   await broadcastBoardState(io, battleId);
 
   return { success: true, validation };
+}
+
+/**
+ * T051 回合切换 orchestrator
+ *
+ * 业务规则（按 T051 spec §1.2）：
+ *   1. session 存在
+ *   2. current_phase === 'play' OR 'move'
+ *   3. retainHandOnStepEnd 保留 1 张手牌
+ *   4. if (isLastStepInRound) → executeRoundEnd
+ *   5. endCurrentStep
+ *   6. activateCurrentUnit (snake draft)
+ *   7. drawCards
+ *   8. completeDrawPhase
+ *   9. 末尾重读 session
+ *  10. broadcastSessionState
+ *  11. broadcastBoardState
+ */
+
+export type StepEndError =
+  | 'not_in_play_or_move_phase'
+  | 'not_current_actor'
+  | 'retain_failed'
+  | 'round_end_failed'
+  | 'end_step_failed'
+  | 'activate_failed'
+  | 'draw_failed'
+  | 'complete_phase_failed';
+
+export type StepEndResult =
+  | { success: true; state: BattleSessionState }
+  | { success: false; error: StepEndError; detail?: string };
+
+export async function executeEndStep(
+  _io: IOServer,
+  _battleId: string
+): Promise<StepEndResult> {
+  // TDD STUB: Task 2 仅放占位实现（让 import 不报错 + 测试可执行）。
+  // Task 3 替换为 mid-round happy path, Task 4 追加 last-step 路由, Task 5 补 error branches。
+  return { success: false, error: 'not_in_play_or_move_phase' };
+}
+
+export async function executeRoundEnd(
+  _io: IOServer,
+  _battleId: string,
+  _stateBefore: BattleSessionState
+): Promise<void> {
+  // TDD STUB: Task 2 占位。Task 4 替换为完整 5 步实现。
 }

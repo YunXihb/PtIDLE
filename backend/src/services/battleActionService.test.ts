@@ -23,6 +23,10 @@ jest.mock('./battleSessionService', () => ({
   getDbSessionState: jest.fn(),
   completeMovePhase: jest.fn(),
   completePlayPhase: jest.fn(),
+  endCurrentStep: jest.fn(),
+  activateCurrentUnit: jest.fn(),
+  completeDrawPhase: jest.fn(),
+  endCurrentRound: jest.fn(),
 }));
 
 jest.mock('./battleService', () => ({
@@ -41,14 +45,21 @@ jest.mock('../socket/battleStateBroadcaster', () => ({
   broadcastBoardState: jest.fn(),
   broadcastHandState: jest.fn(),
   broadcastCharacterStatus: jest.fn(),
+  broadcastSessionState: jest.fn(),
 }));
 
 jest.mock('./handService', () => ({
   getActorHand: jest.fn(),
   addToDiscardPile: jest.fn(),
+  retainHandOnStepEnd: jest.fn(),
+  drawCards: jest.fn(),
 }));
 
-import { getDbSessionState, completeMovePhase, completePlayPhase } from './battleSessionService';
+jest.mock('./professionMechanicService', () => ({
+  tickBurnDamageOnTarget: jest.fn(),
+}));
+
+import { getDbSessionState, completeMovePhase, completePlayPhase, endCurrentStep, activateCurrentUnit, completeDrawPhase, endCurrentRound } from './battleSessionService';
 import {
   listCharactersInBattle,
   validateMovement,
@@ -60,8 +71,9 @@ import {
   validateTauntCard,
   setCharacterEnergy,
 } from './battleService';
-import { broadcastBoardState, broadcastHandState, broadcastCharacterStatus } from '../socket/battleStateBroadcaster';
-import { getActorHand, addToDiscardPile } from './handService';
+import { broadcastBoardState, broadcastHandState, broadcastCharacterStatus, broadcastSessionState } from '../socket/battleStateBroadcaster';
+import { getActorHand, addToDiscardPile, retainHandOnStepEnd, drawCards } from './handService';
+import { tickBurnDamageOnTarget } from './professionMechanicService';
 import { redisClient } from '../config/redis';
 import type { Server as IOServer } from 'socket.io';
 
@@ -88,6 +100,14 @@ const mockSetCharacterEnergy = setCharacterEnergy as jest.MockedFunction<typeof 
 const mockCompletePlayPhase = completePlayPhase as jest.MockedFunction<typeof completePlayPhase>;
 const mockBroadcastHandState = broadcastHandState as jest.MockedFunction<typeof broadcastHandState>;
 const mockBroadcastCharacterStatus = broadcastCharacterStatus as jest.MockedFunction<typeof broadcastCharacterStatus>;
+const mockTickBurnDamageOnTarget = tickBurnDamageOnTarget as jest.MockedFunction<typeof tickBurnDamageOnTarget>;
+const mockRetainHandOnStepEnd = retainHandOnStepEnd as jest.MockedFunction<typeof retainHandOnStepEnd>;
+const mockDrawCards = drawCards as jest.MockedFunction<typeof drawCards>;
+const mockEndCurrentStep = endCurrentStep as jest.MockedFunction<typeof endCurrentStep>;
+const mockActivateCurrentUnit = activateCurrentUnit as jest.MockedFunction<typeof activateCurrentUnit>;
+const mockCompleteDrawPhase = completeDrawPhase as jest.MockedFunction<typeof completeDrawPhase>;
+const mockEndCurrentRound = endCurrentRound as jest.MockedFunction<typeof endCurrentRound>;
+const mockBroadcastSessionState = broadcastSessionState as jest.MockedFunction<typeof broadcastSessionState>;
 
 function createMockIO(): IOServer {
   return {
@@ -155,6 +175,23 @@ beforeEach(() => {
   });
   (redisClient.lRem as jest.Mock).mockResolvedValue(1);
   (redisClient.hGet as jest.Mock).mockResolvedValue(JSON.stringify({ energy: 3 }));
+  // T051 默认 happy path 桩
+  mockTickBurnDamageOnTarget.mockResolvedValue({ totalDamage: 0, newHp: -1, isDead: false });
+  mockRetainHandOnStepEnd.mockResolvedValue({ success: true, retained: null, discarded: [] });
+  mockDrawCards.mockResolvedValue({ success: true, cards: [], drawn_count: 0, deck_size: 0 });
+  mockEndCurrentStep.mockResolvedValue({ success: true, state: undefined as any });
+  mockActivateCurrentUnit.mockResolvedValue({ success: true, state: undefined as any });
+  mockCompleteDrawPhase.mockResolvedValue({ success: true, state: undefined as any });
+  mockEndCurrentRound.mockResolvedValue({ success: true, state: undefined as any });
+  mockBroadcastSessionState.mockResolvedValue(undefined);
+  mockListCharactersInBattle.mockResolvedValue([
+    { characterId: 'c1', playerId: 'p1', userId: 'u1', profession: 'warrior', name: 'p1-c1' },
+    { characterId: 'c2', playerId: 'p1', userId: 'u1', profession: 'ranger', name: 'p1-c2' },
+    { characterId: 'c3', playerId: 'p1', userId: 'u1', profession: 'mage', name: 'p1-c3' },
+    { characterId: 'c4', playerId: 'p2', userId: 'u2', profession: 'warrior', name: 'p2-c4' },
+    { characterId: 'c5', playerId: 'p2', userId: 'u2', profession: 'ranger', name: 'p2-c5' },
+    { characterId: 'c6', playerId: 'p2', userId: 'u2', profession: 'mage', name: 'p2-c6' },
+  ]);
 });
 
 describe('executeMove — happy path', () => {
@@ -726,5 +763,21 @@ describe('executePlayCard', () => {
     });
     expect(mockAddToDiscardPile).not.toHaveBeenCalled();
     expect(mockBroadcastHandState).not.toHaveBeenCalled();
+  });
+});
+
+describe('executeEndStep', () => {
+  it('placeholder — to be expanded in Task 3-5', async () => {
+    const { executeEndStep } = await import('./battleActionService');
+    const io = createMockIO();
+    mockGetDbSessionState.mockResolvedValue({
+      battleId: 'b1',
+      currentRound: 1,
+      currentStep: 2,
+      currentPhase: 'play',
+      currentActorId: 'c1',
+    } as any);
+    const result = await executeEndStep(io, 'b1');
+    expect(result).toHaveProperty('success');
   });
 });

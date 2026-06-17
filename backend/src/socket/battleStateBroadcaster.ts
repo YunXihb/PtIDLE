@@ -276,3 +276,20 @@ export async function broadcastFullState(
     );
   }
 }
+
+/**
+ * 推 session 状态给 battle room (T051 回合切换时使用, 双方都看)
+ *
+ * 临时占位实现 (T051 Task 2 stub) — Task 6 替换为基于 getCurrentState 的完整实现。
+ *
+ * @param io IOServer
+ * @param battleId battle id
+ * @param state 完整的 BattleSessionState
+ */
+export async function broadcastSessionState(
+  _io: IOServer,
+  _battleId: string,
+  _state: import('../services/battleSessionService').BattleSessionState
+): Promise<void> {
+  throw new Error('broadcastSessionState: not implemented yet (T051 Task 6)');
+}
