@@ -592,6 +592,42 @@ export async function applyBurnDamage(
   };
 }
 
+/**
+ * T051 回合切换：给单个 target 结算 burn 伤害
+ *
+ * 流程:
+ *   1. 调 applyBurnDamage 算 totalDamage
+ *   2. 若 totalDamage === 0 → return { totalDamage: 0, newHp: -1, isDead: false }（no-op）
+ *   3. 读 pieces HASH 拿 current piece
+ *   4. newHp = piece.health - totalDamage
+ *   5. isDead = newHp <= 0
+ *   6. 更新 piece: health = newHp, is_alive = !isDead
+ *   7. 写回 HASH
+ *   8. return { totalDamage, newHp, isDead }
+ */
+export async function tickBurnDamageOnTarget(
+  battleId: string,
+  targetId: string,
+  currentRound: number
+): Promise<{ totalDamage: number; newHp: number; isDead: boolean }> {
+  const burnResult = await applyBurnDamage(battleId, targetId, currentRound);
+  if (burnResult.totalDamage === 0) {
+    return { totalDamage: 0, newHp: -1, isDead: false };
+  }
+  const key = `battle:${battleId}:pieces`;
+  const raw = await redisClient.hGet(key, targetId);
+  if (!raw) {
+    throw new Error(`tickBurnDamageOnTarget: piece not found for targetId=${targetId} in battle=${battleId}`);
+  }
+  const piece = JSON.parse(raw) as { health: number; is_alive: boolean; [key: string]: unknown };
+  const newHp = piece.health - burnResult.totalDamage;
+  const isDead = newHp <= 0;
+  piece.health = newHp;
+  piece.is_alive = !isDead;
+  await redisClient.hSet(key, targetId, JSON.stringify(piece));
+  return { totalDamage: burnResult.totalDamage, newHp, isDead };
+}
+
 export interface MageMarkState {
   markCount: number;        // active mark_fire 数量
   burnCount: number;        // active burn 数量

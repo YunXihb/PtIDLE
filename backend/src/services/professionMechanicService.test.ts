@@ -7,6 +7,8 @@ const mockRedisClient = {
   lRange: jest.fn(),
   lRem: jest.fn(),
   del: jest.fn(),
+  hGet: jest.fn(),
+  hSet: jest.fn(),
 };
 
 const mockQuery = jest.fn();
@@ -35,6 +37,7 @@ import {
   attachFireMark,
   applyBurnDamage,
   getMageMarkState,
+  tickBurnDamageOnTarget,
   MAGE_MARK_NEVER_EXPIRE_ROUND,
   MAGE_BURN_DURATION_ROUNDS,
   MAGE_BURN_DAMAGE_PER_TICK,
@@ -50,6 +53,8 @@ describe('professionMechanicService', () => {
     mockRedisClient.rPush.mockReset();
     mockRedisClient.lRem.mockReset();
     mockRedisClient.del.mockReset();
+    mockRedisClient.hGet.mockReset();
+    mockRedisClient.hSet.mockReset();
     mockQuery.mockReset();
     // 重新设置默认值
     mockRedisClient.get.mockResolvedValue(null);
@@ -58,6 +63,8 @@ describe('professionMechanicService', () => {
     mockRedisClient.rPush.mockResolvedValue(1);
     mockRedisClient.lRem.mockResolvedValue(1);
     mockRedisClient.del.mockResolvedValue(1);
+    mockRedisClient.hGet.mockResolvedValue(null);
+    mockRedisClient.hSet.mockResolvedValue(1);
   });
 
   // ========================================
@@ -967,6 +974,97 @@ describe('professionMechanicService', () => {
       // rPush 应该用 'battle:b-1:effects:t-1' 这个 key
       const rPushKey = mockRedisClient.rPush.mock.calls[0][0];
       expect(rPushKey).toBe('battle:b-1:effects:t-1');
+    });
+  });
+
+  // ========================================
+  // T051: tickBurnDamageOnTarget - 灼伤结算 helper
+  // ========================================
+  describe('tickBurnDamageOnTarget', () => {
+    it('happy path: 1 burn effect → HP 减 1', async () => {
+      // 1 burn effect → applyBurnDamage returns { totalDamage: 1, burnCount: 1 }
+      mockRedisClient.lRange.mockResolvedValueOnce([
+        JSON.stringify({
+          effect_id: 'b1', type: 'burn', value: 1,
+          duration_rounds: 2, created_round: 1, expire_round: 5,
+        }),
+      ]);
+      // hGet piece → health=10, is_alive=true
+      mockRedisClient.hGet.mockResolvedValueOnce(
+        JSON.stringify({ health: 10, is_alive: true, energy: 0 })
+      );
+
+      const result = await tickBurnDamageOnTarget('b-1', 'c-1', 1);
+
+      expect(result).toEqual({ totalDamage: 1, newHp: 9, isDead: false });
+      // hSet 应当写入 { health: 9, is_alive: true, ... }
+      expect(mockRedisClient.hSet).toHaveBeenCalledWith(
+        'battle:b-1:pieces',
+        'c-1',
+        expect.stringContaining('"health":9')
+      );
+      expect(mockRedisClient.hSet).toHaveBeenCalledWith(
+        'battle:b-1:pieces',
+        'c-1',
+        expect.stringContaining('"is_alive":true')
+      );
+    });
+
+    it('target 死亡: HP 减到 0 → is_alive=false', async () => {
+      // applyBurnDamage → totalDamage: 3
+      const burnJson = JSON.stringify({
+        effect_id: 'b1', type: 'burn', value: 1,
+        duration_rounds: 2, created_round: 1, expire_round: 5,
+      });
+      mockRedisClient.lRange.mockResolvedValueOnce([burnJson, burnJson, burnJson]);
+      // hGet piece → health=3, is_alive=true
+      mockRedisClient.hGet.mockResolvedValueOnce(
+        JSON.stringify({ health: 3, is_alive: true })
+      );
+
+      const result = await tickBurnDamageOnTarget('b-1', 'c-1', 1);
+
+      expect(result.totalDamage).toBe(3);
+      expect(result.newHp).toBe(0);
+      expect(result.isDead).toBe(true);
+      // hSet 应当写入 { health: 0, is_alive: false }
+      expect(mockRedisClient.hSet).toHaveBeenCalledWith(
+        'battle:b-1:pieces',
+        'c-1',
+        expect.stringContaining('"health":0')
+      );
+      expect(mockRedisClient.hSet).toHaveBeenCalledWith(
+        'battle:b-1:pieces',
+        'c-1',
+        expect.stringContaining('"is_alive":false')
+      );
+    });
+
+    it('no burn effects: totalDamage=0 → no HP change, isDead=false', async () => {
+      // applyBurnDamage → totalDamage: 0 (lRange 返回空)
+      mockRedisClient.lRange.mockResolvedValueOnce([]);
+
+      const result = await tickBurnDamageOnTarget('b-1', 'c-1', 1);
+
+      expect(result.totalDamage).toBe(0);
+      expect(result.isDead).toBe(false);
+      // 不应调 hGet / hSet (因为 totalDamage=0)
+      expect(mockRedisClient.hGet).not.toHaveBeenCalled();
+      expect(mockRedisClient.hSet).not.toHaveBeenCalled();
+    });
+
+    it('read piece 失败: 抛错（异常路径）', async () => {
+      // applyBurnDamage → totalDamage: 1
+      mockRedisClient.lRange.mockResolvedValueOnce([
+        JSON.stringify({
+          effect_id: 'b1', type: 'burn', value: 1,
+          duration_rounds: 2, created_round: 1, expire_round: 5,
+        }),
+      ]);
+      // hGet throws
+      mockRedisClient.hGet.mockRejectedValueOnce(new Error('Redis connection lost'));
+
+      await expect(tickBurnDamageOnTarget('b-1', 'c-1', 1)).rejects.toThrow('Redis connection lost');
     });
   });
 });
