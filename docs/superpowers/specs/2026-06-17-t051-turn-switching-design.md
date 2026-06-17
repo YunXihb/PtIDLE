@@ -41,7 +41,9 @@
 executeEndStep(io, battleId)
   1. 读 session                                          (getDbSessionState)
   2. 验证 phase === 'play' OR 'move'                      (StepEndError: not_in_play_or_move_phase)
-  3. retainHandOnStepEnd(battleId, currentActorId)        (StepEndError: retain_failed)
+  3. retainHandOnStepEnd(battleId, currentActorId, retainDeckId)  (StepEndError: retain_failed)
+       retainDeckId 来自 getActorHand[0]?.deck_id（手牌第一张的 deck_id），如手牌为空则传 null
+       语义：自动保留手牌中第一张（按 hand LIST 顺序），其余入弃牌堆
   4. if (isLastStepInRound(state)) {
        executeRoundEnd(io, battleId, state)               (StepEndError: round_end_failed)
      }
