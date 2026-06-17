@@ -728,8 +728,9 @@ describe('applyBaseStars', () => {
     mockExecuteDb.mockResolvedValue({ rowCount: 1 });
   });
 
-  it('p1 占 1: (3,3) 范围 p1=2 alive, p2=1 alive → p1 +1 star', async () => {
-    // c1(3,3), c2(4,4) 在 (3,3) 范围 (Chebyshev ≤2), c4(4,3) 在范围
+  it('p1 占 1: (3,3) 范围 p1=3 alive, p2=0 → p1 +1 star', async () => {
+    // c1(3,3) c2(1,3) c4(4,3) 在 (3,3) 范围 (Chebyshev ≤2), 远离 (6,6) 范围
+    // c3(0,0) c6(8,0) 远离两个据点; c5 死亡
     mockHGetAll.mockImplementation(async (key: string) => {
       if (key === 'battle:b1:pieces') {
         return {
@@ -744,11 +745,11 @@ describe('applyBaseStars', () => {
       if (key === 'battle:b1:positions') {
         return {
           c1: JSON.stringify({ x: 3, y: 3 }),
-          c2: JSON.stringify({ x: 4, y: 4 }),
-          c3: JSON.stringify({ x: 8, y: 8 }),
+          c2: JSON.stringify({ x: 1, y: 3 }),
+          c3: JSON.stringify({ x: 0, y: 0 }),
           c4: JSON.stringify({ x: 4, y: 3 }),
           c5: JSON.stringify({ x: 8, y: 8 }),
-          c6: JSON.stringify({ x: 8, y: 8 }),
+          c6: JSON.stringify({ x: 8, y: 0 }),
         };
       }
       return {};
@@ -763,7 +764,9 @@ describe('applyBaseStars', () => {
     expect(result.bases['6,6']).toBe('neutral');
   });
 
-  it('p2 占 2: (3,3) p1=0 p2=3; (6,6) p1=1 p2=2 → p2 +2 stars', async () => {
+  it('p2 占 2: (3,3) p1=0 p2=3; (6,6) p1=0 p2=1 → p2 +2 stars', async () => {
+    // p1 在 (0,0)/(0,1)/(0,2) 远离两据点; p2 占据 (3,3)/(4,3)/(5,5)
+    // (5,5) 在 (3,3) 范围 (cheb=2) 和 (6,6) 范围 (cheb=1)
     mockHGetAll.mockImplementation(async (key: string) => {
       if (key === 'battle:b1:pieces') {
         return {
@@ -777,12 +780,12 @@ describe('applyBaseStars', () => {
       }
       if (key === 'battle:b1:positions') {
         return {
-          c1: JSON.stringify({ x: 8, y: 8 }),  // 不在据点
-          c2: JSON.stringify({ x: 8, y: 8 }),
-          c3: JSON.stringify({ x: 8, y: 8 }),
-          c4: JSON.stringify({ x: 3, y: 3 }),  // (3,3) 范围
-          c5: JSON.stringify({ x: 4, y: 3 }),  // (3,3) 范围
-          c6: JSON.stringify({ x: 5, y: 5 }),  // (3,3) 范围
+          c1: JSON.stringify({ x: 0, y: 0 }),
+          c2: JSON.stringify({ x: 0, y: 1 }),
+          c3: JSON.stringify({ x: 0, y: 2 }),
+          c4: JSON.stringify({ x: 3, y: 3 }),
+          c5: JSON.stringify({ x: 4, y: 3 }),
+          c6: JSON.stringify({ x: 5, y: 5 }),
         };
       }
       return {};
@@ -798,15 +801,27 @@ describe('applyBaseStars', () => {
   });
 
   it('neutral: (3,3) p1=2 p2=2; (6,6) p1=3 p2=0 → p1 +1 (仅 6,6)', async () => {
+    // c1(4,4) c2(5,5) 在 (3,3) 与 (6,6) overlap (cheb 距两据点都 ≤2)
+    // c3(6,6) 在 (6,6) 范围; c4(1,1) c5(2,2) 在 (3,3) 范围; c6(0,0) 远离
     mockHGetAll.mockImplementation(async (key: string) => {
+      if (key === 'battle:b1:pieces') {
+        return {
+          c1: JSON.stringify({ is_alive: true }),
+          c2: JSON.stringify({ is_alive: true }),
+          c3: JSON.stringify({ is_alive: true }),
+          c4: JSON.stringify({ is_alive: true }),
+          c5: JSON.stringify({ is_alive: true }),
+          c6: JSON.stringify({ is_alive: true }),
+        };
+      }
       if (key === 'battle:b1:positions') {
         return {
-          c1: JSON.stringify({ x: 3, y: 3 }),  // (3,3) p1
-          c2: JSON.stringify({ x: 4, y: 4 }),  // (3,3) p1
-          c3: JSON.stringify({ x: 6, y: 6 }),  // (6,6) p1
-          c4: JSON.stringify({ x: 5, y: 5 }),  // (3,3) p2
-          c5: JSON.stringify({ x: 4, y: 3 }),  // (3,3) p2
-          c6: JSON.stringify({ x: 8, y: 8 }),  // 不在据点
+          c1: JSON.stringify({ x: 4, y: 4 }),
+          c2: JSON.stringify({ x: 5, y: 5 }),
+          c3: JSON.stringify({ x: 6, y: 6 }),
+          c4: JSON.stringify({ x: 1, y: 1 }),
+          c5: JSON.stringify({ x: 2, y: 2 }),
+          c6: JSON.stringify({ x: 0, y: 0 }),
         };
       }
       return {};
@@ -820,15 +835,27 @@ describe('applyBaseStars', () => {
   });
 
   it('both neutral: (3,3) p1=1 p2=1; (6,6) p1=1 p2=1 → 0 delta', async () => {
+    // c1(3,3) c4(5,2) 在 (3,3) 范围; c2(8,8) c5(8,6) 在 (6,6) 范围
+    // c3(0,0) c6(0,8) 远离两据点
     mockHGetAll.mockImplementation(async (key: string) => {
+      if (key === 'battle:b1:pieces') {
+        return {
+          c1: JSON.stringify({ is_alive: true }),
+          c2: JSON.stringify({ is_alive: true }),
+          c3: JSON.stringify({ is_alive: true }),
+          c4: JSON.stringify({ is_alive: true }),
+          c5: JSON.stringify({ is_alive: true }),
+          c6: JSON.stringify({ is_alive: true }),
+        };
+      }
       if (key === 'battle:b1:positions') {
         return {
           c1: JSON.stringify({ x: 3, y: 3 }),
           c2: JSON.stringify({ x: 8, y: 8 }),
-          c3: JSON.stringify({ x: 6, y: 6 }),
-          c4: JSON.stringify({ x: 5, y: 5 }),
-          c5: JSON.stringify({ x: 7, y: 7 }),
-          c6: JSON.stringify({ x: 8, y: 8 }),
+          c3: JSON.stringify({ x: 0, y: 0 }),
+          c4: JSON.stringify({ x: 5, y: 2 }),
+          c5: JSON.stringify({ x: 8, y: 6 }),
+          c6: JSON.stringify({ x: 0, y: 8 }),
         };
       }
       return {};
