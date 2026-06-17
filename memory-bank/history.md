@@ -1247,3 +1247,20 @@ Task 2 已实现 executeMove 的 6 步验证 + 2 步副作用流水，本任务�
 - 6 个错误分支分别对应 phase / actor / owner / path / move_failed × 2（含 fromPos 缺失防御）
 - Task 3 实现的 history.md 日志也单独写过（按 CLAUDE.md "每完成一个任务" 协议），本条为最终汇总
 
+
+## 2026-06-17 - 任务：T050 Task 1 executePlayCard 骨架 + 类型定义
+
+### Prompt
+T050（打牌操作同步）的第一个任务：在 battleActionService.ts 末尾追加 executePlayCard 骨架 + PlayCardError / PlayCardResult 类型 + 相关 import；在 battleActionService.test.ts 追加 handService mock + 5 个新增 mock 字段 + beforeEach 默认 happy path 桩 + 占位 describe 块。要求 tsc --noEmit 退出 0 且 jest 通过。
+
+### 思考
+- executeMove 是模板：镜像其「session → phase → actor → owner → validate → 副作用 → broadcast → complete phase」结构
+- 业务规则 7 条 + 8 个 PlayCardError union 与 spec §3.2 一致
+- ts-jest TDZ 坑：jest.mock 必须在所有 import 之前，handService mock 必须插在 jest.mock 区段，不能在 import 之后
+- 重用现有 mock 命名风格 `mockXxx` + jest.MockedFunction<typeof xxx>，便于后续 Task 2-7 直接复用
+- beforeEach 只追加，不覆盖 T049 默认桩，保证向后兼容
+
+### 意外
+- battleService.ts 中的 `getCharacterPiece` 是 private async function（无 export），任务要求从 battleService import 它。最小改动：在签名前加 `export` 关键字，让其对模块外可见。这是 single-word 可见性变更，不改业务逻辑
+- TypeScript 编译 ts-jest 测试模式下，正常退出 0，无类型错误
+- 9 个测试全部通过（8 个 T049 + 1 个 T050 placeholder）
