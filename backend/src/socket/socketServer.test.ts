@@ -44,6 +44,7 @@ import { io as Client, Socket as ClientSocket } from 'socket.io-client';
 import jwt from 'jsonwebtoken';
 import { initializeSocketServer } from './socketServer';
 import { JWT_SECRET } from '../config/jwt';
+import { connectRedis } from '../config/redis';
 import * as battleService from '../services/battleService';
 import * as battleSessionService from '../services/battleSessionService';
 import * as characterStatusService from '../services/characterStatusService';
@@ -108,20 +109,28 @@ describe('T045 + T046 socketServer', () => {
   let port: number;
   let activeClients: ClientSocket[] = [];
 
-  beforeAll((done) => {
+  beforeAll(async () => {
+    // 连接 redis 单例(如果还没连)。redis-client v4 的 connect() 在已连接时抛错,所以做幂等包装
+    const { redisClient } = await import('../config/redis');
+    if (!redisClient.isOpen) {
+      await connectRedis();
+    }
     const app = express();
     httpServer = http.createServer(app);
     io = new IOServer<DefaultEventsMap, DefaultEventsMap, DefaultEventsMap, SocketData>(httpServer);
     initializeSocketServer(io);
-    httpServer.listen(0, () => {
-      port = (httpServer.address() as { port: number }).port;
-      done();
+    await new Promise<void>((resolve) => {
+      httpServer.listen(0, () => {
+        port = (httpServer.address() as { port: number }).port;
+        resolve();
+      });
     });
   });
 
   afterAll(async () => {
     await io.close();
     await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+    // 不 disconnectRedis — redis-client 单例被其他测试共享,本测试不应该 close 它
   });
 
   // 防御性 cleanup
