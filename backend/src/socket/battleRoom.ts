@@ -2,7 +2,7 @@ import { Server as IOServer, Socket } from 'socket.io';
 import { getPendingBattleForJoin } from '../services/battleService';
 import { broadcastFullState } from './battleStateBroadcaster';
 import { initBattleField } from '../services/battleInitializationService';
-import { executeMove, executePlayCard } from '../services/battleActionService';
+import { executeMove, executePlayCard, executeEndStep } from '../services/battleActionService';
 import type { HandCard } from '../services/handService';
 import { redisClient } from '../config/redis';
 import { queryOne } from '../config/database';
@@ -298,4 +298,42 @@ function validatePlayCardPayload(
   if (c.source !== 'deck' && c.source !== 'public_pool') return null;
 
   return c as HandCard & Record<string, unknown>;
+}
+
+/**
+ * T051 Task 7: 处理客户端的 `battle:skip_play` 事件
+ *
+ * 流程:
+ *   1. 验证 payload 结构（battleId 是 string）
+ *   2. 失败 → emit `battle:skip_play:error` `{ error: 'invalid_payload' }`
+ *   3. 调 `executeEndStep(io, battleId)`
+ *   4. executeEndStep 失败 → emit `battle:skip_play:error` 带 error + detail
+ *   5. 成功 → 不 emit（依赖 broadcastSessionState + broadcastBoardState 推送）
+ *   6. executeEndStep 抛错 → 向上抛（异常路径，由 socketServer 层兜底）
+ *
+ * 注意：handler 不做 actor 归属检查（依赖 phase machine 锁）。
+ */
+export async function handleBattleSkipPlay(
+  io: IOServer,
+  socket: Socket,
+  payload: { battleId?: unknown }
+): Promise<void> {
+  // 1. payload 验证
+  const battleId = typeof payload?.battleId === 'string' ? payload.battleId : null;
+  if (!battleId) {
+    socket.emit('battle:skip_play:error', { error: 'invalid_payload' });
+    return;
+  }
+
+  // 2. 调 service
+  const result = await executeEndStep(io, battleId);
+
+  // 3. 失败回执
+  if (!result.success) {
+    socket.emit('battle:skip_play:error', {
+      error: result.error,
+      detail: result.detail,
+    });
+  }
+  // 成功: 不 emit（依赖 broadcaster 推送 session + board）
 }

@@ -27,9 +27,10 @@ jest.mock('./battleStateBroadcaster', () => ({
 jest.mock('../services/battleActionService', () => ({
   executeMove: jest.fn(),
   executePlayCard: jest.fn(),
+  executeEndStep: jest.fn(),
 }));
 
-import { handleBattleJoin, handleBattleMove, handleBattlePlayCard } from './battleRoom';
+import { handleBattleJoin, handleBattleMove, handleBattlePlayCard, handleBattleSkipPlay } from './battleRoom';
 import { initBattleField, cleanupPartialInit } from '../services/battleInitializationService';
 import { broadcastFullState } from './battleStateBroadcaster';
 import { executeMove, executePlayCard } from '../services/battleActionService';
@@ -369,5 +370,61 @@ describe('handleBattlePlayCard', () => {
       })
     ).rejects.toThrow('boom');
     expect(socket.emit).not.toHaveBeenCalled();
+  });
+});
+
+describe('handleBattleSkipPlay', () => {
+  let mockSocket: any;
+  let mockIo: any;
+  let mockEmit: jest.Mock;
+
+  beforeEach(() => {
+    mockEmit = jest.fn();
+    mockSocket = { data: { userId: 'u1' }, emit: mockEmit };
+    mockIo = {} as any;
+  });
+
+  it('valid payload → executeEndStep 被调', async () => {
+    const { executeEndStep } = require('../services/battleActionService');
+    (executeEndStep as jest.Mock).mockResolvedValue({ success: true, state: {} as any });
+    await handleBattleSkipPlay(mockIo, mockSocket, { battleId: 'b1' });
+    expect(executeEndStep).toHaveBeenCalledWith(mockIo, 'b1');
+    expect(mockEmit).not.toHaveBeenCalled();
+  });
+
+  it('invalid payload (缺 battleId) → emit battle:skip_play:error invalid_payload', async () => {
+    await handleBattleSkipPlay(mockIo, mockSocket, {});
+    expect(mockEmit).toHaveBeenCalledWith('battle:skip_play:error', { error: 'invalid_payload' });
+  });
+
+  it('invalid payload (battleId 非 string) → emit invalid_payload', async () => {
+    await handleBattleSkipPlay(mockIo, mockSocket, { battleId: 123 });
+    expect(mockEmit).toHaveBeenCalledWith('battle:skip_play:error', { error: 'invalid_payload' });
+  });
+
+  it('executeEndStep 失败 → emit error + detail', async () => {
+    const { executeEndStep } = require('../services/battleActionService');
+    (executeEndStep as jest.Mock).mockResolvedValue({
+      success: false, error: 'not_in_play_or_move_phase', detail: 'phase=idle',
+    });
+    await handleBattleSkipPlay(mockIo, mockSocket, { battleId: 'b1' });
+    expect(mockEmit).toHaveBeenCalledWith('battle:skip_play:error', {
+      error: 'not_in_play_or_move_phase', detail: 'phase=idle',
+    });
+  });
+
+  it('executeEndStep 抛错 → 不 emit（socketServer 兜底）', async () => {
+    const { executeEndStep } = require('../services/battleActionService');
+    (executeEndStep as jest.Mock).mockRejectedValue(new Error('boom'));
+    await expect(handleBattleSkipPlay(mockIo, mockSocket, { battleId: 'b1' }))
+      .rejects.toThrow('boom');
+    expect(mockEmit).not.toHaveBeenCalled();
+  });
+
+  it('executeEndStep 成功 → 不 emit（依赖 broadcast 两连）', async () => {
+    const { executeEndStep } = require('../services/battleActionService');
+    (executeEndStep as jest.Mock).mockResolvedValue({ success: true, state: {} as any });
+    await handleBattleSkipPlay(mockIo, mockSocket, { battleId: 'b1' });
+    expect(mockEmit).not.toHaveBeenCalled();
   });
 });
