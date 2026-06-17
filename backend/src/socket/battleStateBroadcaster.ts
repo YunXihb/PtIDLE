@@ -27,6 +27,7 @@ import { listCharactersInBattle } from '../services/battleService';
 import { getCharacterStatus, CharacterStatus } from '../services/characterStatusService';
 import { getActorHand, HandCard } from '../services/handService';
 import { getDbSessionState } from '../services/battleSessionService';
+import { redisClient } from '../config/redis';
 
 // ========================================
 // 事件类型定义
@@ -34,6 +35,7 @@ import { getDbSessionState } from '../services/battleSessionService';
 
 /**
  * `battle:state:board` payload —— 整盘状态,无隐私,推 battle room
+ * T052: 增量字段 p1Stars/p2Stars/bases
  */
 export interface BoardStateEvent {
   battleId: string;
@@ -42,6 +44,13 @@ export interface BoardStateEvent {
   currentPhase: string;
   currentActorId: string | null;
   characters: CharacterStatus[];
+  // ★ T052 新增
+  p1Stars: number;
+  p2Stars: number;
+  bases: {
+    '3,3': 'p1' | 'p2' | 'neutral';
+    '6,6': 'p1' | 'p2' | 'neutral';
+  };
 }
 
 /**
@@ -105,9 +114,12 @@ export async function buildBoardState(
     name: string;
   }>;
 }> {
-  const [session, characters] = await Promise.all([
+  const [session, characters, p1StarsRaw, p2StarsRaw, basesRaw] = await Promise.all([
     getDbSessionState(battleId),
     listCharactersInBattle(battleId),
+    redisClient.get(`battle:${battleId}:stars:p1`),
+    redisClient.get(`battle:${battleId}:stars:p2`),
+    redisClient.get(`battle:${battleId}:bases`),
   ]);
   if (!session) {
     throw new Error(`buildBoardState: battle not found: ${battleId}`);
@@ -120,6 +132,13 @@ export async function buildBoardState(
   // 过滤 null(角色可能中途被删)
   const statusList = statusResults.filter((s): s is CharacterStatus => s !== null);
 
+  // 解析 stars + bases
+  const p1Stars = p1StarsRaw === null ? 0 : parseInt(p1StarsRaw, 10);
+  const p2Stars = p2StarsRaw === null ? 0 : parseInt(p2StarsRaw, 10);
+  const bases = basesRaw === null
+    ? { '3,3': 'neutral' as const, '6,6': 'neutral' as const }
+    : JSON.parse(basesRaw);
+
   return {
     board: {
       battleId,
@@ -128,6 +147,9 @@ export async function buildBoardState(
       currentPhase: session.currentPhase,
       currentActorId: session.currentActorId,
       characters: statusList,
+      p1Stars,
+      p2Stars,
+      bases,
     },
     characters,
   };
@@ -300,6 +322,26 @@ export async function broadcastSessionState(
     currentStep: state.currentStep,
     currentActorId: state.currentActorId,
     currentPhase: state.currentPhase,
+  });
+}
+
+/**
+ * T052: 广播据点状态变化（server → both）
+ *
+ * payload 字段：
+ *   - battleId
+ *   - bases: { '3,3': 'p1' | 'p2' | 'neutral', '6,6': ... }
+ *
+ * 调用方：battleOutcomeService.applyBaseStars
+ */
+export async function broadcastBasesState(
+  io: IOServer,
+  battleId: string,
+  bases: { '3,3': 'p1' | 'p2' | 'neutral'; '6,6': 'p1' | 'p2' | 'neutral' }
+): Promise<void> {
+  io.to(`battle:${battleId}`).emit('battle:state:bases', {
+    battleId,
+    bases,
   });
 }
 

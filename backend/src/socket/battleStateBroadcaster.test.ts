@@ -25,6 +25,10 @@ const mockGetActorHand = jest.fn();
 
 const mockGetDbSessionState = jest.fn();
 
+// T052: redis mocks for stars/bases reads in buildBoardState
+const mockRedisGet = jest.fn();
+const mockRedisHGetAll = jest.fn();
+
 jest.mock('../services/battleService', () => ({
   listCharactersInBattle: mockListCharactersInBattle,
   getAllBoardPositions: mockGetAllBoardPositions,
@@ -42,6 +46,13 @@ jest.mock('../services/battleSessionService', () => ({
   getDbSessionState: mockGetDbSessionState,
 }));
 
+jest.mock('../config/redis', () => ({
+  redisClient: {
+    get: mockRedisGet,
+    hGetAll: mockRedisHGetAll,
+  },
+}));
+
 import {
   buildBoardState,
   broadcastBoardState,
@@ -49,6 +60,8 @@ import {
   broadcastCharacterStatus,
   broadcastFullState,
   broadcastSessionState,
+  broadcastBasesState,
+  broadcastBattleEnd,
 } from './battleStateBroadcaster';
 
 // ============== io mock ==============
@@ -95,6 +108,8 @@ describe('T047 battleStateBroadcaster', () => {
     jest.clearAllMocks();
     // 静默 controller console.error,避免污染测试输出
     jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    // T052: 默认 redis 返回 null(无 stars / 无 bases)
+    mockRedisGet.mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -301,6 +316,124 @@ describe('broadcastSessionState', () => {
       currentStep: 0,
       currentActorId: 'c1',
       currentPhase: 'draw',
+    });
+  });
+});
+
+describe('T052 broadcaster additions', () => {
+  beforeEach(() => {
+    // 重新设置 redis 默认值（顶层 beforeEach 已设置，但本 describe 的 beforeEach 会后跑以保险）
+    mockRedisGet.mockResolvedValue(null);
+  });
+
+  describe('buildBoardState T052 增量字段', () => {
+    it('默认值: p1Stars=0, p2Stars=0, bases 全 neutral', async () => {
+      mockGetDbSessionState.mockResolvedValue({
+        currentRound: 1,
+        currentStep: 0,
+        currentPhase: 'playing',
+        currentActorId: 'c1',
+      });
+      mockListCharactersInBattle.mockResolvedValue([]);
+      mockGetCharacterStatus.mockResolvedValue(null as any);
+
+      const { board } = await buildBoardState(BATTLE_ID);
+
+      expect(board.p1Stars).toBe(0);
+      expect(board.p2Stars).toBe(0);
+      expect(board.bases).toEqual({ '3,3': 'neutral', '6,6': 'neutral' });
+    });
+
+    it('已累加: p1=3, p2=1, bases p1+p2', async () => {
+      mockGetDbSessionState.mockResolvedValue({
+        currentRound: 2,
+        currentStep: 3,
+        currentPhase: 'playing',
+        currentActorId: 'c1',
+      });
+      mockListCharactersInBattle.mockResolvedValue([]);
+      mockGetCharacterStatus.mockResolvedValue(null as any);
+      mockRedisGet.mockImplementation(async (key: string) => {
+        if (key === `battle:${BATTLE_ID}:stars:p1`) return '3';
+        if (key === `battle:${BATTLE_ID}:stars:p2`) return '1';
+        if (key === `battle:${BATTLE_ID}:bases`)
+          return JSON.stringify({ '3,3': 'p1', '6,6': 'p2' });
+        return null;
+      });
+
+      const { board } = await buildBoardState(BATTLE_ID);
+
+      expect(board.p1Stars).toBe(3);
+      expect(board.p2Stars).toBe(1);
+      expect(board.bases).toEqual({ '3,3': 'p1', '6,6': 'p2' });
+    });
+  });
+
+  describe('broadcastBasesState', () => {
+    it('happy: 2 据点 p1/p2 → emit battle:state:bases', async () => {
+      await broadcastBasesState(mockIo, BATTLE_ID, { '3,3': 'p1', '6,6': 'p2' });
+      expect(mockTo).toHaveBeenCalledWith(`battle:${BATTLE_ID}`);
+      expect(mockEmit).toHaveBeenCalledWith('battle:state:bases', {
+        battleId: BATTLE_ID,
+        bases: { '3,3': 'p1', '6,6': 'p2' },
+      });
+    });
+
+    it('neutral: 2 据点 neutral', async () => {
+      await broadcastBasesState(mockIo, BATTLE_ID, { '3,3': 'neutral', '6,6': 'neutral' });
+      expect(mockTo).toHaveBeenCalledWith(`battle:${BATTLE_ID}`);
+      expect(mockEmit).toHaveBeenCalledWith('battle:state:bases', {
+        battleId: BATTLE_ID,
+        bases: { '3,3': 'neutral', '6,6': 'neutral' },
+      });
+    });
+  });
+
+  describe('broadcastBattleEnd', () => {
+    it('win: 完整 payload', async () => {
+      await broadcastBattleEnd(mockIo, BATTLE_ID, {
+        winnerUserId: USER_P1,
+        winnerSide: 'p1',
+        victoryType: 'kill_threshold',
+        p1Stars: 6,
+        p2Stars: 2,
+        p1UserId: USER_P1,
+        p2UserId: USER_P2,
+      });
+      expect(mockTo).toHaveBeenCalledWith(`battle:${BATTLE_ID}`);
+      expect(mockEmit).toHaveBeenCalledWith('battle:end', {
+        battleId: BATTLE_ID,
+        winnerUserId: USER_P1,
+        winnerSide: 'p1',
+        victoryType: 'kill_threshold',
+        p1Stars: 6,
+        p2Stars: 2,
+        p1UserId: USER_P1,
+        p2UserId: USER_P2,
+      });
+    });
+
+    it('draw: winnerUserId=null, winnerSide=null', async () => {
+      await broadcastBattleEnd(mockIo, BATTLE_ID, {
+        winnerUserId: null,
+        winnerSide: null,
+        victoryType: 'draw',
+        p1Stars: 6,
+        p2Stars: 6,
+        p1UserId: USER_P1,
+        p2UserId: USER_P2,
+      });
+      expect(mockTo).toHaveBeenCalledWith(`battle:${BATTLE_ID}`);
+      expect(mockEmit).toHaveBeenCalledWith('battle:end', {
+        battleId: BATTLE_ID,
+        winnerUserId: null,
+        winnerSide: null,
+        victoryType: 'draw',
+        p1Stars: 6,
+        p2Stars: 6,
+        p1UserId: USER_P1,
+        p2UserId: USER_P2,
+      });
     });
   });
 });
