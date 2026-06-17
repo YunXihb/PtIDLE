@@ -281,9 +281,14 @@ export async function executePlayCard(
   await broadcastHandState(io, battleId, userId, characterId);
   await broadcastCharacterStatus(io, battleId, characterId);
 
-  // 11. 阶段推进 + 整盘广播
+  // 11. 阶段推进
   await completePlayPhase(battleId);
-  await broadcastBoardState(io, battleId);
+
+  // 12. T051 wire-up: completePlayPhase 后自动级联 executeEndStep
+  // 注：T050 spec §4.5 已规划但当时 T051 未实现。T051 Task 9 wire up。
+  // 失败由 socketServer 兜底（log + 不 emit，因为 T050 本无成功 emit）
+  // executeEndStep 内部已推 board, 此处不重复 broadcastBoardState
+  await executeEndStep(io, battleId);
 
   return { success: true, validation };
 }
