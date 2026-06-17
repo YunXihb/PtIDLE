@@ -59,6 +59,10 @@ jest.mock('./professionMechanicService', () => ({
   tickBurnDamageOnTarget: jest.fn(),
 }));
 
+jest.mock('./statusEffectService', () => ({
+  tickEffects: jest.fn(),
+}));
+
 import { getDbSessionState, completeMovePhase, completePlayPhase, endCurrentStep, activateCurrentUnit, completeDrawPhase, endCurrentRound } from './battleSessionService';
 import {
   listCharactersInBattle,
@@ -74,6 +78,7 @@ import {
 import { broadcastBoardState, broadcastHandState, broadcastCharacterStatus, broadcastSessionState } from '../socket/battleStateBroadcaster';
 import { getActorHand, addToDiscardPile, retainHandOnStepEnd, drawCards } from './handService';
 import { tickBurnDamageOnTarget } from './professionMechanicService';
+import { tickEffects } from './statusEffectService';
 import { redisClient } from '../config/redis';
 import type { Server as IOServer } from 'socket.io';
 
@@ -101,6 +106,7 @@ const mockCompletePlayPhase = completePlayPhase as jest.MockedFunction<typeof co
 const mockBroadcastHandState = broadcastHandState as jest.MockedFunction<typeof broadcastHandState>;
 const mockBroadcastCharacterStatus = broadcastCharacterStatus as jest.MockedFunction<typeof broadcastCharacterStatus>;
 const mockTickBurnDamageOnTarget = tickBurnDamageOnTarget as jest.MockedFunction<typeof tickBurnDamageOnTarget>;
+const mockTickEffects = tickEffects as jest.MockedFunction<typeof tickEffects>;
 const mockRetainHandOnStepEnd = retainHandOnStepEnd as jest.MockedFunction<typeof retainHandOnStepEnd>;
 const mockDrawCards = drawCards as jest.MockedFunction<typeof drawCards>;
 const mockEndCurrentStep = endCurrentStep as jest.MockedFunction<typeof endCurrentStep>;
@@ -177,6 +183,7 @@ beforeEach(() => {
   (redisClient.hGet as jest.Mock).mockResolvedValue(JSON.stringify({ energy: 3 }));
   // T051 默认 happy path 桩
   mockTickBurnDamageOnTarget.mockResolvedValue({ totalDamage: 0, newHp: -1, isDead: false });
+  mockTickEffects.mockResolvedValue([]);
   mockRetainHandOnStepEnd.mockResolvedValue({ success: true, retained: null, discarded: [] });
   mockDrawCards.mockResolvedValue({ success: true, cards: [], drawn_count: 0, deck_size: 0 });
   mockEndCurrentStep.mockResolvedValue({ success: true, state: undefined as any });
@@ -820,5 +827,67 @@ describe('executeEndStep', () => {
     const result = await executeEndStep(createMockIO(), 'b1');
     expect(result).toEqual({ success: false, error: 'end_step_failed', detail: 'end step fail' });
     expect(mockActivateCurrentUnit).not.toHaveBeenCalled();
+  });
+
+  it('last-step happy path (step 5/6) → executeRoundEnd 触发, endCurrentRound 1 次, currentRound 推进到 2', async () => {
+    mockGetDbSessionState
+      .mockResolvedValueOnce({  // 步骤 1 读 (last step)
+        battleId: 'b1', currentRound: 1, currentStep: 5, currentPhase: 'play', currentActorId: 'c6',
+      } as any)
+      .mockResolvedValueOnce({  // 步骤 4 executeRoundEnd 内重读（endCurrentRound 后）
+        battleId: 'b1', currentRound: 2, currentStep: 5, currentPhase: 'play', currentActorId: 'c6',
+      } as any)
+      .mockResolvedValueOnce({  // 步骤 7 draw 前重读
+        battleId: 'b1', currentRound: 2, currentStep: 0, currentPhase: 'draw', currentActorId: 'c1',
+      } as any)
+      .mockResolvedValueOnce({  // 步骤 9 末尾重读
+        battleId: 'b1', currentRound: 2, currentStep: 0, currentPhase: 'draw', currentActorId: 'c1',
+      } as any);
+    mockGetActorHand.mockResolvedValue([]);
+    const { executeEndStep } = await import('./battleActionService');
+    const result = await executeEndStep(createMockIO(), 'b1');
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.state.currentRound).toBe(2);
+      expect(result.state.currentStep).toBe(0);
+    }
+    expect(mockEndCurrentRound).toHaveBeenCalledTimes(1);
+    expect(mockTickBurnDamageOnTarget).toHaveBeenCalledTimes(6);
+    // round-end 推送 2 次（executeRoundEnd 内 + executeEndStep 内）
+    expect(mockBroadcastSessionState).toHaveBeenCalledTimes(2);
+  });
+
+  it('executeRoundEnd 失败 → error: round_end_failed, end_step 未调', async () => {
+    mockGetDbSessionState.mockResolvedValueOnce({
+      battleId: 'b1', currentRound: 1, currentStep: 5, currentPhase: 'play', currentActorId: 'c6',
+    } as any);
+    mockGetActorHand.mockResolvedValue([]);
+    mockEndCurrentRound.mockRejectedValueOnce(new Error('round end fail'));
+    const { executeEndStep } = await import('./battleActionService');
+    const result = await executeEndStep(createMockIO(), 'b1');
+    expect(result).toEqual({ success: false, error: 'round_end_failed', detail: 'round end fail' });
+    expect(mockEndCurrentStep).not.toHaveBeenCalled();
+  });
+
+  it('executeRoundEnd 调 tickBurnDamageOnTarget 6 次（每个 char）', async () => {
+    mockGetDbSessionState
+      .mockResolvedValueOnce({
+        battleId: 'b1', currentRound: 1, currentStep: 5, currentPhase: 'play', currentActorId: 'c6',
+      } as any)
+      .mockResolvedValueOnce({
+        battleId: 'b1', currentRound: 2, currentStep: 5, currentPhase: 'play', currentActorId: 'c6',
+      } as any)
+      .mockResolvedValueOnce({
+        battleId: 'b1', currentRound: 2, currentStep: 0, currentPhase: 'draw', currentActorId: 'c1',
+      } as any)
+      .mockResolvedValueOnce({
+        battleId: 'b1', currentRound: 2, currentStep: 0, currentPhase: 'draw', currentActorId: 'c1',
+      } as any);
+    mockGetActorHand.mockResolvedValue([]);
+    const { executeEndStep } = await import('./battleActionService');
+    await executeEndStep(createMockIO(), 'b1');
+    expect(mockTickBurnDamageOnTarget).toHaveBeenCalledTimes(6);
+    const calledWith = mockTickBurnDamageOnTarget.mock.calls.map(c => c[1]);
+    expect(calledWith).toEqual(expect.arrayContaining(['c1', 'c2', 'c3', 'c4', 'c5', 'c6']));
   });
 });

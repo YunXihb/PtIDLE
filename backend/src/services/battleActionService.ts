@@ -16,6 +16,7 @@ import type { AttackValidationResult } from './battleService';
 import type { HandCard } from './handService';
 import { getActorHand, addToDiscardPile, retainHandOnStepEnd, drawCards } from './handService';
 import { tickBurnDamageOnTarget } from './professionMechanicService';
+import { tickEffects } from './statusEffectService';
 import { broadcastBoardState, broadcastHandState, broadcastCharacterStatus, broadcastSessionState } from '../socket/battleStateBroadcaster';
 import { redisClient } from '../config/redis';
 
@@ -345,7 +346,14 @@ export async function executeEndStep(
     return { success: false, error: 'retain_failed', detail: (err as Error).message };
   }
 
-  // 4. (last step?) executeRoundEnd — TDD STUB for Task 3, Task 4 adds routing
+  // 4. (last step?) executeRoundEnd
+  if (state.currentStep === 5) {
+    try {
+      await executeRoundEnd(io, battleId, state as BattleSessionState);
+    } catch (err) {
+      return { success: false, error: 'round_end_failed', detail: (err as Error).message };
+    }
+  }
 
   // 5. endCurrentStep
   try {
@@ -407,9 +415,34 @@ export async function executeEndStep(
 }
 
 export async function executeRoundEnd(
-  _io: IOServer,
-  _battleId: string,
-  _stateBefore: BattleSessionState
+  io: IOServer,
+  battleId: string,
+  stateBefore: BattleSessionState
 ): Promise<void> {
-  // TDD STUB: Task 2 占位。Task 4 替换为完整 5 步实现。
+  // 1. 给所有 6 角色结算 burn 伤害（并行，独立查询）
+  const characters = await listCharactersInBattle(battleId);
+  await Promise.all(
+    characters.map((c) =>
+      tickBurnDamageOnTarget(battleId, c.characterId, stateBefore.currentRound)
+    )
+  );
+
+  // 2. tick 所有 effect（每个角色一次，顺序执行 — tickEffects 改 state）
+  for (const c of characters) {
+    await tickEffects(battleId, c.characterId, stateBefore.currentRound);
+  }
+
+  // 3. endCurrentRound
+  const r = await endCurrentRound(battleId);
+  if (!r.success) {
+    throw new Error(`executeRoundEnd: endCurrentRound failed: ${r.error ?? 'unknown'}`);
+  }
+
+  // 4-5. 重读 + 广播
+  const newState = await getDbSessionState(battleId);
+  if (!newState) {
+    throw new Error(`executeRoundEnd: state read failed: ${battleId}`);
+  }
+  await broadcastSessionState(io, battleId, newState as BattleSessionState);
+  await broadcastBoardState(io, battleId);
 }
