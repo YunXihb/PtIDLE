@@ -13,6 +13,7 @@ jest.mock('../config/redis', () => ({
     hGet: jest.fn(),
     hSet: jest.fn(),
     hDel: jest.fn(),
+    hGetAll: jest.fn(),  // ★ T052: preStepAliveMap snapshot
     lRem: jest.fn(),
   },
   connectRedis: jest.fn(),
@@ -27,6 +28,7 @@ jest.mock('./battleSessionService', () => ({
   activateCurrentUnit: jest.fn(),
   completeDrawPhase: jest.fn(),
   endCurrentRound: jest.fn(),
+  finishSession: jest.fn(),  // ★ T052
 }));
 
 jest.mock('./battleService', () => ({
@@ -63,7 +65,14 @@ jest.mock('./statusEffectService', () => ({
   tickEffects: jest.fn(),
 }));
 
-import { getDbSessionState, completeMovePhase, completePlayPhase, endCurrentStep, activateCurrentUnit, completeDrawPhase, endCurrentRound } from './battleSessionService';
+jest.mock('./battleOutcomeService', () => ({
+  applyKillStars: jest.fn(),
+  applyBaseStars: jest.fn(),
+  checkWinCondition: jest.fn(),
+  recordVictory: jest.fn(),
+}));
+
+import { getDbSessionState, completeMovePhase, completePlayPhase, endCurrentStep, activateCurrentUnit, completeDrawPhase, endCurrentRound, finishSession } from './battleSessionService';
 import {
   listCharactersInBattle,
   validateMovement,
@@ -79,6 +88,7 @@ import { broadcastBoardState, broadcastHandState, broadcastCharacterStatus, broa
 import { getActorHand, addToDiscardPile, retainHandOnStepEnd, drawCards } from './handService';
 import { tickBurnDamageOnTarget } from './professionMechanicService';
 import { tickEffects } from './statusEffectService';
+import { applyKillStars, applyBaseStars, checkWinCondition, recordVictory } from './battleOutcomeService';
 import { redisClient } from '../config/redis';
 import type { Server as IOServer } from 'socket.io';
 
@@ -114,6 +124,11 @@ const mockActivateCurrentUnit = activateCurrentUnit as jest.MockedFunction<typeo
 const mockCompleteDrawPhase = completeDrawPhase as jest.MockedFunction<typeof completeDrawPhase>;
 const mockEndCurrentRound = endCurrentRound as jest.MockedFunction<typeof endCurrentRound>;
 const mockBroadcastSessionState = broadcastSessionState as jest.MockedFunction<typeof broadcastSessionState>;
+const mockApplyKillStars = applyKillStars as jest.MockedFunction<typeof applyKillStars>;
+const mockApplyBaseStars = applyBaseStars as jest.MockedFunction<typeof applyBaseStars>;
+const mockCheckWinCondition = checkWinCondition as jest.MockedFunction<typeof checkWinCondition>;
+const mockRecordVictory = recordVictory as jest.MockedFunction<typeof recordVictory>;
+const mockFinishSession = finishSession as jest.MockedFunction<typeof finishSession>;
 
 function createMockIO(): IOServer {
   return {
@@ -199,6 +214,24 @@ beforeEach(() => {
     { characterId: 'c5', playerId: 'p2', userId: 'u2', profession: 'ranger', name: 'p2-c5' },
     { characterId: 'c6', playerId: 'p2', userId: 'u2', profession: 'mage', name: 'p2-c6' },
   ]);
+  // T052 默认 happy path
+  mockApplyKillStars.mockResolvedValue({ p1Delta: 0, p2Delta: 0, p1StarsAfter: 0, p2StarsAfter: 0 });
+  mockApplyBaseStars.mockResolvedValue({
+    p1Delta: 0, p2Delta: 0, p1StarsAfter: 0, p2StarsAfter: 0,
+    bases: { '3,3': 'neutral', '6,6': 'neutral' },
+  });
+  mockCheckWinCondition.mockResolvedValue({ status: 'not_over', p1Stars: 0, p2Stars: 0 });
+  mockRecordVictory.mockResolvedValue(undefined);
+  mockFinishSession.mockResolvedValue({ success: true, state: undefined as any });
+  // 模拟 pieces HASH 6 角色全 alive
+  (redisClient.hGetAll as jest.Mock).mockResolvedValue({
+    c1: JSON.stringify({ is_alive: true }),
+    c2: JSON.stringify({ is_alive: true }),
+    c3: JSON.stringify({ is_alive: true }),
+    c4: JSON.stringify({ is_alive: true }),
+    c5: JSON.stringify({ is_alive: true }),
+    c6: JSON.stringify({ is_alive: true }),
+  });
 });
 
 describe('executeMove — happy path', () => {
@@ -948,5 +981,54 @@ describe('executeEndStep', () => {
       const result = await executeEndStep(createMockIO(), 'b1');
       expect(result).toEqual({ success: false, error: 'complete_phase_failed', detail: 'phase fail' });
     });
+  });
+});
+
+describe('executeEndStep - T052 wire-up', () => {
+  it('should capture preStepAliveMap and call applyKillStars + checkWinCondition', async () => {
+    mockGetDbSessionState.mockResolvedValue({
+      currentRound: 1,
+      currentStep: 0,
+      currentActorId: 'c1',
+      currentPhase: 'play',
+    });
+
+    const { executeEndStep } = await import('./battleActionService');
+    const io = createMockIO();
+
+    await executeEndStep(io, 'b1');
+
+    // 验证 preStepAliveMap 传给 applyKillStars
+    expect(mockApplyKillStars).toHaveBeenCalledWith(
+      'b1',
+      expect.objectContaining({
+        c1: true, c2: true, c3: true, c4: true, c5: true, c6: true,
+      })
+    );
+    // 验证 checkWinCondition 被调
+    expect(mockCheckWinCondition).toHaveBeenCalledWith('b1');
+    // 默认 not_over → recordVictory 不调
+    expect(mockRecordVictory).not.toHaveBeenCalled();
+  });
+
+  it('should call recordVictory when checkWinCondition returns win', async () => {
+    mockCheckWinCondition.mockResolvedValue({
+      status: 'win',
+      winnerSide: 'p1',
+      p1Stars: 6,
+      p2Stars: 2,
+    });
+
+    const { executeEndStep } = await import('./battleActionService');
+    const io = createMockIO();
+
+    await executeEndStep(io, 'b1');
+
+    expect(mockRecordVictory).toHaveBeenCalledWith(
+      io,
+      'b1',
+      { status: 'win', winnerSide: 'p1', p1Stars: 6, p2Stars: 2 },
+      'kill'  // source 默认 kill
+    );
   });
 });

@@ -18,6 +18,7 @@ import { getActorHand, addToDiscardPile, retainHandOnStepEnd, drawCards } from '
 import { tickBurnDamageOnTarget } from './professionMechanicService';
 import { tickEffects } from './statusEffectService';
 import { broadcastBoardState, broadcastHandState, broadcastCharacterStatus, broadcastSessionState } from '../socket/battleStateBroadcaster';
+import { applyKillStars, checkWinCondition, recordVictory } from './battleOutcomeService';
 import { redisClient } from '../config/redis';
 
 /**
@@ -328,6 +329,20 @@ export async function executeEndStep(
   io: IOServer,
   battleId: string
 ): Promise<StepEndResult> {
+  // 0. ★ T052: 捕获 preStepAliveMap（applyKillStars 步骤 12 比对用）
+  //    必须在任何可能改变 is_alive 的副作用之前完成快照
+  const characters = await listCharactersInBattle(battleId);
+  const preStepAliveMap: Record<string, boolean> = {};
+  if (characters.length > 0) {
+    const piecesRaw = await redisClient.hGetAll(`battle:${battleId}:pieces`);
+    for (const c of characters) {
+      const raw = piecesRaw[c.characterId];
+      if (raw) {
+        preStepAliveMap[c.characterId] = JSON.parse(raw).is_alive === true;
+      }
+    }
+  }
+
   // 1. 读 session
   const state = await getDbSessionState(battleId);
   if (!state) {
@@ -415,6 +430,13 @@ export async function executeEndStep(
   // 10-11. 广播
   await broadcastSessionState(io, battleId, finalState);
   await broadcastBoardState(io, battleId);
+
+  // 12. ★ T052 wire-up: applyKillStars → checkWinCondition → recordVictory (win/draw)
+  await applyKillStars(battleId, preStepAliveMap);
+  const winResult = await checkWinCondition(battleId);
+  if (winResult.status === 'win' || winResult.status === 'draw') {
+    await recordVictory(io, battleId, winResult, 'kill');
+  }
 
   return { success: true, state: finalState };
 }
