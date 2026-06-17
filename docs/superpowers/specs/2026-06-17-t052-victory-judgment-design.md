@@ -154,14 +154,16 @@ export type Side = 'p1' | 'p2';
 export type VictoryType = 'kill_threshold' | 'base_threshold' | 'draw';
 
 /**
- * 应用击杀 star：在调用前后比对对方棋子的 is_alive，捕获本步新增死亡数。
- * 调用方：T051 executeEndStep（在 broadcast 之前）
+ * 应用击杀 star：对比「调用前 is_alive 快照」与「当前 pieces HASH」，捕获本步新增死亡数。
+ * 调用方：T051 executeEndStep（在 broadcast 之前），必须传入本步进入时的 is_alive 快照。
  *
  * @param battleId battle id
+ * @param preStepAliveMap 调用方快照（characterId → is_alive），由 executeEndStep 步骤 0 采集
  * @returns { p1Delta, p2Delta, p1StarsAfter, p2StarsAfter } - 本次累加结果
  */
 export async function applyKillStars(
-  battleId: string
+  battleId: string,
+  preStepAliveMap: Record<string, boolean>
 ): Promise<{
   p1Delta: number; // 本步 p1 击杀数（>0 时给 p2 +1 star/次）
   p2Delta: number; // 本步 p2 击杀数（>0 时给 p1 +1 star/次）
@@ -238,11 +240,10 @@ async function broadcastBasesState(io: IOServer, battleId: string, bases: Record
 **`applyKillStars` 实现步骤**：
 1. `listCharactersInBattle(battleId)` 拿全部 6 角色（带 playerId, userId）
 2. 并行读 pieces HASH 全部 6 个 field → 拿当前 is_alive
-3. 计算本次 delta：
-   - 找到 is_alive=true → false 的角色（**调用前的快照**与**当前**比对）
-   - T052 调用 applyKillStars 时，调用前快照需从 executeEndStep 进入时读取；为简化，**第一步在 executeEndStep 顶部快照，第四步 applyKillStars 内部比对**
-4. 累加 star：每个死亡 → 对方 +1 star
-5. 写回 Redis + DB
+3. 比对 `preStepAliveMap`（参数传入）vs 当前 is_alive：
+   - `preStepAliveMap[charId] === true` AND `currentIsAlive === false` → 本步死亡
+4. 累加 star：每个本步死亡 → 该角色 `player_id` 的**对方** +1 star
+5. 写回 Redis（HINCRBY stars:pN）+ DB（UPDATE battles SET pN_stars）
 
 **`applyBaseStars` 实现步骤**：
 1. 读 pieces HASH 全部 6 个 field → 拿当前 is_alive
@@ -280,14 +281,19 @@ async function broadcastBasesState(io: IOServer, battleId: string, bases: Record
 
 **`executeEndStep` 改造**：
 ```
-原 11 步 → 新 13 步
+原 11 步 → 新 15 步
+  0. ★ T052: 读 pieces HASH 全部 6 个 field → preStepAliveMap（步骤 12 比对用）
   ...
   10. broadcastSessionState     (新事件 — session 整体推送)
   11. broadcastBoardState       (既有事件 — 整盘状态推送)
-  12. ★ T052 wire-up: applyKillStars → checkWinCondition → 若 win/draw → recordVictory + finishSession
-      → 否则 broadcastBoardState (再次？见 11) + return success
-  13. 末尾 broadcastBasesState（如有据点变化 — 仅 executeRoundEnd 触发，见 3.3）
+  12. ★ T052 wire-up: applyKillStars(battleId, preStepAliveMap) → checkWinCondition(lastStarSource='kill')
+        → 若 win/draw → recordVictory → finishSession → broadcast('battle:end') → return
+        → 若 not_over → 继续
+  13. （仅 executeEndStep 调用一次；executeRoundEnd 不调 applyKillStars — 见 1.4 边界决策）
+  14. return { success: true, state }
 ```
+
+**步骤 0 关键**：必须在任何可能改变 is_alive 的副作用（包括步骤 4 executeRoundEnd 的 burn tick）之前完成快照采集。实现：`Promise.all` 读 6 个 field → 解析 JSON → 存为 `Record<string, boolean>`。
 
 **注意**：star 累加是在 broadcast **之后**调用，保证客户端看到 step 完成的状态（包括新 step/round/actor/phase）后才看到胜利事件，避免「胜利信息比状态变化早到」造成客户端逻辑割裂。
 
@@ -325,7 +331,7 @@ io.to(`battle:${battleId}`).emit('battle:state:bases', {
 });
 ```
 
-**新增 `broadcastBattleEnd`**（可选集成在 recordVictory 内部）：
+**新增 `broadcastBattleEnd`**（强制独立函数，recordVictory 调用此函数而非内部直接 emit）：
 ```typescript
 export async function broadcastBattleEnd(
   io: IOServer,
@@ -418,7 +424,7 @@ T051 executeRoundEnd (每轮 last step)
 | p1 据点达标 | p1=6, p2<6 | win | base_threshold |
 | p2 据点达标 | p2=6, p1<6 | win | base_threshold |
 | 双方同时 6（applyBaseStars） | p1=6, p2=6 | draw | draw |
-| 双方同时 6（applyKillStars） | 理论不应发生 | N/A | T052 边界检查：executeEndStep 内 applyKillStars 若让双方同时 6，**取**先到 6 的胜。实现：applyKillStars 内同步读完 stars:p1+p2，若本步累加导致双方同时 6 → 退化为「仅 lastStarSource 方向胜」 |
+| 双方同时 6（applyKillStars） | p1=6, p2=6 | draw | draw（罕见：AOE 互打导致双方同时达成，统一走 draw 路径） |
 | p1=5, p2=5，applyKillStars 让 p1=6（击杀 1）| p1=6, p2=5 | win | kill_threshold |
 | p1=5, p2=5，applyBaseStars 让 p1=6, p2=6 | p1=6, p2=6 | draw | draw |
 
@@ -426,7 +432,7 @@ T051 executeRoundEnd (每轮 last step)
 
 | 情况 | 行为 |
 |------|------|
-| battle 初始化时第一次 applyKillStars 调用 | 「调用前快照」无 → 视为「调用前所有 alive」；本次无新增死亡 → 不加 star |
+| battle 初始化时第一次 applyKillStars 调用 | 步骤 0 快照全 alive，步骤 12 仍全 alive → 0 delta，不加 star |
 | 双方均有 0 alive 棋子 | applyKillStars: 无死亡 → 不加 star。applyBaseStars: 2 据点均为 neutral |
 | 一方 0 alive，另一方 3 alive 据点占领 | 占领方 +2 star（本轮） |
 | 据点 (3,3) 与 (6,6) 重叠？| Chebyshev 距离：\|3-6\|=3 > 2，不重叠 |
@@ -479,14 +485,16 @@ T051 executeRoundEnd (每轮 last step)
 
 **executeEndStep (T052 阶段)**:
 ```
+ 0. ★ T052: 读 pieces HASH 全部 6 个 field → preStepAliveMap（步骤 12 比对用）
 ... (T051 1-11 步不变)
-12. applyKillStars
-    → 读 pieces HASH 前后比对
-    → HINCRBY stars:pN (每死一个)
+12. applyKillStars(battleId, preStepAliveMap)
+    → listCharactersInBattle + 读 pieces HASH 当前 is_alive
+    → 比对 preStepAliveMap vs 当前 → 找出本步新增死亡
+    → HINCRBY stars:pN (每死一个，对方 +1)
     → UPDATE battles SET pN_stars
 13. checkWinCondition(lastStarSource='kill')
     → 若 win/draw → recordVictory → finishSession → broadcast('battle:end') → return
-    → 若 not_over → 继续 broadcast? 不需要，board 已推过
+    → 若 not_over → 继续
 14. return { success: true, state }
 ```
 
@@ -513,10 +521,10 @@ T051 executeRoundEnd (每轮 last step)
 
 | 编号 | describe 块 | 用例 | 期望 |
 |------|-------------|------|------|
-| 1 | applyKillStars 1 kill | 1 棋从 alive→dead | p2 +1 star（若 p1 杀），Redis + DB 同步 |
-| 2 | applyKillStars 0 kill | is_alive 不变 | 0 delta，stars 不变 |
-| 3 | applyKillStars multi kill | AOE 杀 2 | p2 +2 stars |
-| 4 | applyKillStars burn 杀 | T051 burn tick 触发死亡 | 计入击杀 |
+| 1 | applyKillStars 1 kill | preStepAliveMap 全 alive，pieces HASH 1 个 p2 棋 dead | p1 +1 star（杀敌），Redis + DB 同步 |
+| 2 | applyKillStars 0 kill | preStepAliveMap 与 pieces 一致 | 0 delta，stars 不变 |
+| 3 | applyKillStars multi kill | preStepAliveMap 3 alive，pieces HASH 2 个 p2 棋 dead | p1 +2 stars |
+| 4 | applyKillStars burn 杀 | preStepAliveMap 全 alive，executeRoundEnd burn tick 触发 1 p2 棋死亡 | p1 +1 star（burn 计入击杀方） |
 | 5 | applyBaseStars p1 占 1 | (3,3) 范围 p1=2 alive, p2=1 alive | p1 +1 star |
 | 6 | applyBaseStars p2 占 2 | (3,3) p1=0 alive p2=3；(6,6) p1=1 alive p2=2 | p2 +2 stars |
 | 7 | applyBaseStars neutral | (3,3) p1=2 p2=2；(6,6) p1=3 p2=0 | p1 +1 star（仅 (6,6)），(3,3) 中立 |
@@ -530,7 +538,7 @@ T051 executeRoundEnd (每轮 last step)
 | 15 | recordVictory finishSession 联动 | win → currentPhase='finished', currentActorId=null | 验证 |
 | 16 | recordVictory broadcast | win → io.to(battle:{id}).emit('battle:end', {winnerUserId, winnerSide, victoryType, p1Stars, p2Stars}) | mock io 验证 |
 | 17 | recordVictory draw broadcast | draw → winnerUserId=null, winnerSide=null, victoryType='draw' | mock io 验证 |
-| 18 | applyKillStars finished 短路 | currentPhase='finished' | return 0 delta |
+| 18 | applyKillStars finished 短路 | currentPhase='finished' | 0 delta（battle 已结束，不再累加） |
 
 **总计 18 个新 case**。
 
@@ -601,13 +609,13 @@ T051 executeRoundEnd (每轮 last step)
 | Star 主存 | Redis 临时 + DB 持久 | T051 既有模式；DB 列为权威（T054 战斗结算会再次校验） |
 | Winner 持久化 | UPDATE battles.winner_player_id | 既有字段（migration 001），T054 战斗结算会读取 |
 | 双方同时 6（applyBaseStars 内） | draw | 用户 Q4 答案 |
-| 双方同时 6（applyKillStars 内）| 退化：先到 6 的胜 | 实现约束：applyKillStars 不应让双方同时 6（单步只能让一方 -1 + 对方 +1，但若 p1_stars=5 + p2_stars=5 + applyKillStars 后 p1=6 + p2=5 → p1 胜，符合直觉；若 p1=5 + p2=6 → 已 win，跳过） |
+| 双方同时 6（applyKillStars 内）| **draw** | 边界对齐：applyKillStars 单步可能同时累加双方（如 AOE 互打），统一走 draw 路径与 applyBaseStars 一致；实属罕见 |
 | lastStarSource 参数 | 显式传 `'kill'` / `'base'` | 简单可读；checkWinCondition 内部根据此推断 victoryType |
 | is_alive 判定源 | pieces HASH 的 `is_alive` 字段 | 用户 Q3 答案；T051 既有 burn tick 已维护此字段 |
 | 终态持久化 | recordVictory 内 UPDATE battles SET status='finished' | 与 finishSession（仅设 phase）解耦；recordVictory 完成后 finishSession 设置 phase='finished' |
 | 据点状态广播时机 | 仅当变化时（applyBaseStars 末尾） | 不在每步推（频率过高），仅在每轮结算时推 |
-| battle:state:bases 推送内容 | 2 个据点的占领方（不带 star） | 据点是状态，star 在 battle:state:board 内可推 p1_stars/p2_stars 字段 |
-| battle:state:board 增量字段 | 顶部加 p1_stars/p2Stars（可选） | T047 既有事件，broadcastBoardState 重新构建 board 时可包含 stars 字段；T052 范围决定是否包含 |
+| battle:state:bases 推送内容 | 2 个据点的占领方（不带 star） | 据点是状态，star 在 battle:state:board 内同时推（见下行）|
+| battle:state:board 增量字段 | 必加 p1Stars / p2Stars / bases 三个字段 | 前端一次拉取即可，无需订阅 battle:state:bases 也能显示星星 |
 | T048 初始化扩展 | battleInitializationService 末尾追加 5 个 SET | 兼容性扩展；旧 battle 重新初始化时也覆盖 |
 
 ---
@@ -680,9 +688,9 @@ export const WIN_THRESHOLD = 6;
 - checkWinCondition 返回 draw → recordVictory → 推
 - 客户端收到此事件后跳转到结算页（T054）
 
-### B.3 battle:state:board 增量字段（可选）
+### B.3 battle:state:board 增量字段（T052 必加）
 
-若 T052 决定在 board state 内加 stars 字段（前端可一次拉取），修改如下：
+T052 决定在 board state 内加 stars + bases 字段（前端可一次拉取），修改如下：
 
 ```typescript
 export interface BoardStateEvent {
@@ -696,7 +704,12 @@ export interface BoardStateEvent {
 }
 ```
 
-**决策**：T052 范围包含此增量，但保留 `battle:state:bases` 独立事件（前端按需订阅）。`battle:state:board` 的 stars 字段作为冗余信号。
+**决策**：T052 范围包含此增量（必加），同时保留 `battle:state:bases` 独立事件（按需订阅，频率低）。`battle:state:board` 的 stars 字段作为冗余信号，前端无需同时订阅两个事件也能展示星星。
+
+**实现要点**：
+- `buildBoardState` 内部 `Promise.all` 追加读 `battle:{id}:stars:p1/p2` + `battle:{id}:bases`
+- 写回 board 对象时附加 3 个字段
+- 前端可直接读 `board.p1Stars` / `board.p2Stars` / `board.bases`
 
 ---
 
