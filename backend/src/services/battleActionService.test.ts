@@ -679,4 +679,52 @@ describe('executePlayCard', () => {
 
     expect(result).toEqual({ success: false, error: 'validation_failed', detail: 'Target out of taunt range' });
   });
+
+  it('error: energy_deduct_failed (setCharacterEnergy throws)', async () => {
+    mockGetDbSessionState.mockResolvedValueOnce({
+      currentRound: 1, currentStep: 0, currentActorId: 'c1', currentPhase: 'play',
+    });
+    mockListCharactersInBattle.mockResolvedValueOnce([
+      { characterId: 'c1', playerId: 'p1', userId: 'u1', profession: 'warrior', name: 'A' },
+    ]);
+
+    mockSetCharacterEnergy.mockRejectedValueOnce(new Error('Redis down'));
+
+    const { executePlayCard } = await import('./battleActionService');
+    const io = createMockIO();
+
+    const result = await executePlayCard(io, 'b1', 'c1', { deck_id: 'd1', source: 'deck', type: 'attack', card_id: 'pc1', name: 'X', cost: 1, effect: {}, template_no: 1, targetId: 't1' } as any, 'u1');
+
+    expect(result).toEqual({
+      success: false,
+      error: 'energy_deduct_failed',
+      detail: 'Redis down',
+    });
+    expect(mockAddToDiscardPile).not.toHaveBeenCalled();
+    expect(mockBroadcastHandState).not.toHaveBeenCalled();
+  });
+
+  it('error: side_effect_failed (lRem throws)', async () => {
+    mockGetDbSessionState.mockResolvedValueOnce({
+      currentRound: 1, currentStep: 0, currentActorId: 'c1', currentPhase: 'play',
+    });
+    mockListCharactersInBattle.mockResolvedValueOnce([
+      { characterId: 'c1', playerId: 'p1', userId: 'u1', profession: 'warrior', name: 'A' },
+    ]);
+
+    (redisClient.lRem as jest.Mock).mockRejectedValueOnce(new Error('lRem failed'));
+
+    const { executePlayCard } = await import('./battleActionService');
+    const io = createMockIO();
+
+    const result = await executePlayCard(io, 'b1', 'c1', { deck_id: 'd1', source: 'deck', type: 'attack', card_id: 'pc1', name: 'X', cost: 1, effect: {}, template_no: 1, targetId: 't1' } as any, 'u1');
+
+    expect(result).toEqual({
+      success: false,
+      error: 'side_effect_failed',
+      detail: 'lRem failed',
+    });
+    expect(mockAddToDiscardPile).not.toHaveBeenCalled();
+    expect(mockBroadcastHandState).not.toHaveBeenCalled();
+  });
 });
