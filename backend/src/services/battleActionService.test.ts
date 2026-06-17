@@ -13,6 +13,7 @@ jest.mock('../config/redis', () => ({
     hGet: jest.fn(),
     hSet: jest.fn(),
     hDel: jest.fn(),
+    lRem: jest.fn(),
   },
   connectRedis: jest.fn(),
   disconnectRedis: jest.fn(),
@@ -21,6 +22,7 @@ jest.mock('../config/redis', () => ({
 jest.mock('./battleSessionService', () => ({
   getDbSessionState: jest.fn(),
   completeMovePhase: jest.fn(),
+  completePlayPhase: jest.fn(),
 }));
 
 jest.mock('./battleService', () => ({
@@ -28,20 +30,39 @@ jest.mock('./battleService', () => ({
   validateMovement: jest.fn(),
   moveCharacter: jest.fn(),
   getCharacterPosition: jest.fn(),
+  getCharacterPiece: jest.fn(),
+  validateAttack: jest.fn(),
+  validateAOEAttack: jest.fn(),
+  validateTauntCard: jest.fn(),
+  setCharacterEnergy: jest.fn(),
 }));
 
 jest.mock('../socket/battleStateBroadcaster', () => ({
   broadcastBoardState: jest.fn(),
+  broadcastHandState: jest.fn(),
+  broadcastCharacterStatus: jest.fn(),
 }));
 
-import { getDbSessionState, completeMovePhase } from './battleSessionService';
+jest.mock('./handService', () => ({
+  getActorHand: jest.fn(),
+  addToDiscardPile: jest.fn(),
+}));
+
+import { getDbSessionState, completeMovePhase, completePlayPhase } from './battleSessionService';
 import {
   listCharactersInBattle,
   validateMovement,
   moveCharacter,
   getCharacterPosition,
+  getCharacterPiece,
+  validateAttack,
+  validateAOEAttack,
+  validateTauntCard,
+  setCharacterEnergy,
 } from './battleService';
-import { broadcastBoardState } from '../socket/battleStateBroadcaster';
+import { broadcastBoardState, broadcastHandState, broadcastCharacterStatus } from '../socket/battleStateBroadcaster';
+import { getActorHand, addToDiscardPile } from './handService';
+import { redisClient } from '../config/redis';
 import type { Server as IOServer } from 'socket.io';
 
 const mockGetDbSessionState = getDbSessionState as jest.MockedFunction<typeof getDbSessionState>;
@@ -57,6 +78,16 @@ const mockBroadcastBoardState = broadcastBoardState as jest.MockedFunction<
 const mockGetCharacterPosition = getCharacterPosition as jest.MockedFunction<
   typeof getCharacterPosition
 >;
+const mockGetCharacterPiece = getCharacterPiece as jest.MockedFunction<typeof getCharacterPiece>;
+const mockGetActorHand = getActorHand as jest.MockedFunction<typeof getActorHand>;
+const mockAddToDiscardPile = addToDiscardPile as jest.MockedFunction<typeof addToDiscardPile>;
+const mockValidateAttack = validateAttack as jest.MockedFunction<typeof validateAttack>;
+const mockValidateAOEAttack = validateAOEAttack as jest.MockedFunction<typeof validateAOEAttack>;
+const mockValidateTauntCard = validateTauntCard as jest.MockedFunction<typeof validateTauntCard>;
+const mockSetCharacterEnergy = setCharacterEnergy as jest.MockedFunction<typeof setCharacterEnergy>;
+const mockCompletePlayPhase = completePlayPhase as jest.MockedFunction<typeof completePlayPhase>;
+const mockBroadcastHandState = broadcastHandState as jest.MockedFunction<typeof broadcastHandState>;
+const mockBroadcastCharacterStatus = broadcastCharacterStatus as jest.MockedFunction<typeof broadcastCharacterStatus>;
 
 function createMockIO(): IOServer {
   return {
@@ -83,6 +114,47 @@ beforeEach(() => {
   mockCompleteMovePhase.mockResolvedValue({ success: true });
   mockBroadcastBoardState.mockResolvedValue(undefined);
   mockGetCharacterPosition.mockResolvedValue({ x: 3, y: 3 });
+  // T050 默认 happy path 桩
+  mockGetActorHand.mockResolvedValue([
+    { deck_id: 'd1', card_id: 'pc1', name: '轻击', type: 'attack', cost: 1, effect: { damage: 2, range: 1 }, template_no: 1, source: 'deck' },
+  ]);
+  mockAddToDiscardPile.mockResolvedValue(undefined);
+  mockValidateAttack.mockResolvedValue({
+    valid: true,
+    damage: 2,
+    targets: ['t1'],
+    energyCost: 1,
+  });
+  mockValidateAOEAttack.mockResolvedValue({
+    valid: true,
+    damage: 2,
+    targets: ['t1', 't2'],
+    energyCost: 2,
+  });
+  mockValidateTauntCard.mockResolvedValue({
+    valid: true,
+    targets: ['t1'],
+    energyCost: 1,
+  });
+  mockSetCharacterEnergy.mockResolvedValue(undefined);
+  mockCompletePlayPhase.mockResolvedValue({ success: true, state: undefined as any });
+  mockBroadcastHandState.mockResolvedValue(undefined);
+  mockBroadcastCharacterStatus.mockResolvedValue(undefined);
+  mockGetCharacterPiece.mockImplementation(async (_battleId: string, charId: string) => {
+    return {
+      character_id: charId,
+      player_id: 'p1',
+      profession: 'warrior',
+      is_alive: true,
+      health: 20,
+      max_health: 20,
+      energy: 3,
+      position_x: 3,
+      position_y: 3,
+    } as any;
+  });
+  (redisClient.lRem as jest.Mock).mockResolvedValue(1);
+  (redisClient.hGet as jest.Mock).mockResolvedValue(JSON.stringify({ energy: 3 }));
 });
 
 describe('executeMove — happy path', () => {
@@ -188,5 +260,23 @@ describe('executeMove — error branches', () => {
     const result = await executeMove(io, 'b1', 'c1', 5, 3, 'u1');
     expect(result).toEqual({ success: false, error: 'move_failed' });
     expect(mockMoveCharacter).not.toHaveBeenCalled();
+  });
+});
+
+describe('executePlayCard', () => {
+  it('placeholder — to be expanded in Task 2-7', async () => {
+    const { executePlayCard } = await import('./battleActionService');
+    const io = createMockIO();
+    const result = await executePlayCard(io, 'b1', 'c1', {
+      deck_id: 'd1',
+      card_id: 'pc1',
+      name: '轻击',
+      type: 'attack',
+      cost: 1,
+      effect: { damage: 2, range: 1 },
+      template_no: 1,
+      source: 'deck',
+    } as any, 'u1');
+    expect(result).toHaveProperty('success');
   });
 });

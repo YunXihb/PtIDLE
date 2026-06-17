@@ -554,7 +554,7 @@ export interface AttackValidationResult {
 /**
  * 从 Redis 或数据库获取棋子完整信息
  */
-async function getCharacterPiece(
+export async function getCharacterPiece(
   battleId: string,
   characterId: string
 ): Promise<BattlePiece | null> {

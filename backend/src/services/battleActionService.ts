@@ -1,7 +1,21 @@
 import type { Server as IOServer } from 'socket.io';
-import { getDbSessionState, completeMovePhase } from './battleSessionService';
-import { listCharactersInBattle, validateMovement, moveCharacter, getCharacterPosition } from './battleService';
-import { broadcastBoardState } from '../socket/battleStateBroadcaster';
+import { getDbSessionState, completeMovePhase, completePlayPhase } from './battleSessionService';
+import {
+  listCharactersInBattle,
+  validateMovement,
+  moveCharacter,
+  getCharacterPosition,
+  validateAttack,
+  validateAOEAttack,
+  validateTauntCard,
+  getCharacterPiece,
+  setCharacterEnergy,
+} from './battleService';
+import type { AttackValidationResult } from './battleService';
+import type { HandCard } from './handService';
+import { getActorHand, addToDiscardPile } from './handService';
+import { broadcastBoardState, broadcastHandState, broadcastCharacterStatus } from '../socket/battleStateBroadcaster';
+import { redisClient } from '../config/redis';
 
 /**
  * T049 移动操作同步
@@ -103,4 +117,65 @@ export async function executeMove(
   await completeMovePhase(battleId);
 
   return { success: true };
+}
+
+/**
+ * T050 打牌操作同步
+ *
+ * 业务规则（按 T050 spec §3.2）：
+ *   1. session 存在
+ *   2. current_phase === 'play'
+ *   3. session.current_actor_id === characterId
+ *   4. character.userId === userId（防同房间对手冒充）
+ *   5. handCard.deck_id 在 actor hand LIST 中
+ *   6. card.type 是 'attack'（AOE/单体）或 'tactical'+'taunt'
+ *   7. validate* 返回 valid
+ *
+ * 成功后副作用（按顺序）：
+ *   - 读 pieces HASH → currentEnergy
+ *   - setCharacterEnergy(attackerId, currentEnergy - energyCost)
+ *   - redisClient.lRem(hand LIST, 1, JSON.stringify(handCard))
+ *   - addToDiscardPile (if source='deck')
+ *   - broadcastHandState(io, battleId, userId, characterId)  // self
+ *   - broadcastCharacterStatus(io, battleId, characterId)   // both
+ *   - completePlayPhase(battleId)                           // play → end_step
+ *   - broadcastBoardState(io, battleId)                     // both, 含 phase
+ */
+
+export type PlayCardError =
+  | 'not_in_play_phase'
+  | 'not_current_actor'
+  | 'not_owner'
+  | 'card_not_in_hand'
+  | 'unsupported_card_type'
+  | 'validation_failed'
+  | 'energy_deduct_failed'
+  | 'side_effect_failed';
+
+export type PlayCardResult =
+  | { success: true; validation: AttackValidationResult }
+  | { success: false; error: PlayCardError; detail?: string };
+
+/**
+ * 执行一次打牌操作的「验证 + 副作用 + 广播 + 阶段推进」流水
+ *
+ * @param io IOServer 实例（用于 broadcaster）
+ * @param battleId battle id
+ * @param characterId 打出卡牌的 actor
+ * @param handCard 客户端传整张手牌对象（含 deck_id/card_id/type/effect/source/targetId）
+ * @param userId 发起请求的 user（从 socket.data 拿）
+ * @returns PlayCardResult —— 失败时携带 error 字符串
+ *
+ * 错误处理：业务失败返回 `{ success: false, error: ... }`；
+ * 依赖服务（getDbSessionState 等）抛错 → 向上抛（异常路径）。
+ */
+export async function executePlayCard(
+  _io: IOServer,
+  _battleId: string,
+  _characterId: string,
+  _handCard: HandCard,
+  _userId: string
+): Promise<PlayCardResult> {
+  // TODO(T050 Task 2/3/4/5/6/7): 实现
+  return { success: false, error: 'not_in_play_phase' };
 }
