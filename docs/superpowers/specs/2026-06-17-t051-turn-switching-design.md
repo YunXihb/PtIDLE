@@ -148,9 +148,32 @@ export async function executeRoundEnd(
 - **特殊：`round_end_failed` 仍返回 error，但 partial 副作用（burn/effect tick 的 HP 变化）已 commit，不回滚**（与 T050 一致）
 
 **`executeRoundEnd` 内部依赖**：
-- `professionMechanicService.applyBurnDamage` — 找所有有 `mark_fire` 的 target，每个 target 扣 burn HP
+- `professionMechanicService.tickBurnDamageOnTarget` — **T051 新增** helper: 调用 `applyBurnDamage` 算伤害 + 读 pieces HASH HP + 减 HP + 写回 + 若 HP≤0 标记 is_alive=false
+- `battleService.listCharactersInBattle` — 拿所有 6 个 char 列表
 - `statusEffectService.tickEffects` — 对 `battle:{battleId}:effects:{charId}` 全部 LIST tick，duration 减 1，到期 LREM
 - `battleSessionService.endCurrentRound` — `currentRound += 1`，`currentStep` 重置为 0
+
+**`tickBurnDamageOnTarget` 接口（T051 新增，在 `professionMechanicService.ts`）**：
+```typescript
+export async function tickBurnDamageOnTarget(
+  battleId: string,
+  targetId: string,
+  currentRound: number
+): Promise<{
+  totalDamage: number;
+  newHp: number;
+  isDead: boolean;  // HP ≤ 0
+}>;
+```
+**实现步骤**：
+1. 调 `applyBurnDamage(battleId, targetId, currentRound)` → 拿 `totalDamage`
+2. 若 `totalDamage === 0` → return `{ totalDamage: 0, newHp: <unchanged>, isDead: false }` (no-op)
+3. 读 pieces HASH `battle:{battleId}:pieces` field `targetId` → 拿 current piece（含 `health` 字段）
+4. `newHp = piece.health - totalDamage`
+5. `isDead = newHp <= 0`
+6. 更新 piece: `health = newHp`, `is_alive = !isDead`
+7. 写回 HASH
+8. return `{ totalDamage, newHp, isDead }`
 
 **`executeRoundEnd` 失败语义**：
 - `applyBurnDamage` 抛错 → `round_end_failed`，**HP 变化不回滚**（部分 target 可能已 commit）
@@ -328,7 +351,7 @@ export function broadcastSessionState(io, battleId, state) {
 | 1 | executeEndStep happy | mid-round (step 0/6) | success: true，retain + endStep + activate + draw + completeDrawPhase 各 1 次，**executeRoundEnd 未调** |
 | 2 | executeEndStep last-step | step 5/6 (last) | success: true，executeRoundEnd 被调 1 次，endCurrentRound 1 次 |
 | 3 | executeEndStep rollover | step 5/6 → step 0/新 round | success: true，currentRound += 1，currentStep = 0 |
-| 4 | executeRoundEnd burn tick | mage marks present | applyBurnDamage 被调 1 次，tickEffects 1 次，endCurrentRound 1 次 |
+| 4 | executeRoundEnd burn tick | mage marks present | tickBurnDamageOnTarget 被调 6 次（6 角色），tickEffects 6 次，endCurrentRound 1 次 |
 | 5 | executeRoundEnd effect tick | burn + poison + regen | tickEffects 被调 1 次 |
 | 6 | phase error | currentPhase === 'idle' | error: 'not_in_play_or_move_phase'，retain 未调 |
 | 7 | phase error | currentPhase === 'finished' | 同上 |
@@ -403,6 +426,8 @@ mock getDbSessionState           → 第 3 次 (executeEndStep 末尾重读, 反
 |------|------|
 | `src/services/battleActionService.ts` | **修改** — 追加 `executeEndStep` + `executeRoundEnd` + `StepEndResult` + `StepEndError` 类型；T050 `executePlayCard` 末尾追加一行 `await executeEndStep(io, battleId)` |
 | `src/services/battleActionService.test.ts` | **修改** — 追加 15 个单测 case |
+| `src/services/professionMechanicService.ts` | **修改** — 追加 `tickBurnDamageOnTarget` 导出函数 |
+| `src/services/professionMechanicService.test.ts` | **修改** — 追加 4 个 tickBurnDamageOnTarget 单测 |
 | `src/socket/battleRoom.ts` | 修改 — 追加 `handleBattleSkipPlay` 导出函数 |
 | `src/socket/battleRoom.test.ts` | 修改 — 追加 6 个 handleBattleSkipPlay describe case |
 | `src/socket/socketServer.ts` | 修改 — 注册 `socket.on('battle:skip_play', ...)` handler |
@@ -436,6 +461,7 @@ mock getDbSessionState           → 第 3 次 (executeEndStep 末尾重读, 反
 | Burn tick 时机 | 每 round 末（last step 完成后） | T041 spec line 121-126 要求；用户 Q3 答案 |
 | Effect tick 时机 | 每 round 末（与 burn 统一） | 用户 Q4 答案：与 burn 同步 |
 | 公共池卡与 burn | **不**区分 | 公共池 source 字段只影响 retain/discard（T1001 spec），不影响 round-end 副作用 |
+| Burn tick 实现 | T051 新增 `tickBurnDamageOnTarget` helper | T041 既有 `applyBurnDamage` 只算伤害不算 HP；T051 引入新 helper 算+扣 HP。这是 T051 范围内必要的 HP 操作（局部 T056），完整 T056 applyDamage（attack/AOE 实际伤害）仍在 T056 范围 |
 
 ---
 
@@ -445,7 +471,7 @@ mock getDbSessionState           → 第 3 次 (executeEndStep 末尾重读, 反
 - ❌ step 超时自动级联（AFK / 断线超时）—— T051 范围外，future work
 - ❌ 玩家死亡/胜负判定（all dead / 据点占领 → 跳过 actor 切换）—— T052 范围
 - ❌ session 字段持久化到 PG（battles.current_round 等）—— T054 战斗结算范围
-- ❌ 实际 HP 扣减（attack/AOE 实际伤害）—— T056 applyDamage 范围
+- ❌ 实际 HP 扣减（attack/AOE 实际伤害）—— T056 applyDamage 范围（**注意**：T051 通过 `tickBurnDamageOnTarget` 局部应用 burn HP 伤害，**不**包含 attack/AOE 伤害）
 - ❌ 真实 Redis 集成测试（需要完整 PG+Redis 启动）—— T051 沿用 T050 模式仅单元测
 - ❌ 客户端跳过打牌的 UI 提示 —— 前端 T070 范围
 - ❌ 战斗结束后的对战结算（reward / rating）—— T054 范围
