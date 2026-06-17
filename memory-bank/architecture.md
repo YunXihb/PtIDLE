@@ -1953,5 +1953,52 @@ T051 实现回合切换 orchestrator, 在 T050 出牌后自动级联, 客户端�
 
 ---
 
-*文档版本：v1.36*
+# T052 胜负判定
+
+## 胜利规则
+- 击杀累计（每步）+ 据点占领累计（每轮）两条独立路径
+- 任一方累计 ≥6 star 即获胜（双方同时 6 视为平局）
+- 胜利类型: kill_threshold / base_threshold / draw
+
+## 数据模型
+- Redis 临时态: `battle:{id}:stars:p1/p2` (STRING), `battle:{id}:bases` (JSON), `battle:{id}:alive_p1/p2` (STRING)
+- DB 持久化: battles 表加 p1_stars, p2_stars, winner_player_id, victory_type (migration 009)
+
+## 据点配置
+- 固定坐标: (3,3) + (6,6) —— 9x9 棋盘对角线
+- 占领范围: Chebyshev 距离 ≤2 (5x5 区域)
+- 判定规则: 范围内 alive 棋子数 p1 > p2 → 占领
+
+## 模块设计
+- `src/services/battleOutcomeService.ts` 新建 (~250 行)
+  - `applyKillStars`: preStepAliveMap 快照 + HGetAll 比对 + 累加
+  - `applyBaseStars`: 扫描 2 据点 + Chebyshev 判定 + 累加
+  - `checkWinCondition`: 读 stars:p1/p2 + 判定 win/draw/not_over
+  - `recordVictory`: DB UPDATE + finishSession + broadcast
+- `src/socket/battleStateBroadcaster.ts` 加 `broadcastBasesState` + `broadcastBattleEnd` + BoardStateEvent 加 p1Stars/p2Stars/bases
+
+## 触发流程
+- T051 executeEndStep 步骤 0: 读 preStepAliveMap 快照
+- T051 executeEndStep 步骤 12: applyKillStars + checkWinCondition + recordVictory (win/draw, source='kill')
+- T051 executeRoundEnd 步骤 6: applyBaseStars + checkWinCondition + recordVictory (win/draw, source='base')
+- `src/services/battleInitializationService.ts` 步骤 5.5 初始化 5 个 SET 键 (step 5+ 失败时一同 DEL)
+
+## WS 事件
+- 新增 `battle:state:bases` (server → both): 推据点占领变化
+- 新增 `battle:end` (server → both): 推战斗结束 (win/draw + winner + victoryType + p1/p2 stars)
+- 增量字段: `battle:state:board` 加 p1Stars / p2Stars / bases (前端无需订阅额外事件)
+
+## T056 整合
+- applyDamage 统一入口应包含「击杀 → applyKillStars 触发」链路
+- 真实 HP 扣减在 T056 实现后, 本任务的 preStepAliveMap 比对继续生效
+
+## 测试
+- `src/services/battleOutcomeService.test.ts`: 21 cases (5 constants + 5 applyKillStars + 5 applyBaseStars + 4 checkWinCondition + 4 recordVictory, 含 finishSession 失败 best-effort 路径)
+- `src/services/battleActionService.test.ts`: +5 cases (T052 wire-up, 2 executeEndStep + 3 executeRoundEnd)
+- `src/services/battleInitializationService.test.ts`: 11 cases 全部沿用, 无需新增 (5 SET 是 5+ 失败回滚的子集)
+- `src/socket/battleStateBroadcaster.test.ts`: 14 cases (7 T047 + 1 broadcastSessionState + 2 buildBoardState T052 字段 + 2 broadcastBasesState + 2 broadcastBattleEnd)
+
+---
+
+*文档版本：v1.37*
 *最后更新：2026-06-17*

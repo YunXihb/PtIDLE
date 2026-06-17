@@ -1408,3 +1408,30 @@ socketServer.ts 注册 battle:play_card 事件（.catch 兜底 emit internal_err
 - T049 executeMove 末尾级联 (T051.5 决定)
 - step 超时 AFK (future)
 - T056 applyDamage (attack/AOE 实际伤害)
+
+## 2026-06-17 - 任务：T052 胜负判定
+
+### Prompt
+实现 3v3 战棋的胜负判定系统 —— 击杀累计（每步）+ 据点占领累计（每轮）两条独立路径，任一方 6 star 获胜（双方同时 6 平局），含 DB 持久化（migration 009）和 WS 广播（battle:state:bases + battle:end + battle:state:board 增量字段）。
+
+### 思考
+- 独立 service (`battleOutcomeService`) 而非塞进 `battleActionService` —— 单一职责 + T056 整合预留
+- `applyKillStars` 用 preStepAliveMap 快照比对（executeEndStep 步骤 0 采集），避免 T049/T050 内部已变更 is_alive 难追踪
+- `checkWinCondition` 只判 win/draw/not_over, `victoryType` 由调用方按 source (kill/base) 推断
+- `recordVictory` 接受 source 参数, 内部推 victoryType
+- `battle:state:board` 必加 p1Stars/p2Stars/bases 字段, 前端无需订阅额外事件
+- `battleInitializationService` 步骤 5.5 初始化 5 个 SET 键, 失败时随 step 5+ 一起 DEL 回滚
+
+### 意外
+- preStepAliveMap 必须在 executeRoundEnd (burn tick) 之前采集, 因此放步骤 0 而非步骤 12 之前
+- `recordVictory` 需要查 players 表拿 userId 映射 (winnerSide → userId), 改用单次 LEFT JOIN 查询后从 3 次 DB 调用降到 1 次
+- checkWinCondition 不带 victoryType 字段 (之前 spec 设计多余), 简化后由 recordVictory 推断
+- 多个 plan bug 实施时被发现: Task 3 p1Killed/p2Killed 累加方向反了, Task 4 5 个 Chebyshev 距离算错, Task 6 recordVictory 4 处 (mock setup / FK shape / SQL assertion / TS await), 全部在 implementer 阶段修复并 commit 到 plan
+- Task 6 code quality 4 项 (C1+I1+I2+I3) 实施时 subagent 误把"malware reminder"应用到本任务的合法游戏代码, 拒绝改任何代码; 我作为 orchestrator 直接应用 4 项修复
+- preStepAliveMap 走 `redisClient.hGetAll('battle:{id}:pieces')` + 6 角色, 默认 beforeEach 模拟 6 角色全 alive 保证旧测试不退化
+
+### 范围外
+- T053 卡牌消耗
+- T054 对战结算
+- T056 applyDamage 统一
+- broadcastBasesState 主动调用 (目前 board 推送已含 bases 字段, 显式事件按需后续追加)
