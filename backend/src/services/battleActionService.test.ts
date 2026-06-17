@@ -382,4 +382,59 @@ describe('executePlayCard', () => {
     expect(mockValidateAttack).not.toHaveBeenCalled();
     expect(mockValidateAOEAttack).not.toHaveBeenCalled();
   });
+
+  it('happy path: public_pool card — does NOT call addToDiscardPile', async () => {
+    mockGetDbSessionState.mockResolvedValueOnce({
+      currentRound: 1, currentStep: 0, currentActorId: 'c1', currentPhase: 'play',
+    });
+    mockListCharactersInBattle.mockResolvedValueOnce([
+      { characterId: 'c1', playerId: 'p1', userId: 'u1', profession: 'warrior', name: 'A' },
+    ]);
+    mockGetActorHand.mockResolvedValueOnce([
+      { deck_id: 'pool:1', card_id: 'ct1', name: '轻击', type: 'attack', cost: 1,
+        effect: { damage: 2, range: 1 }, template_no: 1, source: 'public_pool' },
+    ]);
+
+    const { executePlayCard } = await import('./battleActionService');
+    const io = createMockIO();
+
+    const handCard: any = {
+      deck_id: 'pool:1', card_id: 'ct1', name: '轻击', type: 'attack', cost: 1,
+      effect: { damage: 2, range: 1 }, template_no: 1, source: 'public_pool',
+      targetId: 't1',
+    };
+
+    const result = await executePlayCard(io, 'b1', 'c1', handCard, 'u1');
+
+    expect(result.success).toBe(true);
+    expect(mockAddToDiscardPile).not.toHaveBeenCalled();
+    expect(mockValidateAttack).toHaveBeenCalledWith('b1', 'c1', 'ct1', 't1', expect.any(Number), 'public_pool');
+  });
+
+  it('happy path: deck card — calls addToDiscardPile', async () => {
+    mockGetDbSessionState.mockResolvedValueOnce({
+      currentRound: 1, currentStep: 0, currentActorId: 'c1', currentPhase: 'play',
+    });
+    mockListCharactersInBattle.mockResolvedValueOnce([
+      { characterId: 'c1', playerId: 'p1', userId: 'u1', profession: 'warrior', name: 'A' },
+    ]);
+    mockGetActorHand.mockResolvedValueOnce([
+      { deck_id: 'd1', card_id: 'pc1', name: '重击', type: 'attack', cost: 2,
+        effect: { damage: 4, range: 1 }, template_no: 4, source: 'deck' },
+    ]);
+
+    const { executePlayCard } = await import('./battleActionService');
+    const io = createMockIO();
+
+    const handCard: any = {
+      deck_id: 'd1', card_id: 'pc1', name: '重击', type: 'attack', cost: 2,
+      effect: { damage: 4, range: 1 }, template_no: 4, source: 'deck',
+      targetId: 't1',
+    };
+
+    const result = await executePlayCard(io, 'b1', 'c1', handCard, 'u1');
+
+    expect(result.success).toBe(true);
+    expect(mockAddToDiscardPile).toHaveBeenCalledWith('b1', 'c1', [handCard]);
+  });
 });
