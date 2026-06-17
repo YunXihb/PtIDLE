@@ -90,6 +90,16 @@ export async function initBattleField(io: IOServer, battleId: string): Promise<I
     const p2Ids = p2Chars.map(c => c.id);
     await battleSessionService.initializeSession(battleId, p1Ids, p2Ids);
 
+    // ── 步骤 5.5: ★ T052: 初始化胜利进度相关键 ────────────
+    await redisClient.set(`battle:${battleId}:stars:p1`, '0');
+    await redisClient.set(`battle:${battleId}:stars:p2`, '0');
+    await redisClient.set(`battle:${battleId}:alive_p1`, '3');
+    await redisClient.set(`battle:${battleId}:alive_p2`, '3');
+    await redisClient.set(
+      `battle:${battleId}:bases`,
+      JSON.stringify({ '3,3': 'neutral', '6,6': 'neutral' })
+    );
+
     // ── 步骤 6: 持久化 battles 行（pending → ongoing） ──────
     lastStep = 6;
     const order = battleSessionService.buildSnakeOrder(p1Ids, p2Ids);
@@ -142,6 +152,12 @@ export async function cleanupPartialInit(battleId: string, lastSuccessfulStep: n
     // 步骤 5+ 失败 → DEL session
     if (lastSuccessfulStep >= 5) {
       await redisClient.del(`battle:${battleId}:session`);
+      // ★ T052: 同时 DEL 胜利进度相关键
+      await redisClient.del(`battle:${battleId}:stars:p1`);
+      await redisClient.del(`battle:${battleId}:stars:p2`);
+      await redisClient.del(`battle:${battleId}:alive_p1`);
+      await redisClient.del(`battle:${battleId}:alive_p2`);
+      await redisClient.del(`battle:${battleId}:bases`);
     }
 
     // 步骤 4+ 失败 → DEL 6 个 hand/retained/discard
