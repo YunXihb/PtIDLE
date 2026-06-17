@@ -1349,3 +1349,14 @@ taunt validation_failed 测试初次失败 — 因为没 mock getActorHand，默
 ### 意外
 - Plan 给出 `c.type !== 'attack' && c.type !== 'tactical'` 会让 case 3 defense 卡在 handler 层被拒，service 永远收不到 defense 卡 → mockExecutePlayCard 调用次数为 0。修正：validator 改为允许 attack/defense/tactical 全部 type；业务 type dispatch 完全交给 service 层 (executePlayCard) 负责，handler 只做 shape 校验。
 - HandCard 接口不包含 targetId 字段（service 内部 cast as HandCard & { targetId? }），所以验证函数若重建对象会丢失 targetId → service 端攻击 validateAttack 拿不到 targetId 会运行时崩。修正：validator 直接 cast 透传原对象，类型签名返回 `HandCard & Record<string, unknown>`。
+
+## 2026-06-17 - 任务：T050 Task 9 - socketServer 注册 battle:play_card
+
+### Prompt
+socketServer.ts 注册 battle:play_card 事件（.catch 兜底 emit internal_error）；socketServer.test.ts 顶部 mock 补 handleBattlePlayCard + executePlayCard。
+
+### 思考
+薄壳 handler 在 Task 8 已实现，Task 9 只做事件绑定 + 测试 mock 补全。错误兜底用 .catch 防止 service 异常未处理导致 ws 连接泄漏——与现有 battle:move 模式一致。
+
+### 意外
+尝试加 `jest.mock('./battleRoom', () => { const actual = jest.requireActual(...); return { ...actual, handleBattlePlayCard: jest.fn() }; })` 时，即便用 requireActual 透传，jest 模块缓存与 redisClient 单例状态在 mock 工厂内被 re-instantiate，导致 T047 测试里 broadcastFullState 抛 `userRoom is not a function` 与 `redis ClientClosedError`。最终选择不加 battleRoom 顶层 mock，只在 battleActionService mock 里补 `executePlayCard: jest.fn()`——socketServer.test.ts 不发 battle:play_card 事件，所以底层 handler 不会被调到；未来需要 spy 时再通过 jest.spyOn(battleRoom, 'handleBattlePlayCard') 在 beforeEach 局部替换，避免 jest.mock 的模块重建副作用。
