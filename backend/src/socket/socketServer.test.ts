@@ -19,6 +19,7 @@ jest.mock('../services/handService', () => ({
 jest.mock('../services/battleActionService', () => ({
   executeMove: jest.fn(),
   executePlayCard: jest.fn(),
+  executeEndStep: jest.fn(),
 }));
 
 jest.mock('../config/database', () => ({

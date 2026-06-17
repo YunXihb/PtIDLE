@@ -1,6 +1,6 @@
 import { Server as IOServer, Socket } from 'socket.io';
 import { verifyClientToken } from './authMiddleware';
-import { handleBattleJoin, handleBattleMove, handleBattlePlayCard, broadcastOpponentDisconnected, userRoom } from './battleRoom';
+import { handleBattleJoin, handleBattleMove, handleBattlePlayCard, handleBattleSkipPlay, broadcastOpponentDisconnected, userRoom } from './battleRoom';
 
 /**
  * T045 + T046 Socket.io 入口
@@ -72,6 +72,15 @@ export function initializeSocketServer(io: IOServer): void {
       handleBattlePlayCard(io, socket, payload).catch((err) => {
         console.error(`[WS] battle:play_card error: userId=${userId}`, err);
         socket.emit('battle:play_card:error', { error: 'internal_error' });
+      });
+    });
+
+    // T051: 跳过出牌（回合切换）
+    socket.on('battle:skip_play', (payload) => {
+      const userId = (socket.data as { userId?: string }).userId;
+      handleBattleSkipPlay(io, socket, payload).catch((err) => {
+        console.error(`[WS] battle:skip_play error: userId=${userId}`, err);
+        socket.emit('battle:skip_play:error', { error: 'internal_error' });
       });
     });
 
