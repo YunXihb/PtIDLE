@@ -1293,3 +1293,59 @@ Task 2 已实现 dispatch 逻辑，Task 3 只补测试。需要 mockResolvedValu
 
 ### 意外
 无
+
+## 2026-06-17 - 任务：T050 Task 4 - public_pool/deck source 弃牌堆行为测试
+
+### Prompt
+添加 2 个 happy-path 测试：source='public_pool' 时不调 addToDiscardPile；source='deck' 时调 addToDiscardPile([handCard])。
+
+### 思考
+Plan 示例代码省略了 mockResolvedValueOnce overrides，但 T049 defaults 的 phase 是 move 而非 play，hand 默认 deck_id='d1'，所以必须 override 否则 phase/hand 校验失败。沿用 Task 2/3 的 mock 覆盖模式。
+
+### 意外
+- HandCard 类型不包含 targetId 字段，所以 mockResolvedValueOnce 数组里的 targetId 会导致 TS2353 编译错误。修复方法：仅在 handCard 参数（cast as any）里保留 targetId，mockResolvedValueOnce 数组里删除 targetId，遵循 Task 3 的 tactical-taunt 模板
+
+## 2026-06-17 - 任务：T050 Task 5 - phase/actor/owner 错误分支测试
+
+### Prompt
+添加 3 个 error case 测试：currentPhase !== 'play' → not_in_play_phase；currentActorId mismatch → not_current_actor；userId mismatch → not_owner。验证早期 return 不进入副作用阶段。
+
+### 思考
+Task 2 已实现三段验证（phase → actor → owner），Task 5 只补测试覆盖。not_owner 测试需要先 mock 掉 session 让前两关通过才能触发 owner 校验。
+
+### 意外
+无
+
+## 2026-06-17 - 任务：T050 Task 6 - hand/type/validation 错误分支测试
+
+### Prompt
+添加 8 个 error case 测试：card_not_in_hand（hand 里找不到 deck_id）；unsupported_card_type（defense / tactical+effect.type='smoke'）；validation_failed 4 种 validateAttack 错误（card not found / energy / range / friendly）+ 1 种 validateTauntCard 错误（taunt range）。
+
+### 思考
+所有 error 测试都需要先 mock 掉前 4 关（phase/actor/owner/hand 归属）才能到达目标错误分支。沿用 Task 5 的 mockResolvedValueOnce 模式覆盖 session + characters。
+
+### 意外
+taunt validation_failed 测试初次失败 — 因为没 mock getActorHand，默认 hand 不含 d3 → 提前命中 card_not_in_hand。补 hand override 后通过。
+
+## 2026-06-17 - 任务：T050 Task 7 - post-validate 副作用失败错误分支测试
+
+### Prompt
+添加 2 个 error case 测试：setCharacterEnergy throws → energy_deduct_failed；lRem throws → side_effect_failed。验证 try/catch 包装的副作用失败能正确转为失败结果，后续步骤未触发。
+
+### 思考
+需要在测试顶部 mock 掉前 4 关（phase/actor/owner/hand）才能到达第 7-9 步的副作用。lRem mock 在 Task 1 已设置，Task 7 用 mockRejectedValueOnce override。
+
+### 意外
+无
+
+## 2026-06-17 - 任务：T050 Task 8 - handleBattlePlayCard handler
+
+### Prompt
+在 battleRoom.ts 追加 handleBattlePlayCard 薄壳（payload 验证 → executePlayCard → 失败 emit battle:play_card:error）和 validatePlayCardPayload helper；battleRoom.test.ts 追加 5 个测试覆盖 happy path / invalid payload / unsupported / validation_failed / thrown error。
+
+### 思考
+薄壳 handler 不做业务逻辑，所有 7 项业务规则在 executePlayCard（Tasks 1-7 已实现）已校验。Handler 只做 payload shape 校验（防 malformed message）和转发 result 给客户端。成功路径不 emit，依赖 broadcaster 推 hand/character/board——与 T049 handleBattleMove 对称。
+
+### 意外
+- Plan 给出 `c.type !== 'attack' && c.type !== 'tactical'` 会让 case 3 defense 卡在 handler 层被拒，service 永远收不到 defense 卡 → mockExecutePlayCard 调用次数为 0。修正：validator 改为允许 attack/defense/tactical 全部 type；业务 type dispatch 完全交给 service 层 (executePlayCard) 负责，handler 只做 shape 校验。
+- HandCard 接口不包含 targetId 字段（service 内部 cast as HandCard & { targetId? }），所以验证函数若重建对象会丢失 targetId → service 端攻击 validateAttack 拿不到 targetId 会运行时崩。修正：validator 直接 cast 透传原对象，类型签名返回 `HandCard & Record<string, unknown>`。
