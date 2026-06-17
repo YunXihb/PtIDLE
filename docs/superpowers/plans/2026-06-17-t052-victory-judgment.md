@@ -402,7 +402,10 @@ describe('applyKillStars', () => {
       if (key === 'battle:b1:stars:p2') return '0';
       return null;
     });
-    mockIncrBy.mockResolvedValue(1);
+    mockIncrBy.mockImplementation(async (_key: string, increment: number) => increment);
+    // 注：mockResolvedValue(1) 会让所有 inc 返 1，与真实 INCRBY 行为不符。
+    // 多击杀场景下 p1StarsAfter 需要等于增量值，所以必须用 mockImplementation
+    // 模拟真实 INCRBY：返回「调用时的 increment 参数」作为新值。
     mockExecuteDb.mockResolvedValue({ rowCount: 1 });
   });
 
@@ -572,11 +575,16 @@ export async function applyKillStars(
   }
 
   // 读其他方 stars (若无累加)
-  if (p1Killed === 0) {
+  // 注：p1 是否拿到击杀增星取决于 p2Killed（p2 死 = p1 击杀）。
+  //   - p2Killed === 0 → p1 本步无击杀，需要从 Redis 读 p1 当前 stars
+  //   - p1Killed === 0  → p2 本步无击杀，需要从 Redis 读 p2 当前 stars
+  // 注意：不能用 `p1Killed === 0` 来决定是否读 p1 stars — p1Killed 表示「p1 棋子被击杀数」，
+  //       与 p1 是否拿到 star 无关。原计划 v1 这里有 bug，已修正。
+  if (p2Killed === 0) {
     const v = await redisClient.get(starsKey(battleId, 'p1'));
     p1StarsAfter = v === null ? 0 : parseInt(v, 10);
   }
-  if (p2Killed === 0) {
+  if (p1Killed === 0) {
     const v = await redisClient.get(starsKey(battleId, 'p2'));
     p2StarsAfter = v === null ? 0 : parseInt(v, 10);
   }
@@ -713,7 +721,10 @@ describe('applyBaseStars', () => {
       if (key === 'battle:b1:stars:p2') return '0';
       return null;
     });
-    mockIncrBy.mockResolvedValue(1);
+    mockIncrBy.mockImplementation(async (_key: string, increment: number) => increment);
+    // 注：mockResolvedValue(1) 会让所有 inc 返 1，与真实 INCRBY 行为不符。
+    // 多击杀场景下 p1StarsAfter 需要等于增量值，所以必须用 mockImplementation
+    // 模拟真实 INCRBY：返回「调用时的 increment 参数」作为新值。
     mockExecuteDb.mockResolvedValue({ rowCount: 1 });
   });
 
