@@ -170,12 +170,117 @@ export type PlayCardResult =
  * 依赖服务（getDbSessionState 等）抛错 → 向上抛（异常路径）。
  */
 export async function executePlayCard(
-  _io: IOServer,
-  _battleId: string,
-  _characterId: string,
-  _handCard: HandCard,
-  _userId: string
+  io: IOServer,
+  battleId: string,
+  characterId: string,
+  handCard: HandCard,
+  userId: string
 ): Promise<PlayCardResult> {
-  // TODO(T050 Task 2/3/4/5/6/7): 实现
-  return { success: false, error: 'not_in_play_phase' };
+  // 1. 读 session
+  const session = await getDbSessionState(battleId);
+  if (!session) {
+    throw new Error(`executePlayCard: session not found: ${battleId}`);
+  }
+
+  // 2. phase check
+  if (session.currentPhase !== 'play') {
+    return { success: false, error: 'not_in_play_phase' };
+  }
+
+  // 3. actor match
+  if (session.currentActorId !== characterId) {
+    return { success: false, error: 'not_current_actor' };
+  }
+
+  // 4. user 拥有此 character
+  const characters = await listCharactersInBattle(battleId);
+  const character = characters.find((c) => c.characterId === characterId);
+  if (!character || character.userId !== userId) {
+    return { success: false, error: 'not_owner' };
+  }
+
+  // 5. 手牌归属校验
+  const hand = await getActorHand(battleId, characterId);
+  if (!hand.some((c) => c.deck_id === handCard.deck_id)) {
+    return { success: false, error: 'card_not_in_hand' };
+  }
+
+  // 6. card.type dispatch
+  let validation: AttackValidationResult;
+  if (handCard.type === 'attack' && (handCard.effect as { aoe?: boolean })?.aoe) {
+    validation = await validateAOEAttack(battleId, characterId, handCard.card_id, handCard.source);
+  } else if (handCard.type === 'attack') {
+    validation = await validateAttack(
+      battleId,
+      characterId,
+      handCard.card_id,
+      (handCard as HandCard & { targetId?: string }).targetId!,
+      session.currentRound,
+      handCard.source
+    );
+  } else if (
+    handCard.type === 'tactical' &&
+    (handCard.effect as { type?: string })?.type === 'taunt'
+  ) {
+    validation = await validateTauntCard(
+      battleId,
+      characterId,
+      handCard.card_id,
+      (handCard as HandCard & { targetId?: string }).targetId!,
+      session.currentRound
+    );
+  } else {
+    return {
+      success: false,
+      error: 'unsupported_card_type',
+      detail: `card type '${handCard.type}' effect '${(handCard.effect as { type?: string })?.type ?? 'unknown'}' not supported in T050`,
+    };
+  }
+
+  if (!validation.valid) {
+    return { success: false, error: 'validation_failed', detail: validation.error };
+  }
+
+  // 7. 副作用：扣能量（读 pieces HASH → setCharacterEnergy）
+  let currentEnergy = 0;
+  try {
+    const pieceRaw = await redisClient.hGet(`battle:${battleId}:pieces`, characterId);
+    if (pieceRaw) {
+      currentEnergy = JSON.parse(pieceRaw).energy ?? 0;
+    }
+  } catch (err) {
+    return { success: false, error: 'energy_deduct_failed', detail: (err as Error).message };
+  }
+
+  try {
+    await setCharacterEnergy(battleId, characterId, currentEnergy - (validation.energyCost ?? 0));
+  } catch (err) {
+    return { success: false, error: 'energy_deduct_failed', detail: (err as Error).message };
+  }
+
+  // 8. 删手牌
+  try {
+    await redisClient.lRem(`battle:${battleId}:hand:${characterId}`, 1, JSON.stringify(handCard));
+  } catch (err) {
+    return { success: false, error: 'side_effect_failed', detail: (err as Error).message };
+  }
+
+  // 9. 入弃牌堆（仅 deck 来源）
+  try {
+    if (handCard.source === 'deck') {
+      await addToDiscardPile(battleId, characterId, [handCard]);
+    }
+  } catch (err) {
+    return { success: false, error: 'side_effect_failed', detail: (err as Error).message };
+  }
+
+  // 10. 广播
+  await broadcastHandState(io, battleId, userId, characterId);
+  await broadcastCharacterStatus(io, battleId, characterId);
+
+  // 11. 阶段推进 + 整盘广播
+  await completePlayPhase(battleId);
+  await broadcastBoardState(io, battleId);
+
+  return { success: true, validation };
 }

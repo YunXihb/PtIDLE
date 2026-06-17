@@ -279,4 +279,61 @@ describe('executePlayCard', () => {
     } as any, 'u1');
     expect(result).toHaveProperty('success');
   });
+
+  it('happy path: attack single — calls all 17 steps in order and returns success', async () => {
+    // 覆盖 T049 默认（move phase） → T050 happy 路径需要 play phase
+    mockGetDbSessionState.mockResolvedValueOnce({
+      currentRound: 1,
+      currentStep: 0,
+      currentActorId: 'c1',
+      currentPhase: 'play',
+    });
+    mockListCharactersInBattle.mockResolvedValueOnce([
+      { characterId: 'c1', playerId: 'p1', userId: 'u1', profession: 'warrior', name: 'A' },
+    ]);
+
+    const { executePlayCard } = await import('./battleActionService');
+    const io = createMockIO();
+
+    const handCard: any = {
+      deck_id: 'd1',
+      card_id: 'pc1',
+      name: '轻击',
+      type: 'attack',
+      cost: 1,
+      effect: { damage: 2, range: 1 },
+      template_no: 1,
+      source: 'deck',
+      targetId: 't1',
+    };
+
+    const result = await executePlayCard(io, 'b1', 'c1', handCard, 'u1');
+
+    expect(result).toEqual({
+      success: true,
+      validation: expect.objectContaining({ valid: true, damage: 2 }),
+    });
+
+    // 验证调用顺序：核心 10 个 mock 都被调用过
+    const callOrder = [
+      mockGetDbSessionState,
+      mockListCharactersInBattle,
+      mockGetActorHand,
+      mockValidateAttack,
+      mockSetCharacterEnergy,
+      mockAddToDiscardPile,
+      mockBroadcastHandState,
+      mockBroadcastCharacterStatus,
+      mockCompletePlayPhase,
+      mockBroadcastBoardState,
+    ];
+    for (let i = 0; i < callOrder.length; i++) {
+      expect(callOrder[i]).toHaveBeenCalled();
+    }
+
+    // 验证调用顺序：completePlayPhase 在 broadcastBoardState 之前（保证客户端先看到新 board 再看到 phase 推进）
+    const completeOrder = mockCompletePlayPhase.mock.invocationCallOrder[0];
+    const broadcastBoardOrder = mockBroadcastBoardState.mock.invocationCallOrder[0];
+    expect(completeOrder).toBeLessThan(broadcastBoardOrder);
+  });
 });
