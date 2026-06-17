@@ -160,8 +160,8 @@ export type StarSource = 'kill' | 'base';
 export type BasesState = Record<string, BaseOwner>;
 
 export interface KillStarDelta {
-  p1Delta: number; // 本步 p1 击杀数（>0 时给 p2 +1 star/次）
-  p2Delta: number; // 本步 p2 击杀数（>0 时给 p1 +1 star/次）
+  p1Delta: number; // 本步 p1 stars 增量（p1 击杀对方 N 棋 → +N）
+  p2Delta: number; // 本步 p2 stars 增量（p2 击杀对方 N 棋 → +N）
   p1StarsAfter: number;
   p2StarsAfter: number;
 }
@@ -175,7 +175,7 @@ export interface BaseStarDelta {
 }
 
 export type WinCheckResult =
-  | { status: 'win'; winnerSide: Side; victoryType: VictoryType; p1Stars: number; p2Stars: number }
+  | { status: 'win'; winnerSide: Side; p1Stars: number; p2Stars: number }
   | { status: 'draw'; p1Stars: number; p2Stars: number }
   | { status: 'not_over'; p1Stars: number; p2Stars: number };
 
@@ -407,7 +407,7 @@ describe('applyKillStars', () => {
   });
 
   it('1 kill: p1 杀 1 个 p2 棋子 → p1StarsAfter=1', async () => {
-    // 1 个 p2 棋子 (c4) 死亡
+    // 1 个 p2 棋子 (c4) 死亡 → p1 击杀方，p1 +1 star
     mockHGetAll.mockResolvedValue({
       c1: JSON.stringify({ is_alive: true }),
       c2: JSON.stringify({ is_alive: true }),
@@ -420,11 +420,11 @@ describe('applyKillStars', () => {
 
     const result = await applyKillStars('b1', preMap);
 
-    expect(result.p1Delta).toBe(0);
-    expect(result.p2Delta).toBe(1); // p1 杀 1 个 p2 → p2 累 +1
-    expect(result.p1StarsAfter).toBe(0);
-    expect(result.p2StarsAfter).toBe(1);
-    expect(mockIncrBy).toHaveBeenCalledWith('battle:b1:stars:p2', 1);
+    expect(result.p1Delta).toBe(1); // p1 杀 1 个 p2 → p1 stars +1
+    expect(result.p2Delta).toBe(0);
+    expect(result.p1StarsAfter).toBe(1);
+    expect(result.p2StarsAfter).toBe(0);
+    expect(mockIncrBy).toHaveBeenCalledWith('battle:b1:stars:p1', 1);
   });
 
   it('0 kill: is_alive 不变 → 0 delta', async () => {
@@ -440,7 +440,7 @@ describe('applyKillStars', () => {
     expect(mockIncrBy).not.toHaveBeenCalled();
   });
 
-  it('multi kill: AOE 杀 2 个 → p2StarsAfter=2', async () => {
+  it('multi kill: p1 AOE 杀 2 个 p2 棋子 → p1StarsAfter=2', async () => {
     mockHGetAll.mockResolvedValue({
       c1: JSON.stringify({ is_alive: true }),
       c2: JSON.stringify({ is_alive: true }),
@@ -453,13 +453,14 @@ describe('applyKillStars', () => {
 
     const result = await applyKillStars('b1', preMap);
 
-    expect(result.p2Delta).toBe(2);
-    expect(result.p2StarsAfter).toBe(2);
-    expect(mockIncrBy).toHaveBeenCalledWith('battle:b1:stars:p2', 2);
+    expect(result.p1Delta).toBe(2); // p1 杀 2 个 p2 → p1 stars +2
+    expect(result.p2Delta).toBe(0);
+    expect(result.p1StarsAfter).toBe(2);
+    expect(mockIncrBy).toHaveBeenCalledWith('battle:b1:stars:p1', 2);
   });
 
-  it('burn kill: p2 棋子 burn tick 死亡 → 算 p2 death (p1 杀, 计入击杀)', async () => {
-    // c4 在本步 burn tick 死亡 → preMap c4=true, 现在 c4=false → p2 death
+  it('burn kill: p2 棋子 burn tick 死亡 → p1 杀 (计入击杀)', async () => {
+    // c4 在本步 burn tick 死亡 → preMap c4=true, 现在 c4=false → p1 击杀
     mockHGetAll.mockResolvedValue({
       c1: JSON.stringify({ is_alive: true }),
       c2: JSON.stringify({ is_alive: true }),
@@ -472,8 +473,8 @@ describe('applyKillStars', () => {
 
     const result = await applyKillStars('b1', preMap);
 
-    expect(result.p2Delta).toBe(1);
-    expect(result.p2StarsAfter).toBe(1);
+    expect(result.p1Delta).toBe(1); // p1 杀 (burn 致 p2 死) → p1 +1
+    expect(result.p1StarsAfter).toBe(1);
   });
 
   it('finished short-circuit: session.phase=finished → return 0 delta', async () => {
@@ -539,8 +540,8 @@ export async function applyKillStars(
   const piecesRaw = await redisClient.hGetAll(piecesKey(battleId));
 
   // 3. 找本步新增死亡
-  let p1Killed = 0; // p1 棋子死亡数
-  let p2Killed = 0;
+  let p1Killed = 0; // p1 棋子死亡数（p2 击杀敌数）
+  let p2Killed = 0; // p2 棋子死亡数（p1 击杀敌数）
   for (const c of characters) {
     const wasAlive = preStepAliveMap[c.characterId] === true;
     const curRaw = piecesRaw[c.characterId];
@@ -555,16 +556,16 @@ export async function applyKillStars(
   }
 
   // 4-5. 累加 star + 同步 DB
+  //   p2Killed 个 p2 棋死 → p1 (击杀方) +p2Killed star
+  //   p1Killed 个 p1 棋死 → p2 (击杀方) +p1Killed star
   let p1StarsAfter = 0;
   let p2StarsAfter = 0;
   if (p2Killed > 0) {
-    // p1 杀敌 → p1 +p2Killed
     const r = await persistStars(battleId, 'p1', p2Killed);
     p1StarsAfter = r.newStars;
     await decrementAlive(battleId, 'p2');
   }
   if (p1Killed > 0) {
-    // p2 杀敌 → p2 +p1Killed
     const r = await persistStars(battleId, 'p2', p1Killed);
     p2StarsAfter = r.newStars;
     await decrementAlive(battleId, 'p1');
@@ -581,8 +582,8 @@ export async function applyKillStars(
   }
 
   return {
-    p1Delta: p1Killed > 0 ? p1Killed : 0, // p1 杀敌数（实为 p2 死 N 个）
-    p2Delta: p2Killed > 0 ? p2Killed : 0, // p2 杀敌数（实为 p1 死 N 个）
+    p1Delta: p2Killed, // p1 stars 增量 = p2Killed（p1 击杀敌数）
+    p2Delta: p1Killed, // p2 stars 增量 = p1Killed（p2 击杀敌数）
     p1StarsAfter,
     p2StarsAfter,
   };
