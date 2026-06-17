@@ -1435,3 +1435,42 @@ socketServer.ts 注册 battle:play_card 事件（.catch 兜底 emit internal_err
 - T054 对战结算
 - T056 applyDamage 统一
 - broadcastBasesState 主动调用 (目前 board 推送已含 bases 字段, 显式事件按需后续追加)
+
+## 2026-06-18 - 任务：T052 收尾 + 集成测试基础设施补齐
+
+### Prompt
+T052 推送后跑全量 `npx jest`, 7 个 pre-existing 失败 (5 authController + 2 socketServer), 需要让全量测试基线 = 全绿。
+
+### 思考
+- 失败分两类: 5 个 500 (DB 连不上) + 2 个 timeout (Redis client closed) —— 都是基础设施问题, 不是代码 bug
+- 根因 1: 本机没起 PostgreSQL (5433) + Redis (6379) 服务, `docker compose up -d` 即可
+- 根因 2: `socketServer.test.ts` 用真实 socket.io server, 但没在 beforeAll 连 Redis, 导致 `tryInitBattleField` + `broadcastFullState` 调 `redisClient.set/get` 时拿到已关闭的单例
+- Redis 单例是跨 test file 共享的, 不能简单 `beforeAll connect / afterAll disconnect` —— `disconnectRedis()` 会让后续 test file 抛 ClientClosedError
+- 解决: 用 `redisClient.isOpen` 做幂等包装, beforeAll 只在没连时连; afterAll 不 disconnect
+
+### 意外
+- `docker compose` (v2 语法) 才能用, 旧版 `docker-compose` (v1) 在 WSL2 没装
+- `connectRedis()` 第二次调用会抛 `Redis already connected` —— 必须用 `redisClient.isOpen` 判
+- 跑全量时 `socketServer.test.ts` 偶尔有 1 个 `connect timeout` flake (multi-client 同一 battle 场景), 但不固定到同一 case, 不是代码缺陷而是 socket.io 测试固有的端口/客户端残留状态问题; 3 次连跑都全绿, 不视为阻塞
+- authController 失败 5 个全是一个原因: 测试文件已写好, 容器没起; 起容器就全通, 无需改测试代码
+
+### 修复
+- 启动服务: `cd /home/lovept/PtIDLE && docker compose up -d`
+- 改 `backend/src/socket/socketServer.test.ts`:
+  - import `connectRedis` from `../config/redis`
+  - `beforeAll`: 幂等 connect (`!redisClient.isOpen` 才连)
+  - `afterAll`: 不调 `disconnectRedis()` —— 注释解释单例共享
+- 改 `memory-bank/architecture.md`:
+  - Docker 配置 章节展开 (启动命令、端口映射、容器名、验证步骤、集成测试前置)
+  - 集成测试 Mock 模式 章节拆成 3 个模式: A 完全 mock / B 真实 Redis (socket) / C 真实 DB (HTTP)
+  - 加 2026-06-18 全量基线段落
+  - 版本 v1.37 → v1.38
+- 改 `memory-bank/progress.md`: 加 「测试基线」 完成行 + 「问题与解决」表加 2026-06-18 条目
+
+### 验证
+- 连续 3 次 `npx jest --forceExit` 跑出 `Tests: 620 passed, 620 total`
+- commit `b906131` (fix(test): socketServer.test.ts connect redis before all + async listen) 已 push origin/master
+
+### 范围外
+- socket.io 测试多客户端断连 flake 的根治 (T056 之后做整合测试时再研究)
+- 把 docker compose 改成开发期自动启动 (比如 `npm run dev:up` 脚本) — 后续 devx 优化任务

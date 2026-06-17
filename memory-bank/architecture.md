@@ -83,6 +83,49 @@ backend/
 |------|------|
 | `docker-compose.yml` | PostgreSQL + Redis 容器编排 |
 
+### 启动开发环境依赖
+
+集成测试需要真实的 PostgreSQL + Redis 服务在跑。`docker-compose.yml` 启动两个容器：
+
+```bash
+# 在仓库根目录执行
+docker compose up -d
+```
+
+启动后端口映射：
+
+| 容器 | 容器端口 | 宿主机端口 | `.env` 对应字段 |
+|------|----------|------------|-----------------|
+| `ptidle-postgres-1` (postgres:16) | 5432 | **5433** | `DB_HOST=localhost` + `DB_PORT=5433` |
+| `ptidle-redis-1` (redis:7-alpine) | 6379 | **6379** | `REDIS_HOST=localhost` + `REDIS_PORT=6379` |
+
+容器名、镜像版本、PostgreSQL 凭据（`postgres/your_password`、DB 名 `ptidle`）都在 `docker-compose.yml` 里固定。
+
+### 验证服务在线
+
+```bash
+# Postgres
+docker exec -it ptidle-postgres-1 psql -U postgres -d ptidle -c '\dt'
+
+# Redis
+docker exec -it ptidle-redis-1 redis-cli ping   # PONG
+```
+
+### 集成测试前置条件
+
+跑全量 `npx jest` 之前必须先 `docker compose up -d`，否则：
+- `authController.test.ts` 等路由集成测试报 `connect ECONNREFUSED 127.0.0.1:5433`
+- `socketServer.test.ts` 等 socket 集成测试报 `ClientClosedError: The client is closed`（虽然也能用 `connectRedis()` 救，但 DB 不可用）
+
+完整流程：
+
+```bash
+docker compose up -d
+cd backend
+npx jest --forceExit
+docker compose down   # 收工时关容器
+```
+
 ## 当前状态
 
 - T001, T002 已完成：项目初始化 + TypeScript + ESLint 配置
@@ -855,7 +898,11 @@ interface HandCard {
 
 `src/config/redis.ts:8` 的 `redisClient` 是 `createClient()` 创建但**未调用 `.connect()`** 的单例。集成测试若不 mock 该模块且不显式调用 `connectRedis()`，任何 Redis 命令都会抛 `ClientClosedError: The client is closed`。
 
-### Mock 约定
+### 三种适用模式
+
+#### 模式 A：完全 mock（最常用）
+
+适用：业务逻辑复杂、Redis 调用多、但本测试只关注路由/HTTP 行为。
 
 集成测试应在所有 imports 之前添加：
 
@@ -877,14 +924,58 @@ jest.mock('../config/redis', () => ({
 
 `jest.fn()` 默认返回 `undefined`，对 `await redisClient.zAdd(...)` 这类 void 操作足够。当 `idleQueueService` 引入新方法时，需同步加进 mock 对象。
 
-### 适用范围
+适用范围：✅ `src/routes/gathering.integration.test.ts`（2026-06-10 修复）、`src/routes/matchmaking.integration.test.ts`、`src/socket/battleRoom.test.ts`、`src/socket/battleRoom.integration.test.ts`
 
-- ✅ `src/routes/gathering.integration.test.ts`（2026-06-10 修复）
-- 触发 `idleQueueService` 或 `battleService` Redis 调用的集成测试都应遵循此约定
+#### 模式 B：用真实 Redis（socket 集成测试）
+
+适用：`socketServer.test.ts` 这类需要真实 socket.io + Redis 状态广播链路联调的测试。
+
+前置：`docker compose up -d`（Redis 容器在 6379 端口跑着）。
+
+测试代码模板：
+
+```ts
+import { connectRedis } from '../config/redis';
+
+beforeAll(async () => {
+  // 幂等: 另一个测试文件可能已经连过, 此时 isOpen=true, 跳过
+  const { redisClient } = await import('../config/redis');
+  if (!redisClient.isOpen) {
+    await connectRedis();
+  }
+  // ...启动 httpServer / io
+});
+
+afterAll(async () => {
+  await io.close();
+  await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+  // ⚠️ 不要 disconnectRedis() — redisClient 是单例, 被其他测试文件共享,
+  //    关闭它会让后续 test file 全部抛 ClientClosedError
+});
+```
+
+适用范围：✅ `src/socket/socketServer.test.ts`（2026-06-18 修复）
+
+#### 模式 C：用真实 PostgreSQL（HTTP 集成测试）
+
+适用：`authController.test.ts` 这类需要真实 DB 写入/查询的路由测试。
+
+前置：`docker compose up -d`（PostgreSQL 容器在 5433 端口跑着）。
+
+测试代码无需特殊 setup，直接 import + supertest 即可。容器就绪后 `npx jest src/controllers/authController.test.ts` 全通（15/15）。
+
+适用范围：✅ `src/controllers/authController.test.ts`、`src/routes/{auth,player,characters,processing,cards,crafting,warehouse,professions,skills}*.integration.test.ts`、`src/routes/e2e.test.ts`
 
 ### T035/T036 history 误读澄清
 
 T035/T036 history 提到「集成测试 8 个失败」是 PostgreSQL 5433 / Redis 6379 端口未启动的**基线连接错误**。环境拉起后，DB 相关全通；Redis 相关暴露真实缺陷——即上文单例未连接问题，**已修复**。
+
+### 2026-06-18 全量集成测试基线
+
+修复后 36 个 test suite，620 个 test 全部通过（连续 3 次 `npx jest --forceExit` 全绿）。基础设施：
+- `ptidle-postgres-1` + `ptidle-redis-1` 通过 `docker compose up -d` 启动
+- `socketServer.test.ts` 用模式 B（真实 Redis + 幂等 connect）
+- 其他所有集成测试用模式 A（mock）或模式 C（真实 DB）
 
 ---
 
@@ -2000,5 +2091,5 @@ T051 实现回合切换 orchestrator, 在 T050 出牌后自动级联, 客户端�
 
 ---
 
-*文档版本：v1.37*
-*最后更新：2026-06-17*
+*文档版本：v1.38*
+*最后更新：2026-06-18*
