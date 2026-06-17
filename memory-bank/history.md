@@ -1360,3 +1360,17 @@ socketServer.ts 注册 battle:play_card 事件（.catch 兜底 emit internal_err
 
 ### 意外
 尝试加 `jest.mock('./battleRoom', () => { const actual = jest.requireActual(...); return { ...actual, handleBattlePlayCard: jest.fn() }; })` 时，即便用 requireActual 透传，jest 模块缓存与 redisClient 单例状态在 mock 工厂内被 re-instantiate，导致 T047 测试里 broadcastFullState 抛 `userRoom is not a function` 与 `redis ClientClosedError`。最终选择不加 battleRoom 顶层 mock，只在 battleActionService mock 里补 `executePlayCard: jest.fn()`——socketServer.test.ts 不发 battle:play_card 事件，所以底层 handler 不会被调到；未来需要 spy 时再通过 jest.spyOn(battleRoom, 'handleBattlePlayCard') 在 beforeEach 局部替换，避免 jest.mock 的模块重建副作用。
+
+## 2026-06-17 - 任务：T050 打牌操作同步
+
+### Prompt
+实现 T050 打牌操作同步：玩家发 battle:play_card 事件，服务端验证手牌归属、dispatch 到 validateAttack/validateAOEAttack/validateTauntCard、写状态效果、扣能量、删手牌、入弃牌堆（deck 来源）、广播、推进 phase play→end_step。本任务不实际扣 HP（T056 负责）。
+
+### 思考
+17 步流水（5 验证 + 3 validate 派发 + 5 副作用 + 4 广播/阶段推进）。handler 薄壳做 payload 验证 + emit 错误。dispatch 按 handCard.type + effect.aoe/type 复合判断。validate 内部已写 shield/boost/mark/burn 状态效果，「生产 vs 应用」分离。能量扣减在 validate 之后（生产 vs 应用分离）。T050 阶段 HP 不变是预期中，T056 接入后才是完整伤害。
+
+### 意外
+- Task 8 implementer 把 `validatePlayCardPayload` 从「只允许 attack/tactical」放宽到允许 attack/defense/tactical 全部 type 通过：原 plan 写法 `c.type !== 'attack' && c.type !== 'tactical'` 会让 defense 卡在 handler 层就被拒，service 收不到 defense 卡 → mockExecutePlayCard 调用次数为 0。最终让 handler 只做 shape 校验，业务 type dispatch 完全交给 executePlayCard 负责。
+- 同 Task 8：`HandCard` 接口不包含 `targetId` 字段（service 内部 cast as `HandCard & { targetId? }`），validator 重建对象会丢 targetId → service 端 `validateAttack` 拿不到 targetId 运行时崩。修正 validator 直接 cast 透传原对象，类型签名返回 `HandCard & Record<string, unknown>`。
+- Task 9 implementer 跳过加 `jest.mock('./battleRoom', ...)`，因为 `requireActual` 透传下 jest 模块缓存与 redisClient 单例状态在 mock 工厂内被 re-instantiate，导致 T047 测试 `broadcastFullState` 抛 `userRoom is not a function` 与 `redis ClientClosedError`。最终在 `battleActionService` mock 里补 `executePlayCard: jest.fn()`；未来测试要用 spy 时用 `jest.spyOn(battleRoom, 'handleBattlePlayCard')` 在 beforeEach 局部替换，避免 `jest.mock` 的模块重建副作用。
+- Task 10 全量 jest 跑出 5 个失败用例，全部在 `src/controllers/authController.test.ts`（POST /api/auth/login 的 integration test，期望 200/401 但实际拿 500），属 T005/T006 历史测试环境/DB 问题，与 T050 改动无关；排除该文件后 552 个测试全部通过，tsc exit 0。

@@ -1826,5 +1826,58 @@ executeMove(
 
 ---
 
-*文档版本：v1.34*
-*最后更新：2026-06-15*
+---
+
+## T050 打牌操作同步
+
+### 概述
+T050 扩展既有 `battleActionService` 新增 `executePlayCard` 17 步流水；`battleRoom.ts` 追加 `handleBattlePlayCard` handler；`socketServer.ts` 注册 `battle:play_card` 事件。
+
+### 业务规则
+1. session.current_phase === 'play'
+2. session.current_actor_id === characterId
+3. character.userId === userId（防同房间对手冒充）
+4. handCard.deck_id 在 actor hand LIST 中
+5. card.type 是 'attack'（AOE/单体）或 'tactical'+'taunt'，其他 → `unsupported_card_type`
+6. validate* 返回 valid
+
+### 副作用顺序（成功时）
+1. 读 pieces HASH → currentEnergy
+2. setCharacterEnergy(attackerId, currentEnergy - energyCost)
+3. redisClient.lRem(hand LIST, 1, JSON.stringify(handCard))
+4. addToDiscardPile (if source='deck'，公共池卡不入弃牌堆)
+5. broadcastHandState(io, battleId, userId, characterId)  // self
+6. broadcastCharacterStatus(io, battleId, characterId)  // both
+7. completePlayPhase(battleId)  // play → end_step
+8. broadcastBoardState(io, battleId)  // both, 含 phase
+
+### 错误码（8 个）
+- `not_in_play_phase` / `not_current_actor` / `not_owner`
+- `card_not_in_hand` / `unsupported_card_type`
+- `validation_failed`（带 detail = validate.error）
+- `energy_deduct_failed` / `side_effect_failed`
+
+### 不做（明确范围外）
+- 实际扣 HP —— T056 applyDamage 负责
+- burn 伤害结算 —— T051 orchestrator
+- defense 卡 —— T050.5
+- player_cards 消耗 —— T053
+- 回合切换 —— T051
+- 胜负判定 —— T052
+
+### 文件清单
+- `src/services/battleActionService.ts` — 追加 executePlayCard + 8 个 error 类型
+- `src/services/battleActionService.test.ts` — 追加 18 个单测
+- `src/socket/battleRoom.ts` — 追加 handleBattlePlayCard + validatePlayCardPayload
+- `src/socket/battleRoom.test.ts` — 追加 5 个 handler 测试
+- `src/socket/socketServer.ts` — 注册 battle:play_card 事件
+
+### WS 事件
+- `battle:play_card` (client → server): `{ battleId, characterId, handCard: HandCard }`
+- `battle:play_card:error` (server → client): `{ error, detail? }`
+- 复用 T047 既有 `battle:state:hand` / `battle:state:character` / `battle:state:board`
+
+---
+
+*文档版本：v1.35*
+*最后更新：2026-06-17*

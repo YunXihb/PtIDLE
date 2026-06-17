@@ -73,6 +73,7 @@
 | T047 | 实现实时状态同步（broadcaster 函数库 + battle:join 初期推 full state） | 2026-06-11 |
 | T048 | 实现战场初始化（双 join 触发 + 7 步流水 + 失败回滚） | 2026-06-15 |
 | T049 | 实现移动操作同步（battle:move + executeMove 流水 + board 广播 + phase 推进） | 2026-06-15 |
+| T050 | 实现打牌操作同步（attack + tactical taunt 17 步流水 + 副作用 + 广播 + 阶段推进） | 2026-06-17 |
 
 ---
 
