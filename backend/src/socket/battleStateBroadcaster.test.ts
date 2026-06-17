@@ -48,6 +48,7 @@ import {
   broadcastHandState,
   broadcastCharacterStatus,
   broadcastFullState,
+  broadcastSessionState,
 } from './battleStateBroadcaster';
 
 // ============== io mock ==============
@@ -276,6 +277,30 @@ describe('T047 battleStateBroadcaster', () => {
     expect(mockEmit).toHaveBeenCalledWith('battle:state:character', {
       battleId: BATTLE_ID,
       character: status,
+    });
+  });
+});
+
+describe('broadcastSessionState', () => {
+  it('emit battle:state:session 到 battle room, payload 含 4 字段', async () => {
+    const mockEmit = jest.fn();
+    const mockTo = jest.fn().mockReturnValue({ emit: mockEmit });
+    const io = { to: mockTo } as any;
+    const state = {
+      battleId: 'b1',
+      currentRound: 2,
+      currentStep: 0,
+      currentActorId: 'c1',
+      currentPhase: 'draw',
+    } as any;
+    await broadcastSessionState(io, 'b1', state);
+    expect(mockTo).toHaveBeenCalledWith('battle:b1');
+    expect(mockEmit).toHaveBeenCalledWith('battle:state:session', {
+      battleId: 'b1',
+      currentRound: 2,
+      currentStep: 0,
+      currentActorId: 'c1',
+      currentPhase: 'draw',
     });
   });
 });
