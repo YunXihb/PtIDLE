@@ -2,7 +2,8 @@ import { Server as IOServer, Socket } from 'socket.io';
 import { getPendingBattleForJoin } from '../services/battleService';
 import { broadcastFullState } from './battleStateBroadcaster';
 import { initBattleField } from '../services/battleInitializationService';
-import { executeMove } from '../services/battleActionService';
+import { executeMove, executePlayCard } from '../services/battleActionService';
+import type { HandCard } from '../services/handService';
 import { redisClient } from '../config/redis';
 import { queryOne } from '../config/database';
 
@@ -228,4 +229,73 @@ export async function handleBattleMove(
     socket.emit('battle:move:error', { error: result.error });
   }
   // 成功：不 emit（broadcaster 已 room-wide 推 board）
+}
+
+/**
+ * T050 Task 8: 处理客户端的 `battle:play_card` 事件
+ *
+ * 流程:
+ *   1. 验证 payload 结构（battleId/characterId string, handCard object with required fields）
+ *   2. 失败 → emit `battle:play_card:error` `{ error: 'invalid_payload' }`
+ *   3. 调 `executePlayCard(io, battleId, characterId, handCard, socket.data.userId)`
+ *   4. executePlayCard 失败 → emit `battle:play_card:error` 带 service 返回的 error + detail
+ *   5. 成功 → 不 emit 任何事件（依赖 broadcastHandState + broadcastCharacterStatus + broadcastBoardState 推送）
+ *   6. executePlayCard 抛错 → 向上抛（异常路径，由 socketServer 层兜底）
+ */
+export async function handleBattlePlayCard(
+  io: IOServer,
+  socket: Socket,
+  payload: { battleId?: unknown; characterId?: unknown; handCard?: unknown }
+): Promise<void> {
+  // 1. payload 验证
+  const battleId = typeof payload?.battleId === 'string' ? payload.battleId : null;
+  const characterId = typeof payload?.characterId === 'string' ? payload.characterId : null;
+  const handCard = validatePlayCardPayload(payload?.handCard);
+
+  if (!battleId || !characterId || !handCard) {
+    socket.emit('battle:play_card:error', { error: 'invalid_payload' });
+    return;
+  }
+
+  const userId = socket.data.userId as string;
+
+  // 2. 调 service
+  const result = await executePlayCard(io, battleId, characterId, handCard, userId);
+
+  // 3. 失败回执
+  if (!result.success) {
+    socket.emit('battle:play_card:error', {
+      error: result.error,
+      detail: result.detail,
+    });
+  }
+  // 成功：不 emit（broadcaster 已 room-wide 推 hand/character/board）
+}
+
+/**
+ * 内部 helper: 验证 handCard payload 结构
+ * 严格按 HandCard 形状校验（deck_id/card_id/name/type/cost/effect/template_no/source）
+ * 允许的 type: 'attack' | 'defense' | 'tactical'（'defense' 在 T050 service 层返回 unsupported_card_type）
+ * 允许的 source: 'deck' | 'public_pool'
+ *
+ * 注意：handler 不做业务 type dispatch 过滤（防 'defense' 等）；只校验 shape。
+ * 业务 type 校验由 service (executePlayCard) 负责 — handler 收到 unsupported 时转发即可。
+ *
+ * 透传 extra 字段（如 attack 卡片的 targetId），service 层通过 `(handCard as HandCard & { targetId? })` 读取。
+ */
+function validatePlayCardPayload(
+  raw: unknown
+): (HandCard & Record<string, unknown>) | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const c = raw as Record<string, unknown>;
+  if (typeof c.deck_id !== 'string') return null;
+  if (typeof c.card_id !== 'string') return null;
+  if (typeof c.name !== 'string') return null;
+  if (c.type !== 'attack' && c.type !== 'defense' && c.type !== 'tactical') return null;
+  if (typeof c.cost !== 'number' || !Number.isFinite(c.cost)) return null;
+  if (!c.effect || typeof c.effect !== 'object') return null;
+  if (typeof c.template_no !== 'number') return null;
+  if (c.source !== 'deck' && c.source !== 'public_pool') return null;
+
+  return c as HandCard & Record<string, unknown>;
 }

@@ -26,12 +26,13 @@ jest.mock('./battleStateBroadcaster', () => ({
 }));
 jest.mock('../services/battleActionService', () => ({
   executeMove: jest.fn(),
+  executePlayCard: jest.fn(),
 }));
 
-import { handleBattleJoin, handleBattleMove } from './battleRoom';
+import { handleBattleJoin, handleBattleMove, handleBattlePlayCard } from './battleRoom';
 import { initBattleField, cleanupPartialInit } from '../services/battleInitializationService';
 import { broadcastFullState } from './battleStateBroadcaster';
-import { executeMove } from '../services/battleActionService';
+import { executeMove, executePlayCard } from '../services/battleActionService';
 import { redisClient } from '../config/redis';
 import { queryOne } from '../config/database';
 
@@ -39,6 +40,7 @@ const mockInit = initBattleField as jest.MockedFunction<typeof initBattleField>;
 const mockCleanup = cleanupPartialInit as jest.MockedFunction<typeof cleanupPartialInit>;
 const mockBroadcast = broadcastFullState as jest.MockedFunction<typeof broadcastFullState>;
 const mockExecuteMove = executeMove as jest.MockedFunction<typeof executeMove>;
+const mockExecutePlayCard = executePlayCard as jest.MockedFunction<typeof executePlayCard>;
 const mockRedisSet = redisClient.set as jest.MockedFunction<typeof redisClient.set>;
 const mockRedisDel = redisClient.del as jest.MockedFunction<typeof redisClient.del>;
 const mockQueryOne = queryOne as jest.MockedFunction<typeof queryOne>;
@@ -237,6 +239,135 @@ describe('handleBattleMove', () => {
       toY: 3,
     });
 
+    expect(socket.emit).not.toHaveBeenCalled();
+  });
+});
+
+// ========================================
+// T050 Task 8: handleBattlePlayCard
+// ========================================
+describe('handleBattlePlayCard', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    // Default: 成功返回（保持对其他 describe block 的 mock reset 隔离）
+    mockExecutePlayCard.mockResolvedValue({ success: true, validation: {} as any });
+  });
+
+  it('case 1: valid play_card payload — calls executePlayCard and does not emit on success', async () => {
+    const io = createMockIO();
+    const { socket } = createMockSocket();
+    socket.data.userId = 'u1';
+
+    const handCard = {
+      deck_id: 'd1',
+      card_id: 'pc1',
+      name: 'X',
+      type: 'attack',
+      cost: 1,
+      effect: {},
+      template_no: 1,
+      source: 'deck',
+      targetId: 't1',
+    };
+    await handleBattlePlayCard(io, socket, { battleId: 'b1', characterId: 'c1', handCard });
+
+    expect(mockExecutePlayCard).toHaveBeenCalledWith(io, 'b1', 'c1', handCard, 'u1');
+    expect(socket.emit).not.toHaveBeenCalled();
+  });
+
+  it('case 2: invalid payload (missing handCard) — emits invalid_payload error', async () => {
+    const io = createMockIO();
+    const { socket } = createMockSocket();
+    socket.data.userId = 'u1';
+
+    await handleBattlePlayCard(io, socket, { battleId: 'b1', characterId: 'c1' });
+
+    expect(socket.emit).toHaveBeenCalledWith('battle:play_card:error', { error: 'invalid_payload' });
+    expect(mockExecutePlayCard).not.toHaveBeenCalled();
+  });
+
+  it('case 3: defense card type — handler does NOT reject; lets service return unsupported_card_type', async () => {
+    const io = createMockIO();
+    const { socket } = createMockSocket();
+    socket.data.userId = 'u1';
+    mockExecutePlayCard.mockResolvedValueOnce({
+      success: false,
+      error: 'unsupported_card_type',
+      detail: "card type 'defense' not supported in T050",
+    });
+
+    const handCard = {
+      deck_id: 'd1',
+      card_id: 'pc1',
+      name: 'X',
+      type: 'defense',
+      cost: 1,
+      effect: {},
+      template_no: 1,
+      source: 'deck',
+    };
+    await handleBattlePlayCard(io, socket, { battleId: 'b1', characterId: 'c1', handCard });
+
+    expect(mockExecutePlayCard).toHaveBeenCalled();
+    expect(socket.emit).toHaveBeenCalledWith('battle:play_card:error', {
+      error: 'unsupported_card_type',
+      detail: "card type 'defense' not supported in T050",
+    });
+  });
+
+  it('case 4: executePlayCard returns validation_failed — emits error with detail', async () => {
+    const io = createMockIO();
+    const { socket } = createMockSocket();
+    socket.data.userId = 'u1';
+    mockExecutePlayCard.mockResolvedValueOnce({
+      success: false,
+      error: 'validation_failed',
+      detail: 'Target out of range',
+    });
+
+    await handleBattlePlayCard(io, socket, {
+      battleId: 'b1',
+      characterId: 'c1',
+      handCard: {
+        deck_id: 'd1',
+        card_id: 'pc1',
+        type: 'attack',
+        cost: 1,
+        effect: {},
+        template_no: 1,
+        source: 'deck',
+        name: 'X',
+      },
+    });
+
+    expect(socket.emit).toHaveBeenCalledWith('battle:play_card:error', {
+      error: 'validation_failed',
+      detail: 'Target out of range',
+    });
+  });
+
+  it('case 5: executePlayCard throws — does NOT emit (caller is socketServer layer)', async () => {
+    const io = createMockIO();
+    const { socket } = createMockSocket();
+    socket.data.userId = 'u1';
+    mockExecutePlayCard.mockRejectedValueOnce(new Error('boom'));
+
+    await expect(
+      handleBattlePlayCard(io, socket, {
+        battleId: 'b1',
+        characterId: 'c1',
+        handCard: {
+          deck_id: 'd1',
+          card_id: 'pc1',
+          type: 'attack',
+          cost: 1,
+          effect: {},
+          template_no: 1,
+          source: 'deck',
+          name: 'X',
+        },
+      })
+    ).rejects.toThrow('boom');
     expect(socket.emit).not.toHaveBeenCalled();
   });
 });
