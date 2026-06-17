@@ -504,4 +504,179 @@ describe('executePlayCard', () => {
     expect(result).toEqual({ success: false, error: 'not_owner' });
     expect(mockGetActorHand).not.toHaveBeenCalled();
   });
+
+  it('error: card_not_in_hand — returns error when deck_id not in hand', async () => {
+    mockGetDbSessionState.mockResolvedValueOnce({
+      currentRound: 1, currentStep: 0, currentActorId: 'c1', currentPhase: 'play',
+    });
+    mockListCharactersInBattle.mockResolvedValueOnce([
+      { characterId: 'c1', playerId: 'p1', userId: 'u1', profession: 'warrior', name: 'A' },
+    ]);
+    mockGetActorHand.mockResolvedValueOnce([
+      { deck_id: 'd_other', source: 'deck', type: 'attack', card_id: 'pc_other', name: 'X', cost: 1, effect: {}, template_no: 1 },
+    ]);
+
+    const { executePlayCard } = await import('./battleActionService');
+    const io = createMockIO();
+
+    const result = await executePlayCard(io, 'b1', 'c1', { deck_id: 'd1', source: 'deck', type: 'attack', card_id: 'pc1', name: 'X', cost: 1, effect: {}, template_no: 1 } as any, 'u1');
+
+    expect(result).toEqual({ success: false, error: 'card_not_in_hand' });
+    expect(mockValidateAttack).not.toHaveBeenCalled();
+  });
+
+  it('error: unsupported_card_type (defense) — returns error', async () => {
+    mockGetDbSessionState.mockResolvedValueOnce({
+      currentRound: 1, currentStep: 0, currentActorId: 'c1', currentPhase: 'play',
+    });
+    mockListCharactersInBattle.mockResolvedValueOnce([
+      { characterId: 'c1', playerId: 'p1', userId: 'u1', profession: 'warrior', name: 'A' },
+    ]);
+
+    const handCard: any = { deck_id: 'd1', source: 'deck', type: 'defense', card_id: 'pc1', name: '防御', cost: 1, effect: { shield: 5 }, template_no: 5 };
+    mockGetActorHand.mockResolvedValueOnce([handCard]);
+
+    const { executePlayCard } = await import('./battleActionService');
+    const io = createMockIO();
+
+    const result = await executePlayCard(io, 'b1', 'c1', handCard, 'u1');
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toBe('unsupported_card_type');
+      expect(result.detail).toContain('defense');
+    }
+    expect(mockValidateAttack).not.toHaveBeenCalled();
+  });
+
+  it('error: unsupported_card_type (tactical non-taunt) — returns error', async () => {
+    mockGetDbSessionState.mockResolvedValueOnce({
+      currentRound: 1, currentStep: 0, currentActorId: 'c1', currentPhase: 'play',
+    });
+    mockListCharactersInBattle.mockResolvedValueOnce([
+      { characterId: 'c1', playerId: 'p1', userId: 'u1', profession: 'warrior', name: 'A' },
+    ]);
+
+    const handCard: any = { deck_id: 'd1', source: 'deck', type: 'tactical', card_id: 'pc1', name: '烟雾', cost: 1, effect: { type: 'smoke' }, template_no: 6 };
+    mockGetActorHand.mockResolvedValueOnce([handCard]);
+
+    const { executePlayCard } = await import('./battleActionService');
+    const io = createMockIO();
+
+    const result = await executePlayCard(io, 'b1', 'c1', handCard, 'u1');
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toBe('unsupported_card_type');
+    }
+  });
+
+  it('error: validation_failed (Card not found) — wraps validate error in detail', async () => {
+    mockGetDbSessionState.mockResolvedValueOnce({
+      currentRound: 1, currentStep: 0, currentActorId: 'c1', currentPhase: 'play',
+    });
+    mockListCharactersInBattle.mockResolvedValueOnce([
+      { characterId: 'c1', playerId: 'p1', userId: 'u1', profession: 'warrior', name: 'A' },
+    ]);
+
+    const { executePlayCard } = await import('./battleActionService');
+    const io = createMockIO();
+
+    mockValidateAttack.mockResolvedValueOnce({ valid: false, error: 'Card not found' });
+
+    const result = await executePlayCard(io, 'b1', 'c1', { deck_id: 'd1', source: 'deck', type: 'attack', card_id: 'pc1', name: 'X', cost: 1, effect: {}, template_no: 1, targetId: 't1' } as any, 'u1');
+
+    expect(result).toEqual({ success: false, error: 'validation_failed', detail: 'Card not found' });
+    expect(mockSetCharacterEnergy).not.toHaveBeenCalled();
+  });
+
+  it('error: validation_failed (Not enough energy) — wraps validate error', async () => {
+    mockGetDbSessionState.mockResolvedValueOnce({
+      currentRound: 1, currentStep: 0, currentActorId: 'c1', currentPhase: 'play',
+    });
+    mockListCharactersInBattle.mockResolvedValueOnce([
+      { characterId: 'c1', playerId: 'p1', userId: 'u1', profession: 'warrior', name: 'A' },
+    ]);
+
+    const { executePlayCard } = await import('./battleActionService');
+    const io = createMockIO();
+
+    mockValidateAttack.mockResolvedValueOnce({
+      valid: false,
+      error: 'Not enough energy (need 3, have 1)',
+      energyCost: 3,
+    });
+
+    const result = await executePlayCard(io, 'b1', 'c1', { deck_id: 'd1', source: 'deck', type: 'attack', card_id: 'pc1', name: 'X', cost: 3, effect: {}, template_no: 1, targetId: 't1' } as any, 'u1');
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toBe('validation_failed');
+      expect(result.detail).toContain('energy');
+    }
+  });
+
+  it('error: validation_failed (Target out of range) — wraps validate error', async () => {
+    mockGetDbSessionState.mockResolvedValueOnce({
+      currentRound: 1, currentStep: 0, currentActorId: 'c1', currentPhase: 'play',
+    });
+    mockListCharactersInBattle.mockResolvedValueOnce([
+      { characterId: 'c1', playerId: 'p1', userId: 'u1', profession: 'warrior', name: 'A' },
+    ]);
+
+    const { executePlayCard } = await import('./battleActionService');
+    const io = createMockIO();
+
+    mockValidateAttack.mockResolvedValueOnce({
+      valid: false,
+      error: 'Target out of range (melee range: 1.5, actual: 3.00)',
+    });
+
+    const result = await executePlayCard(io, 'b1', 'c1', { deck_id: 'd1', source: 'deck', type: 'attack', card_id: 'pc1', name: 'X', cost: 1, effect: {}, template_no: 1, targetId: 't1' } as any, 'u1');
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toBe('validation_failed');
+      expect(result.detail).toContain('out of range');
+    }
+  });
+
+  it('error: validation_failed (Cannot attack friendly) — wraps validate error', async () => {
+    mockGetDbSessionState.mockResolvedValueOnce({
+      currentRound: 1, currentStep: 0, currentActorId: 'c1', currentPhase: 'play',
+    });
+    mockListCharactersInBattle.mockResolvedValueOnce([
+      { characterId: 'c1', playerId: 'p1', userId: 'u1', profession: 'warrior', name: 'A' },
+    ]);
+
+    const { executePlayCard } = await import('./battleActionService');
+    const io = createMockIO();
+
+    mockValidateAttack.mockResolvedValueOnce({ valid: false, error: 'Cannot attack friendly target' });
+
+    const result = await executePlayCard(io, 'b1', 'c1', { deck_id: 'd1', source: 'deck', type: 'attack', card_id: 'pc1', name: 'X', cost: 1, effect: {}, template_no: 1, targetId: 't1' } as any, 'u1');
+
+    expect(result).toEqual({ success: false, error: 'validation_failed', detail: 'Cannot attack friendly target' });
+  });
+
+  it('error: validation_failed (taunt range error) — wraps validateTauntCard error', async () => {
+    mockGetDbSessionState.mockResolvedValueOnce({
+      currentRound: 1, currentStep: 0, currentActorId: 'c3', currentPhase: 'play',
+    });
+    mockListCharactersInBattle.mockResolvedValueOnce([
+      { characterId: 'c3', playerId: 'p1', userId: 'u1', profession: 'warrior', name: 'A' },
+    ]);
+    mockGetActorHand.mockResolvedValueOnce([
+      { deck_id: 'd3', source: 'deck', type: 'tactical', card_id: 'pc3', name: '挑战', cost: 1, effect: { type: 'taunt', range: 3 }, template_no: 3 },
+    ]);
+
+    const { executePlayCard } = await import('./battleActionService');
+    const io = createMockIO();
+
+    mockValidateTauntCard.mockResolvedValueOnce({ valid: false, error: 'Target out of taunt range' });
+
+    const result = await executePlayCard(io, 'b1', 'c3', { deck_id: 'd3', source: 'deck', type: 'tactical', card_id: 'pc3', name: '挑战', cost: 1, effect: { type: 'taunt', range: 3 }, template_no: 3, targetId: 't1' } as any, 'u1');
+
+    expect(result).toEqual({ success: false, error: 'validation_failed', detail: 'Target out of taunt range' });
+  });
 });
