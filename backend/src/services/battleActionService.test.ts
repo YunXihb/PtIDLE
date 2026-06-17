@@ -437,4 +437,71 @@ describe('executePlayCard', () => {
     expect(result.success).toBe(true);
     expect(mockAddToDiscardPile).toHaveBeenCalledWith('b1', 'c1', [handCard]);
   });
+
+  it('error: not_in_play_phase — returns error when phase !== "play"', async () => {
+    mockGetDbSessionState.mockResolvedValueOnce({
+      currentRound: 1,
+      currentStep: 0,
+      currentActorId: 'c1',
+      currentPhase: 'move',  // ← wrong phase
+    });
+
+    const { executePlayCard } = await import('./battleActionService');
+    const io = createMockIO();
+
+    const result = await executePlayCard(
+      io, 'b1', 'c1',
+      { deck_id: 'd1', source: 'deck', type: 'attack', card_id: 'pc1', name: 'X', cost: 1, effect: {}, template_no: 1 } as any,
+      'u1'
+    );
+
+    expect(result).toEqual({ success: false, error: 'not_in_play_phase' });
+    // 后续副作用全部未调
+    expect(mockListCharactersInBattle).not.toHaveBeenCalled();
+    expect(mockGetActorHand).not.toHaveBeenCalled();
+    expect(mockValidateAttack).not.toHaveBeenCalled();
+    expect(mockSetCharacterEnergy).not.toHaveBeenCalled();
+  });
+
+  it('error: not_current_actor — returns error when actor mismatch', async () => {
+    mockGetDbSessionState.mockResolvedValueOnce({
+      currentRound: 1,
+      currentStep: 0,
+      currentActorId: 'c2',  // ← different
+      currentPhase: 'play',
+    });
+
+    const { executePlayCard } = await import('./battleActionService');
+    const io = createMockIO();
+
+    const result = await executePlayCard(
+      io, 'b1', 'c1',
+      { deck_id: 'd1', source: 'deck', type: 'attack', card_id: 'pc1', name: 'X', cost: 1, effect: {}, template_no: 1 } as any,
+      'u1'
+    );
+
+    expect(result).toEqual({ success: false, error: 'not_current_actor' });
+    expect(mockListCharactersInBattle).not.toHaveBeenCalled();
+  });
+
+  it('error: not_owner — returns error when userId mismatch', async () => {
+    mockGetDbSessionState.mockResolvedValueOnce({
+      currentRound: 1, currentStep: 0, currentActorId: 'c1', currentPhase: 'play',
+    });
+    mockListCharactersInBattle.mockResolvedValueOnce([
+      { characterId: 'c1', playerId: 'p1', userId: 'u2', profession: 'warrior', name: 'A' },  // ← different userId
+    ]);
+
+    const { executePlayCard } = await import('./battleActionService');
+    const io = createMockIO();
+
+    const result = await executePlayCard(
+      io, 'b1', 'c1',
+      { deck_id: 'd1', source: 'deck', type: 'attack', card_id: 'pc1', name: 'X', cost: 1, effect: {}, template_no: 1 } as any,
+      'u1'
+    );
+
+    expect(result).toEqual({ success: false, error: 'not_owner' });
+    expect(mockGetActorHand).not.toHaveBeenCalled();
+  });
 });
