@@ -18,7 +18,7 @@ import { getActorHand, addToDiscardPile, retainHandOnStepEnd, drawCards } from '
 import { tickBurnDamageOnTarget } from './professionMechanicService';
 import { tickEffects } from './statusEffectService';
 import { broadcastBoardState, broadcastHandState, broadcastCharacterStatus, broadcastSessionState } from '../socket/battleStateBroadcaster';
-import { applyKillStars, checkWinCondition, recordVictory } from './battleOutcomeService';
+import { applyKillStars, applyBaseStars, checkWinCondition, recordVictory } from './battleOutcomeService';
 import { redisClient } from '../config/redis';
 
 /**
@@ -472,4 +472,11 @@ export async function executeRoundEnd(
   }
   await broadcastSessionState(io, battleId, newState as BattleSessionState);
   await broadcastBoardState(io, battleId);
+
+  // 6. ★ T052 wire-up: applyBaseStars → checkWinCondition → recordVictory (win/draw)
+  await applyBaseStars(battleId);
+  const winResult = await checkWinCondition(battleId);
+  if (winResult.status === 'win' || winResult.status === 'draw') {
+    await recordVictory(io, battleId, winResult, 'base');
+  }
 }

@@ -1032,3 +1032,76 @@ describe('executeEndStep - T052 wire-up', () => {
     );
   });
 });
+
+describe('executeRoundEnd - T052 wire-up', () => {
+  it('should call applyBaseStars + checkWinCondition', async () => {
+    const { executeRoundEnd } = await import('./battleActionService');
+    const io = createMockIO();
+
+    await executeRoundEnd(io, 'b1', {
+      battleId: 'b1',
+      currentRound: 1,
+      currentStep: 5,
+      currentPhase: 'end_round',
+      currentActorId: 'c6',
+      activationOrder: ['c1', 'c2', 'c3', 'c4', 'c5', 'c6'],
+      player1Chars: ['c1', 'c2', 'c3'],
+      player2Chars: ['c4', 'c5', 'c6'],
+      updatedAt: new Date().toISOString(),
+    });
+
+    expect(mockApplyBaseStars).toHaveBeenCalledWith('b1');
+    expect(mockCheckWinCondition).toHaveBeenCalledWith('b1');
+    expect(mockRecordVictory).not.toHaveBeenCalled(); // not_over 默认
+  });
+
+  it('should call recordVictory with source=base when win', async () => {
+    mockCheckWinCondition.mockResolvedValue({
+      status: 'win',
+      winnerSide: 'p2',
+      p1Stars: 4,
+      p2Stars: 6,
+    });
+
+    const { executeRoundEnd } = await import('./battleActionService');
+    const io = createMockIO();
+
+    await executeRoundEnd(io, 'b1', {
+      battleId: 'b1',
+      currentRound: 1,
+      currentStep: 5,
+      currentPhase: 'end_round',
+      currentActorId: 'c6',
+      activationOrder: ['c1', 'c2', 'c3', 'c4', 'c5', 'c6'],
+      player1Chars: ['c1', 'c2', 'c3'],
+      player2Chars: ['c4', 'c5', 'c6'],
+      updatedAt: new Date().toISOString(),
+    });
+
+    expect(mockRecordVictory).toHaveBeenCalledWith(
+      io,
+      'b1',
+      { status: 'win', winnerSide: 'p2', p1Stars: 4, p2Stars: 6 },
+      'base'  // ★ source='base'
+    );
+  });
+
+  it('should NOT call applyKillStars (only last step executeEndStep handles it)', async () => {
+    const { executeRoundEnd } = await import('./battleActionService');
+    const io = createMockIO();
+
+    await executeRoundEnd(io, 'b1', {
+      battleId: 'b1',
+      currentRound: 1,
+      currentStep: 5,
+      currentPhase: 'end_round',
+      currentActorId: 'c6',
+      activationOrder: ['c1', 'c2', 'c3', 'c4', 'c5', 'c6'],
+      player1Chars: ['c1', 'c2', 'c3'],
+      player2Chars: ['c4', 'c5', 'c6'],
+      updatedAt: new Date().toISOString(),
+    });
+
+    expect(mockApplyKillStars).not.toHaveBeenCalled();
+  });
+});
