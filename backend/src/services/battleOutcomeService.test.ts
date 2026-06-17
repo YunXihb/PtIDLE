@@ -459,22 +459,18 @@ describe('recordVictory', () => {
   });
 
   // Helper: mockQuery 根据 SQL 字符串返回不同结果
-  // 1. SELECT id, user_id FROM players WHERE id IN (...) → players rows
-  // 2. SELECT player1_id AS pid FROM battles WHERE id = $1 → { pid: 'player-1' }
-  // 3. SELECT player2_id AS pid FROM battles WHERE id = $1 → { pid: 'player-2' }
+  // 1. SELECT b.player1_id, b.player2_id, p1.user_id, p2.user_id ... LEFT JOIN players ... → JOIN row
   function setupRecordVictoryMocks() {
     mockQuery.mockImplementation(async (sql: string) => {
-      if (sql.includes('FROM players')) {
+      if (sql.includes('LEFT JOIN players')) {
         return [
-          { id: 'player-1', user_id: 'u1' },
-          { id: 'player-2', user_id: 'u2' },
+          {
+            player1_id: 'player-1',
+            player2_id: 'player-2',
+            p1_user_id: 'u1',
+            p2_user_id: 'u2',
+          },
         ];
-      }
-      if (sql.includes('player1_id AS pid')) {
-        return [{ pid: 'player-1' }];
-      }
-      if (sql.includes('player2_id AS pid')) {
-        return [{ pid: 'player-2' }];
       }
       return [];
     });
@@ -567,7 +563,8 @@ describe('recordVictory', () => {
   it('finishSession 失败: 仍 broadcast (best-effort, 不 throw)', async () => {
     mockExecuteDb.mockResolvedValue({ rowCount: 1 });
     setupRecordVictoryMocks();
-    mockFinishSession.mockResolvedValue({ success: false, error: 'test' });
+    const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    mockFinishSession.mockRejectedValue(new Error('finishSession down'));
 
     const io = createMockIO();
     await expect(
@@ -579,6 +576,12 @@ describe('recordVictory', () => {
       })
     ).resolves.not.toThrow();
 
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[T052] recordVictory: finishSession failed'),
+      expect.any(Error)
+    );
     expect(mockBroadcastBattleEnd).toHaveBeenCalled();
+
+    consoleErrorSpy.mockRestore();
   });
 });

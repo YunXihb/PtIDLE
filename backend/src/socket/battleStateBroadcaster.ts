@@ -327,8 +327,8 @@ export async function broadcastBattleEnd(
     victoryType: 'kill_threshold' | 'base_threshold' | 'draw';
     p1Stars: number;
     p2Stars: number;
-    p1UserId: string;
-    p2UserId: string;
+    p1UserId: string | null;
+    p2UserId: string | null;
   }
 ): Promise<void> {
   io.to(`battle:${battleId}`).emit('battle:end', {

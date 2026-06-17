@@ -323,9 +323,10 @@ export async function checkWinCondition(battleId: string): Promise<WinCheckResul
 /**
  * T052 §3.1: 记录胜利
  *
- * 1. UPDATE battles SET winner_player_id, victory_type, status='finished', finished_at=NOW()
- * 2. finishSession (best-effort)
- * 3. broadcastBattleEnd
+ * 1. 单次 JOIN 查询拿 player1_id / player2_id / p1_user_id / p2_user_id
+ * 2. UPDATE battles SET winner_player_id, victory_type, status='finished', finished_at=NOW()
+ * 3. finishSession (best-effort)
+ * 4. broadcastBattleEnd (best-effort)
  *
  * @param io IOServer
  * @param battleId
@@ -338,19 +339,25 @@ export async function recordVictory(
   outcome: RecordVictoryOutcome,
   source: StarSource = 'kill'
 ): Promise<void> {
-  // 1. 查 player1/2 → userId 映射
-  const playerRows = await query<{ id: string; user_id: string }>(
-    `SELECT id, user_id FROM players WHERE id IN (
-       SELECT player1_id FROM battles WHERE id = $1
-       UNION
-       SELECT player2_id FROM battles WHERE id = $1
-     )`,
+  // 1. 单次 JOIN 拿双方 playerId + userId
+  const playerRows = await query<{
+    player1_id: string;
+    player2_id: string;
+    p1_user_id: string | null;
+    p2_user_id: string | null;
+  }>(
+    `SELECT b.player1_id, b.player2_id,
+            p1.user_id AS p1_user_id,
+            p2.user_id AS p2_user_id
+     FROM battles b
+     LEFT JOIN players p1 ON p1.id = b.player1_id
+     LEFT JOIN players p2 ON p2.id = b.player2_id
+     WHERE b.id = $1`,
     [battleId]
   );
-  const p1Id = await getPlayerId(battleId, 'p1');
-  const p2Id = await getPlayerId(battleId, 'p2');
-  const p1 = playerRows.find((r) => r.id === p1Id);
-  const p2 = playerRows.find((r) => r.id === p2Id);
+  const row = playerRows[0];
+  const p1 = row ? { id: row.player1_id, user_id: row.p1_user_id } : null;
+  const p2 = row ? { id: row.player2_id, user_id: row.p2_user_id } : null;
 
   let winnerUserId: string | null = null;
   let winnerSide: 'p1' | 'p2' | null = null;
@@ -383,28 +390,20 @@ export async function recordVictory(
     console.error(`[T052] recordVictory: finishSession failed: battleId=${battleId}`, err);
   }
 
-  // 4. broadcast
-  await broadcastBattleEnd(io, battleId, {
-    winnerUserId,
-    winnerSide,
-    victoryType,
-    p1Stars: outcome.p1Stars,
-    p2Stars: outcome.p2Stars,
-    p1UserId: p1?.user_id ?? '',
-    p2UserId: p2?.user_id ?? '',
-  });
-}
-
-/**
- * 内部 helper: 查 player1_id / player2_id
- */
-async function getPlayerId(battleId: string, side: 'p1' | 'p2'): Promise<string | null> {
-  const col = side === 'p1' ? 'player1_id' : 'player2_id';
-  const row = await query<{ [k: string]: string }>(
-    `SELECT ${col} AS pid FROM battles WHERE id = $1`,
-    [battleId]
-  );
-  return row[0]?.pid ?? null;
+  // 4. broadcast (best-effort)
+  try {
+    await broadcastBattleEnd(io, battleId, {
+      winnerUserId,
+      winnerSide,
+      victoryType,
+      p1Stars: outcome.p1Stars,
+      p2Stars: outcome.p2Stars,
+      p1UserId: p1?.user_id ?? null,
+      p2UserId: p2?.user_id ?? null,
+    });
+  } catch (err) {
+    console.error(`[T052] recordVictory: broadcastBattleEnd failed: battleId=${battleId}`, err);
+  }
 }
 
 // ========================================
