@@ -16,6 +16,9 @@ const mockRedisDecr = jest.fn();
 const mockQuery = jest.fn();
 const mockExecute = jest.fn();
 const mockListCharactersInBattle = jest.fn();
+const mockFinishSession = jest.fn();
+const mockBroadcastBattleEnd = jest.fn();
+const mockBroadcastBasesState = jest.fn();
 
 jest.mock('../config/redis', () => ({
   redisClient: {
@@ -39,8 +42,26 @@ jest.mock('./battleService', () => ({
   listCharactersInBattle: mockListCharactersInBattle,
 }));
 
-import { applyKillStars, applyBaseStars, checkWinCondition } from './battleOutcomeService';
+jest.mock('./battleSessionService', () => ({
+  finishSession: mockFinishSession,
+}));
+
+jest.mock('../socket/battleStateBroadcaster', () => ({
+  broadcastBattleEnd: mockBroadcastBattleEnd,
+  broadcastBasesState: mockBroadcastBasesState,
+}));
+
+import { applyKillStars, applyBaseStars, checkWinCondition, recordVictory } from './battleOutcomeService';
 import { BASES, BASE_RADIUS, WIN_THRESHOLD } from './battleOutcomeService';
+import type { Server as IOServer } from 'socket.io';
+
+function createMockIO(): IOServer {
+  return {
+    to: jest.fn().mockReturnThis(),
+    in: jest.fn().mockReturnThis(),
+    emit: jest.fn(),
+  } as unknown as IOServer;
+}
 
 const mockList = mockListCharactersInBattle as jest.MockedFunction<typeof mockListCharactersInBattle>;
 const mockHGetAll = mockRedisHGetAll as jest.MockedFunction<typeof mockRedisHGetAll>;
@@ -427,5 +448,137 @@ describe('checkWinCondition', () => {
     });
     const result = await checkWinCondition('b1');
     expect(result).toEqual({ status: 'not_over', p1Stars: 5, p2Stars: 3 });
+  });
+});
+
+describe('recordVictory', () => {
+  beforeEach(() => {
+    jest.resetAllMocks();
+    mockFinishSession.mockResolvedValue({ success: true, state: undefined as any });
+    mockBroadcastBattleEnd.mockResolvedValue(undefined);
+  });
+
+  // Helper: mockQuery 根据 SQL 字符串返回不同结果
+  // 1. SELECT id, user_id FROM players WHERE id IN (...) → players rows
+  // 2. SELECT player1_id AS pid FROM battles WHERE id = $1 → { pid: 'player-1' }
+  // 3. SELECT player2_id AS pid FROM battles WHERE id = $1 → { pid: 'player-2' }
+  function setupRecordVictoryMocks() {
+    mockQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM players')) {
+        return [
+          { id: 'player-1', user_id: 'u1' },
+          { id: 'player-2', user_id: 'u2' },
+        ];
+      }
+      if (sql.includes('player1_id AS pid')) {
+        return [{ pid: 'player-1' }];
+      }
+      if (sql.includes('player2_id AS pid')) {
+        return [{ pid: 'player-2' }];
+      }
+      return [];
+    });
+  }
+
+  it('win: DB UPDATE winner + status=finished + finishSession + broadcast', async () => {
+    mockExecuteDb.mockResolvedValue({ rowCount: 1 });
+    setupRecordVictoryMocks();
+
+    const io = createMockIO();
+    await recordVictory(io, 'b1', {
+      status: 'win',
+      winnerSide: 'p1',
+      p1Stars: 6,
+      p2Stars: 2,
+    });
+
+    expect(mockExecuteDb).toHaveBeenCalledWith(
+      expect.stringContaining('UPDATE battles'),
+      expect.arrayContaining(['player-1', 'kill_threshold', 'b1'])
+    );
+    expect(mockFinishSession).toHaveBeenCalledWith('b1');
+    expect(mockBroadcastBattleEnd).toHaveBeenCalledWith(
+      io,
+      'b1',
+      expect.objectContaining({
+        winnerUserId: 'u1',
+        winnerSide: 'p1',
+        victoryType: 'kill_threshold',
+        p1Stars: 6,
+        p2Stars: 2,
+      })
+    );
+  });
+
+  it('win via base: victoryType=base_threshold', async () => {
+    mockExecuteDb.mockResolvedValue({ rowCount: 1 });
+    setupRecordVictoryMocks();
+
+    const io = createMockIO();
+    await recordVictory(
+      io,
+      'b1',
+      {
+        status: 'win',
+        winnerSide: 'p2',
+        p1Stars: 4,
+        p2Stars: 6,
+      },
+      'base'
+    );
+
+    expect(mockBroadcastBattleEnd).toHaveBeenCalledWith(
+      io,
+      'b1',
+      expect.objectContaining({
+        winnerUserId: 'u2',
+        winnerSide: 'p2',
+        victoryType: 'base_threshold',
+      })
+    );
+  });
+
+  it('draw: winnerUserId=null, winnerSide=null, victoryType=draw', async () => {
+    mockExecuteDb.mockResolvedValue({ rowCount: 1 });
+    setupRecordVictoryMocks();
+
+    const io = createMockIO();
+    await recordVictory(io, 'b1', {
+      status: 'draw',
+      p1Stars: 6,
+      p2Stars: 6,
+    });
+
+    expect(mockExecuteDb).toHaveBeenCalledWith(
+      expect.stringContaining('UPDATE battles'),
+      expect.arrayContaining([null, 'draw', 'b1'])
+    );
+    expect(mockBroadcastBattleEnd).toHaveBeenCalledWith(
+      io,
+      'b1',
+      expect.objectContaining({
+        winnerUserId: null,
+        winnerSide: null,
+        victoryType: 'draw',
+      })
+    );
+  });
+
+  it('finishSession 失败: 仍 broadcast (best-effort, 不 throw)', async () => {
+    mockExecuteDb.mockResolvedValue({ rowCount: 1 });
+    setupRecordVictoryMocks();
+    mockFinishSession.mockResolvedValue({ success: false, error: 'test' });
+
+    const io = createMockIO();
+    await expect(
+      recordVictory(io, 'b1', {
+        status: 'win',
+        winnerSide: 'p1',
+        p1Stars: 6,
+        p2Stars: 2,
+      })
+    ).resolves.not.toThrow();
+
+    expect(mockBroadcastBattleEnd).toHaveBeenCalled();
   });
 });

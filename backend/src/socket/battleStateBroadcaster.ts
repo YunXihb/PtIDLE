@@ -302,3 +302,43 @@ export async function broadcastSessionState(
     currentPhase: state.currentPhase,
   });
 }
+
+/**
+ * T052: 广播战斗结束事件（server → both）
+ *
+ * payload 字段：
+ *   - battleId
+ *   - winnerUserId: string | null  (平局时 null)
+ *   - winnerSide: 'p1' | 'p2' | null  (平局时 null)
+ *   - victoryType: 'kill_threshold' | 'base_threshold' | 'draw'
+ *   - p1Stars: number
+ *   - p2Stars: number
+ *   - p1UserId: string
+ *   - p2UserId: string
+ *
+ * 调用方：battleOutcomeService.recordVictory
+ */
+export async function broadcastBattleEnd(
+  io: IOServer,
+  battleId: string,
+  payload: {
+    winnerUserId: string | null;
+    winnerSide: 'p1' | 'p2' | null;
+    victoryType: 'kill_threshold' | 'base_threshold' | 'draw';
+    p1Stars: number;
+    p2Stars: number;
+    p1UserId: string;
+    p2UserId: string;
+  }
+): Promise<void> {
+  io.to(`battle:${battleId}`).emit('battle:end', {
+    battleId,
+    winnerUserId: payload.winnerUserId,
+    winnerSide: payload.winnerSide,
+    victoryType: payload.victoryType,
+    p1Stars: payload.p1Stars,
+    p2Stars: payload.p2Stars,
+    p1UserId: payload.p1UserId,
+    p2UserId: payload.p2UserId,
+  });
+}
