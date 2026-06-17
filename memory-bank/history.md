@@ -1374,3 +1374,37 @@ socketServer.ts 注册 battle:play_card 事件（.catch 兜底 emit internal_err
 - 同 Task 8：`HandCard` 接口不包含 `targetId` 字段（service 内部 cast as `HandCard & { targetId? }`），validator 重建对象会丢 targetId → service 端 `validateAttack` 拿不到 targetId 运行时崩。修正 validator 直接 cast 透传原对象，类型签名返回 `HandCard & Record<string, unknown>`。
 - Task 9 implementer 跳过加 `jest.mock('./battleRoom', ...)`，因为 `requireActual` 透传下 jest 模块缓存与 redisClient 单例状态在 mock 工厂内被 re-instantiate，导致 T047 测试 `broadcastFullState` 抛 `userRoom is not a function` 与 `redis ClientClosedError`。最终在 `battleActionService` mock 里补 `executePlayCard: jest.fn()`；未来测试要用 spy 时用 `jest.spyOn(battleRoom, 'handleBattlePlayCard')` 在 beforeEach 局部替换，避免 `jest.mock` 的模块重建副作用。
 - Task 10 全量 jest 跑出 5 个失败用例，全部在 `src/controllers/authController.test.ts`（POST /api/auth/login 的 integration test，期望 200/401 但实际拿 500），属 T005/T006 历史测试环境/DB 问题，与 T050 改动无关；排除该文件后 552 个测试全部通过，tsc exit 0。
+
+## 2026-06-17 - 任务：T051 Task 2 回合切换 orchestrator 骨架
+
+### Prompt
+实现 T051 回合切换 orchestrator 任务 2/10：添加 executeEndStep + executeRoundEnd 占位实现 + StepEndError/StepEndResult 类型 + 测试 mock 桩 + 1 个 placeholder 测试。production 行为由 Task 3-5 补充。
+
+### 思考
+骨架仅放返回 `{ success: false, error: 'not_in_play_or_move_phase' }` 的占位，让 import 解析、test mock 装载、placeholder 描述块可执行。broadcastSessionState 还不存在（Task 6 才实现），在 battleStateBroadcaster.ts 加抛错占位 `throw new Error('not implemented yet (T051 Task 6)')`，让 battleActionService.ts 的 import 不报错，Task 6 替换为真实实现。
+
+### 意外
+- task description 把 `endCurrentStep` / `activateCurrentUnit` / `completeDrawPhase` / `endCurrentRound` 的签名记成 `Promise<void>`，但实际都是 `Promise<{ success, state?, error? }>`；`retainHandOnStepEnd` 实际返回 `RetainHandResult`，`drawCards` 实际返回 `DrawCardsResult`。`mockResolvedValue(undefined)` 全部触发 ts2345 错误，需按真实返回类型给 `mockResolvedValue({ success: true, state: undefined as any, ... })`。
+- Task 2 修复期间未触碰 Task 3 之后的实现细节；T051 orchestrator 的「保留 1 张手牌语义」是 retainHandOnStepEnd(battleId, actorId, retainDeckId: string | null)，`retainDeckId` 由前端传 — Task 3 才决定是否在 orchestrator 内自动选牌（猜测是 null = 全弃，因为 frontend 已经做了 UI 选择）。
+
+## 2026-06-17 - 任务：T051 回合切换 orchestrator
+
+### Prompt
+按 CLAUDE.md 3 步循环: 阅读 memory-bank → 消除歧义(4 个问题) → Ask/Plan 模式确认 T051 方案 → 写 spec → 写 plan → 实施。
+
+### 思考
+- 选项 B (两个独立 orchestrator) 镜像 T049/T050 模式, 单一职责
+- 用户 4 个问题答案: 服务端级联 / 允许 skip-play / 每 round 末结算 / 每 round 末 tick
+- 关键发现: applyBurnDamage 只算伤害不算 HP, 需新增 tickBurnDamageOnTarget helper
+- broadcastSessionState 独立事件 (频率高, 不应塞进 board)
+
+### 意外
+- applyBurnDamage 不扣 HP, 需新增 tickBurnDamageOnTarget 局部 apply (15 行 helper)
+- last step 时 broadcast 触发 2 次 (round-end + step-end), by design
+- T050 executePlayCard wire-up 时 T050 default mock 需补 executeEndStep 链
+- T049 executeMove 不在 T051 范围 (T051.5 决定是否级联)
+
+### 范围外
+- T049 executeMove 末尾级联 (T051.5 决定)
+- step 超时 AFK (future)
+- T056 applyDamage (attack/AOE 实际伤害)

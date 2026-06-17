@@ -1879,5 +1879,79 @@ T050 扩展既有 `battleActionService` 新增 `executePlayCard` 17 步流水；
 
 ---
 
-*文档版本：v1.35*
+## T051 回合切换 (Turn Switching)
+
+T051 实现回合切换 orchestrator, 在 T050 出牌后自动级联, 客户端也可主动 `battle:skip_play` 触发. 两个独立 orchestrator: `executeEndStep` (11 步主流水) + `executeRoundEnd` (5 步子流水, 仅 last step 触发).
+
+### 1. 触发流程
+
+```
+  T050 executePlayCard                       客户端 battle:skip_play
+   (T049 executeMove 也可对称)                  (out of scope T051)
+       │                                              │
+       ▼                                              ▼
+   completePlayPhase                       handleBattleSkipPlay(io, socket, payload)
+       │                                              │
+       └────────────┬─────────────────────────────────┘
+                    ▼
+            executeEndStep(io, battleId)
+              (11 步)
+              ├─ 步骤 1-2: 读 session + phase 校验 (play OR move)
+              ├─ 步骤 3: retainHandOnStepEnd (保留 1 张手牌)
+              ├─ 步骤 4: if (currentStep === 5) → executeRoundEnd
+              ├─ 步骤 5: endCurrentStep
+              ├─ 步骤 6: activateCurrentUnit (snake draft 下一 actor)
+              ├─ 步骤 7: drawCards (新 actor 抽牌)
+              ├─ 步骤 8: completeDrawPhase
+              └─ 步骤 9-11: 重读 session + broadcastSessionState + broadcastBoardState
+
+            executeRoundEnd (条件, last step 触发)
+              (5 步)
+              ├─ 步骤 1: tickBurnDamageOnTarget × 6 角色 (Promise.all)
+              ├─ 步骤 2: tickEffects × 6 角色 (顺序, 改 state)
+              ├─ 步骤 3: endCurrentRound
+              └─ 步骤 4-5: 重读 session + broadcastSessionState + broadcastBoardState
+```
+
+### 2. 模块改动
+
+| 模块 | 改动 |
+|------|------|
+| `src/services/professionMechanicService.ts` | **新增** `tickBurnDamageOnTarget(battleId, targetId, currentRound)` — 算 burn 伤害 + 扣 HP + 标记 is_alive=false (15 行 helper) |
+| `src/services/battleActionService.ts` | **新增** `executeEndStep` (11 步) + `executeRoundEnd` (5 步) + `StepEndError` / `StepEndResult` 类型. T050 `executePlayCard` 末尾追加 `await executeEndStep(io, battleId)` (T050 spec §4.5) |
+| `src/socket/battleStateBroadcaster.ts` | **新增** `broadcastSessionState(io, battleId, state)` — emit `battle:state:session` 到 `battle:{battleId}` room, payload 含 4 字段 (currentRound/currentStep/currentActorId/currentPhase) |
+| `src/socket/battleRoom.ts` | **新增** `handleBattleSkipPlay(io, socket, payload)` — payload 验证 + 调 executeEndStep + 失败 emit `battle:skip_play:error` |
+| `src/socket/socketServer.ts` | **注册** `socket.on('battle:skip_play', ...)` 事件 |
+
+### 3. 关键设计决策
+
+1. **服务端级联**: T050 出牌后服务端自动调 `executeEndStep`, 客户端无需手动发 `battle:skip_play`. 客户端 skip 是 PUA 用户的快捷方式, 业务逻辑相同路径.
+2. **两个独立 orchestrator**: 镜像 T049/T050 模式 (executeMove + executeEndStep 分离), 单一职责, executeRoundEnd 可独立测试.
+3. **burn 伤害结算**: `applyBurnDamage` 只算伤害不算 HP, T051 新增 `tickBurnDamageOnTarget` 局部完成 HP apply. T056 整合时由 T056 的统一 `applyDamage` 接管.
+4. **独立 session 事件**: `battle:state:session` 独立于 `battle:state:board` (元数据变化频率高, 不应塞进 board payload). T047 broadcaster 库已预留此事件名.
+5. **last step 双广播 by design**: last step 时 `executeRoundEnd` 推 1 次 session+board, `executeEndStep` 末尾再推 1 次 (round-end 元数据 vs step-end 元数据语义不同). 前端在同 tick 收到 2 次推送无视觉差.
+6. **retainHandOnStepEnd 第 3 参**: T051 决定自动取 `hand[0]?.deck_id ?? null` (第一张手牌, 空手牌传 null), handler 不需客户端传保留牌 ID, 简化 client.
+7. **错误传播**: 失败 → emit `battle:skip_play:error` 带 error + detail. 抛错 → 沿用 socketServer 兜底 (log + emit `internal_error`).
+
+### 4. T056 集成要点
+
+- **T056 整合时**: T051 是 T056 `applyDamage` 之外的新 HP 操作点 (round-end tick burn 扣 HP). 整合时需要审计 executeRoundEnd 步骤 1 调 `tickBurnDamageOnTarget` 的位置, 由 T056 统一 `applyDamage` 替换.
+- **T051.5 范围 (T049 executeMove wire-up)**: T049 末尾也需追加 `await executeEndStep(io, battleId)`. T051.5 决定 move 阶段后是否级联.
+- **Step 超时 AFK (T051+)**: 客户端未在 N 秒内行动, 服务端自动 `executeEndStep` + 切换 actor. 当前 T051 未实现, 等真实对战测试后再加.
+
+### WS 事件
+- `battle:skip_play` (client → server): `{ battleId }`
+- `battle:skip_play:error` (server → client): `{ error, detail? }`
+- **新增** `battle:state:session` (server → room): `{ battleId, currentRound, currentStep, currentActorId, currentPhase }` — 推 `battle:{battleId}` (双方共有)
+- 复用 T047 既有 `battle:state:board`
+
+### 测试
+- `src/services/professionMechanicService.test.ts` — 4 个 tickBurnDamageOnTarget 单测
+- `src/services/battleActionService.test.ts` — 10 个 executeEndStep 单测 (3 mid-round + 3 last-step + 4 error branches) + 既有 T049/T050 测试
+- `src/socket/battleStateBroadcaster.test.ts` — 1 个 broadcastSessionState 单测
+- `src/socket/battleRoom.test.ts` — 6 个 handleBattleSkipPlay 单测
+
+---
+
+*文档版本：v1.36*
 *最后更新：2026-06-17*
