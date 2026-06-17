@@ -890,4 +890,63 @@ describe('executeEndStep', () => {
     const calledWith = mockTickBurnDamageOnTarget.mock.calls.map(c => c[1]);
     expect(calledWith).toEqual(expect.arrayContaining(['c1', 'c2', 'c3', 'c4', 'c5', 'c6']));
   });
+
+  describe('executeEndStep error branches', () => {
+    const setupState = () => mockGetDbSessionState
+      .mockResolvedValueOnce({
+        battleId: 'b1', currentRound: 1, currentStep: 2, currentPhase: 'play', currentActorId: 'c1',
+      } as any);
+
+    it('currentPhase=idle → error: not_in_play_or_move_phase, retain 未调', async () => {
+      setupState();
+      mockGetDbSessionState.mockReset();
+      mockGetDbSessionState.mockResolvedValueOnce({
+        battleId: 'b1', currentRound: 1, currentStep: 0, currentPhase: 'idle', currentActorId: null,
+      } as any);
+      const { executeEndStep } = await import('./battleActionService');
+      const result = await executeEndStep(createMockIO(), 'b1');
+      expect(result).toEqual({ success: false, error: 'not_in_play_or_move_phase' });
+      expect(mockRetainHandOnStepEnd).not.toHaveBeenCalled();
+    });
+
+    it('activate 失败 → error: activate_failed', async () => {
+      setupState();
+      mockActivateCurrentUnit.mockRejectedValueOnce(new Error('activate fail'));
+      const { executeEndStep } = await import('./battleActionService');
+      const result = await executeEndStep(createMockIO(), 'b1');
+      expect(result).toEqual({ success: false, error: 'activate_failed', detail: 'activate fail' });
+    });
+
+    it('drawCards 失败 → error: draw_failed', async () => {
+      setupState();
+      mockGetDbSessionState
+        .mockReset()
+        .mockResolvedValueOnce({  // 步骤 1
+          battleId: 'b1', currentRound: 1, currentStep: 2, currentPhase: 'play', currentActorId: 'c1',
+        } as any)
+        .mockResolvedValueOnce({  // 步骤 7 重读
+          battleId: 'b1', currentRound: 1, currentStep: 3, currentPhase: 'draw', currentActorId: 'c4',
+        } as any);
+      mockDrawCards.mockRejectedValueOnce(new Error('draw fail'));
+      const { executeEndStep } = await import('./battleActionService');
+      const result = await executeEndStep(createMockIO(), 'b1');
+      expect(result).toEqual({ success: false, error: 'draw_failed', detail: 'draw fail' });
+    });
+
+    it('completeDrawPhase 失败 → error: complete_phase_failed', async () => {
+      setupState();
+      mockGetDbSessionState
+        .mockReset()
+        .mockResolvedValueOnce({
+          battleId: 'b1', currentRound: 1, currentStep: 2, currentPhase: 'play', currentActorId: 'c1',
+        } as any)
+        .mockResolvedValueOnce({
+          battleId: 'b1', currentRound: 1, currentStep: 3, currentPhase: 'draw', currentActorId: 'c4',
+        } as any);
+      mockCompleteDrawPhase.mockRejectedValueOnce(new Error('phase fail'));
+      const { executeEndStep } = await import('./battleActionService');
+      const result = await executeEndStep(createMockIO(), 'b1');
+      expect(result).toEqual({ success: false, error: 'complete_phase_failed', detail: 'phase fail' });
+    });
+  });
 });
