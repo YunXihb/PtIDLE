@@ -25,6 +25,8 @@ import { query, execute } from '../config/database';
 import { redisClient } from '../config/redis';
 import { listCharactersInBattle } from './battleService';
 import { finishSession } from './battleSessionService';
+// 注：query/execute/redisClient/listCharactersInBattle/finishSession 将在 Task 3-6 实现中使用，
+//      骨架阶段先 import 占位，避免后续任务频繁改动 import 段。
 
 // ========================================
 // 常量
@@ -55,6 +57,11 @@ export const WIN_THRESHOLD = 6;
 export type Side = 'p1' | 'p2';
 export type BaseOwner = Side | 'neutral';
 export type VictoryType = 'kill_threshold' | 'base_threshold' | 'draw';
+/**
+ * 胜利进度来源类型（用于区分击杀加星 vs 据点加星）
+ * T052 范围：仅作类型导出；Task 3-4 的 applyKillStars / applyBaseStars 在内部使用
+ * 未来扩展：可用于胜负事件 telemetry、replay 回放等
+ */
 export type StarSource = 'kill' | 'base';
 
 export type BasesState = Record<string, BaseOwner>;
