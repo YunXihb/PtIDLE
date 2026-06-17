@@ -289,10 +289,34 @@ export async function applyBaseStars(battleId: string): Promise<BaseStarDelta> {
 }
 
 /**
- * T052 §3.1: 检查胜利条件 — 见 Task 5 完整实现
+ * T052 §3.1: 检查胜利条件
+ *
+ * 读取 stars:p1/p2，判定 win/draw/not_over。
+ * victoryType 由调用方根据上下文（kill or base）推断。
+ *
+ * @param battleId battle id
+ * @returns WinCheckResult
  */
 export async function checkWinCondition(battleId: string): Promise<WinCheckResult> {
-  throw new Error('checkWinCondition: not implemented');
+  const [p1Raw, p2Raw] = await Promise.all([
+    redisClient.get(starsKey(battleId, 'p1')),
+    redisClient.get(starsKey(battleId, 'p2')),
+  ]);
+  const p1Stars = p1Raw === null ? 0 : parseInt(p1Raw, 10);
+  const p2Stars = p2Raw === null ? 0 : parseInt(p2Raw, 10);
+
+  const p1Wins = p1Stars >= WIN_THRESHOLD;
+  const p2Wins = p2Stars >= WIN_THRESHOLD;
+  if (p1Wins && p2Wins) {
+    return { status: 'draw', p1Stars, p2Stars };
+  }
+  if (p1Wins) {
+    return { status: 'win', winnerSide: 'p1', p1Stars, p2Stars };
+  }
+  if (p2Wins) {
+    return { status: 'win', winnerSide: 'p2', p1Stars, p2Stars };
+  }
+  return { status: 'not_over', p1Stars, p2Stars };
 }
 
 /**

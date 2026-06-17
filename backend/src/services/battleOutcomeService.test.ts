@@ -39,7 +39,7 @@ jest.mock('./battleService', () => ({
   listCharactersInBattle: mockListCharactersInBattle,
 }));
 
-import { applyKillStars, applyBaseStars } from './battleOutcomeService';
+import { applyKillStars, applyBaseStars, checkWinCondition } from './battleOutcomeService';
 import { BASES, BASE_RADIUS, WIN_THRESHOLD } from './battleOutcomeService';
 
 const mockList = mockListCharactersInBattle as jest.MockedFunction<typeof mockListCharactersInBattle>;
@@ -375,5 +375,57 @@ describe('applyBaseStars', () => {
     expect(result.p2Delta).toBe(0);
     expect(result.bases['3,3']).toBe('neutral');
     expect(result.bases['6,6']).toBe('neutral');
+  });
+});
+
+describe('checkWinCondition', () => {
+  beforeEach(() => {
+    jest.resetAllMocks();
+    // 默认 stars 0/0
+    mockGet.mockImplementation(async (key: string) => {
+      if (key === 'battle:b1:stars:p1') return '0';
+      if (key === 'battle:b1:stars:p2') return '0';
+      return null;
+    });
+  });
+
+  it('win p1: p1=6, p2=2 → win p1', async () => {
+    mockGet.mockImplementation(async (key: string) => {
+      if (key === 'battle:b1:stars:p1') return '6';
+      if (key === 'battle:b1:stars:p2') return '2';
+      return null;
+    });
+    const result = await checkWinCondition('b1');
+    expect(result).toEqual({ status: 'win', winnerSide: 'p1', p1Stars: 6, p2Stars: 2 });
+  });
+
+  it('win p2: p1=4, p2=6 → win p2', async () => {
+    mockGet.mockImplementation(async (key: string) => {
+      if (key === 'battle:b1:stars:p1') return '4';
+      if (key === 'battle:b1:stars:p2') return '6';
+      return null;
+    });
+    const result = await checkWinCondition('b1');
+    expect(result).toEqual({ status: 'win', winnerSide: 'p2', p1Stars: 4, p2Stars: 6 });
+  });
+
+  it('draw: p1=6, p2=6 → draw', async () => {
+    mockGet.mockImplementation(async (key: string) => {
+      if (key === 'battle:b1:stars:p1') return '6';
+      if (key === 'battle:b1:stars:p2') return '6';
+      return null;
+    });
+    const result = await checkWinCondition('b1');
+    expect(result).toEqual({ status: 'draw', p1Stars: 6, p2Stars: 6 });
+  });
+
+  it('not_over: p1=5, p2=3 → not_over', async () => {
+    mockGet.mockImplementation(async (key: string) => {
+      if (key === 'battle:b1:stars:p1') return '5';
+      if (key === 'battle:b1:stars:p2') return '3';
+      return null;
+    });
+    const result = await checkWinCondition('b1');
+    expect(result).toEqual({ status: 'not_over', p1Stars: 5, p2Stars: 3 });
   });
 });
