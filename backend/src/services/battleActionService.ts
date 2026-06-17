@@ -319,12 +319,91 @@ export type StepEndResult =
   | { success: false; error: StepEndError; detail?: string };
 
 export async function executeEndStep(
-  _io: IOServer,
-  _battleId: string
+  io: IOServer,
+  battleId: string
 ): Promise<StepEndResult> {
-  // TDD STUB: Task 2 仅放占位实现（让 import 不报错 + 测试可执行）。
-  // Task 3 替换为 mid-round happy path, Task 4 追加 last-step 路由, Task 5 补 error branches。
-  return { success: false, error: 'not_in_play_or_move_phase' };
+  // 1. 读 session
+  const state = await getDbSessionState(battleId);
+  if (!state) {
+    throw new Error(`executeEndStep: session not found: ${battleId}`);
+  }
+
+  // 2. phase check
+  if (state.currentPhase !== 'play' && state.currentPhase !== 'move') {
+    return { success: false, error: 'not_in_play_or_move_phase' };
+  }
+
+  // 3. retain 手牌（自动保留 hand LIST 第一张，如手牌为空传 null）
+  try {
+    const hand = await getActorHand(battleId, state.currentActorId!);
+    const retainDeckId = hand[0]?.deck_id ?? null;
+    const retainResult = await retainHandOnStepEnd(battleId, state.currentActorId!, retainDeckId);
+    if (!retainResult.success) {
+      return { success: false, error: 'retain_failed', detail: retainResult.error };
+    }
+  } catch (err) {
+    return { success: false, error: 'retain_failed', detail: (err as Error).message };
+  }
+
+  // 4. (last step?) executeRoundEnd — TDD STUB for Task 3, Task 4 adds routing
+
+  // 5. endCurrentStep
+  try {
+    const r = await endCurrentStep(battleId);
+    if (!r.success) {
+      return { success: false, error: 'end_step_failed', detail: r.error };
+    }
+  } catch (err) {
+    return { success: false, error: 'end_step_failed', detail: (err as Error).message };
+  }
+
+  // 6. activateCurrentUnit
+  try {
+    const r = await activateCurrentUnit(battleId);
+    if (!r.success) {
+      return { success: false, error: 'activate_failed', detail: r.error };
+    }
+  } catch (err) {
+    return { success: false, error: 'activate_failed', detail: (err as Error).message };
+  }
+
+  // 7. drawCards (新 actor)
+  const updatedState = await getDbSessionState(battleId);
+  if (!updatedState || !updatedState.currentActorId) {
+    return { success: false, error: 'draw_failed' };
+  }
+  try {
+    const r = await drawCards(battleId, updatedState.currentActorId);
+    if (!r.success) {
+      return { success: false, error: 'draw_failed', detail: r.error };
+    }
+  } catch (err) {
+    return { success: false, error: 'draw_failed', detail: (err as Error).message };
+  }
+
+  // 8. completeDrawPhase
+  try {
+    const r = await completeDrawPhase(battleId);
+    if (!r.success) {
+      return { success: false, error: 'complete_phase_failed', detail: r.error };
+    }
+  } catch (err) {
+    return { success: false, error: 'complete_phase_failed', detail: (err as Error).message };
+  }
+
+  // 9. 末尾重读 session
+  const finalStateRaw = await getDbSessionState(battleId);
+  if (!finalStateRaw) {
+    throw new Error(`executeEndStep: final state read failed: ${battleId}`);
+  }
+  // Cast to BattleSessionState (runtime guarantees full shape; mock tests may return partial)
+  const finalState = finalStateRaw as BattleSessionState;
+
+  // 10-11. 广播
+  await broadcastSessionState(io, battleId, finalState);
+  await broadcastBoardState(io, battleId);
+
+  return { success: true, state: finalState };
 }
 
 export async function executeRoundEnd(

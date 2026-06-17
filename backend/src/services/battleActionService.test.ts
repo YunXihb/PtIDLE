@@ -118,7 +118,7 @@ function createMockIO(): IOServer {
 }
 
 beforeEach(() => {
-  jest.clearAllMocks();
+  jest.resetAllMocks();
   // 默认 happy path 桩：每个测试按需覆盖
   mockGetDbSessionState.mockResolvedValue({
     currentRound: 1,
@@ -767,17 +767,58 @@ describe('executePlayCard', () => {
 });
 
 describe('executeEndStep', () => {
-  it('placeholder — to be expanded in Task 3-5', async () => {
-    const { executeEndStep } = await import('./battleActionService');
-    const io = createMockIO();
-    mockGetDbSessionState.mockResolvedValue({
+  // 复用 helper 设置 mid-round state
+  const setupMidRoundState = () => {
+    const fullState = (overrides: any) => ({
       battleId: 'b1',
       currentRound: 1,
-      currentStep: 2,
-      currentPhase: 'play',
-      currentActorId: 'c1',
-    } as any);
-    const result = await executeEndStep(io, 'b1');
-    expect(result).toHaveProperty('success');
+      activationOrder: ['c1', 'c4', 'c2', 'c5', 'c3', 'c6'],
+      player1Chars: ['c1', 'c2', 'c3'],
+      player2Chars: ['c4', 'c5', 'c6'],
+      updatedAt: '2026-01-01T00:00:00Z',
+      ...overrides,
+    });
+    mockGetDbSessionState
+      .mockResolvedValueOnce(fullState({ currentStep: 2, currentPhase: 'play', currentActorId: 'c1' }) as any)  // 步骤 1 读
+      .mockResolvedValueOnce(fullState({ currentStep: 3, currentPhase: 'draw', currentActorId: 'c4' }) as any)  // 步骤 7 重读
+      .mockResolvedValueOnce(fullState({ currentStep: 3, currentPhase: 'draw', currentActorId: 'c4' }) as any); // 步骤 9 末尾重读
+  };
+
+  it('mid-round happy path (step 0-4/6) → endStep → activate → draw → completeDrawPhase → 2 broadcast, 不调 executeRoundEnd', async () => {
+    setupMidRoundState();
+    mockGetActorHand.mockResolvedValue([{ deck_id: 'd1', card_id: 'pc1', name: '轻击', type: 'attack', cost: 1, effect: { damage: 2 }, template_no: 1, source: 'deck' } as any]);
+    const { executeEndStep } = await import('./battleActionService');
+    const result = await executeEndStep(createMockIO(), 'b1');
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.state.currentStep).toBe(3);
+    }
+    expect(mockRetainHandOnStepEnd).toHaveBeenCalledTimes(1);
+    expect(mockEndCurrentStep).toHaveBeenCalledTimes(1);
+    expect(mockActivateCurrentUnit).toHaveBeenCalledTimes(1);
+    expect(mockDrawCards).toHaveBeenCalledTimes(1);
+    expect(mockCompleteDrawPhase).toHaveBeenCalledTimes(1);
+    expect(mockEndCurrentRound).not.toHaveBeenCalled();
+    expect(mockTickBurnDamageOnTarget).not.toHaveBeenCalled();
+  });
+
+  it('retain 失败 → error: retain_failed, endStep 未调', async () => {
+    setupMidRoundState();
+    mockGetActorHand.mockResolvedValue([]);
+    mockRetainHandOnStepEnd.mockResolvedValueOnce({ success: false, retained: null, discarded: [], error: 'retain fail' });
+    const { executeEndStep } = await import('./battleActionService');
+    const result = await executeEndStep(createMockIO(), 'b1');
+    expect(result).toEqual({ success: false, error: 'retain_failed', detail: 'retain fail' });
+    expect(mockEndCurrentStep).not.toHaveBeenCalled();
+  });
+
+  it('end_step 失败 → error: end_step_failed, activate 未调', async () => {
+    setupMidRoundState();
+    mockGetActorHand.mockResolvedValue([]);
+    mockEndCurrentStep.mockRejectedValueOnce(new Error('end step fail'));
+    const { executeEndStep } = await import('./battleActionService');
+    const result = await executeEndStep(createMockIO(), 'b1');
+    expect(result).toEqual({ success: false, error: 'end_step_failed', detail: 'end step fail' });
+    expect(mockActivateCurrentUnit).not.toHaveBeenCalled();
   });
 });
