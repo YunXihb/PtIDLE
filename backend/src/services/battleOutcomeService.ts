@@ -195,10 +195,97 @@ export async function applyKillStars(
 }
 
 /**
- * T052 §3.1: 应用据点 star — 见 Task 4 完整实现
+ * T052 §3.1: 应用据点 star
+ *
+ * 扫描 2 个固定据点 (3,3) 和 (6,6)，按 Chebyshev 距离 ≤2 范围
+ * 内的 alive 棋子数判定占领方。占领方 +1 star。
+ *
+ * 流程：
+ *   1. listCharactersInBattle 拿全部 6 角色
+ *   2. hGetAll pieces 拿 is_alive + hGetAll positions 拿坐标
+ *   3. 对每个据点：
+ *      - 统计范围内 p1 alive, p2 alive
+ *      - p1 > p2 → 'p1'; p1 < p2 → 'p2'; p1 == p2 → 'neutral'
+ *   4. 累加 star（每占领 1 个 +1）
+ *   5. SET bases JSON
+ *   6. broadcastBasesState（由调用方负责，本函数只返 bases 状态）
+ *
+ * @param battleId battle id
+ * @returns { p1Delta, p2Delta, p1StarsAfter, p2StarsAfter, bases }
  */
 export async function applyBaseStars(battleId: string): Promise<BaseStarDelta> {
-  throw new Error('applyBaseStars: not implemented');
+  // 1. 拿角色
+  const characters = await listCharactersInBattle(battleId);
+  if (characters.length === 0) {
+    return {
+      p1Delta: 0,
+      p2Delta: 0,
+      p1StarsAfter: 0,
+      p2StarsAfter: 0,
+      bases: { '3,3': 'neutral', '6,6': 'neutral' },
+    };
+  }
+
+  // 2. 读 pieces + positions
+  const [piecesRaw, positionsRaw] = await Promise.all([
+    redisClient.hGetAll(piecesKey(battleId)),
+    redisClient.hGetAll(positionsKey(battleId)),
+  ]);
+
+  // 3. 判定每个据点
+  const bases: BasesState = {};
+  let p1Delta = 0;
+  let p2Delta = 0;
+
+  for (const base of BASES) {
+    let p1InRange = 0;
+    let p2InRange = 0;
+    for (const c of characters) {
+      const pieceRaw = piecesRaw[c.characterId];
+      const posRaw = positionsRaw[c.characterId];
+      if (!pieceRaw || !posRaw) continue;
+      const piece = JSON.parse(pieceRaw);
+      const pos = JSON.parse(posRaw);
+      if (piece.is_alive !== true) continue;
+      // Chebyshev 距离
+      const cheb = Math.max(Math.abs(pos.x - base.x), Math.abs(pos.y - base.y));
+      if (cheb > BASE_RADIUS) continue;
+      if (c.playerId === 'p1') p1InRange++;
+      else if (c.playerId === 'p2') p2InRange++;
+    }
+    if (p1InRange > p2InRange) {
+      bases[base.key] = 'p1';
+      p1Delta++;
+    } else if (p2InRange > p1InRange) {
+      bases[base.key] = 'p2';
+      p2Delta++;
+    } else {
+      bases[base.key] = 'neutral';
+    }
+  }
+
+  // 4. 累加 star
+  let p1StarsAfter = 0;
+  let p2StarsAfter = 0;
+  if (p1Delta > 0) {
+    const r = await persistStars(battleId, 'p1', p1Delta);
+    p1StarsAfter = r.newStars;
+  } else {
+    const v = await redisClient.get(starsKey(battleId, 'p1'));
+    p1StarsAfter = v === null ? 0 : parseInt(v, 10);
+  }
+  if (p2Delta > 0) {
+    const r = await persistStars(battleId, 'p2', p2Delta);
+    p2StarsAfter = r.newStars;
+  } else {
+    const v = await redisClient.get(starsKey(battleId, 'p2'));
+    p2StarsAfter = v === null ? 0 : parseInt(v, 10);
+  }
+
+  // 5. SET bases JSON
+  await redisClient.set(basesKey(battleId), JSON.stringify(bases));
+
+  return { p1Delta, p2Delta, p1StarsAfter, p2StarsAfter, bases };
 }
 
 /**

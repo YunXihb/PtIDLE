@@ -39,7 +39,7 @@ jest.mock('./battleService', () => ({
   listCharactersInBattle: mockListCharactersInBattle,
 }));
 
-import { applyKillStars } from './battleOutcomeService';
+import { applyKillStars, applyBaseStars } from './battleOutcomeService';
 import { BASES, BASE_RADIUS, WIN_THRESHOLD } from './battleOutcomeService';
 
 const mockList = mockListCharactersInBattle as jest.MockedFunction<typeof mockListCharactersInBattle>;
@@ -174,5 +174,206 @@ describe('applyKillStars', () => {
 
     expect(result.p1Delta).toBe(0);
     expect(result.p2Delta).toBe(0);
+  });
+});
+
+describe('applyBaseStars', () => {
+  beforeEach(() => {
+    jest.resetAllMocks();
+    // 默认 pieces 全 alive，positions 各异
+    mockList.mockResolvedValue([
+      { characterId: 'c1', playerId: 'p1', userId: 'u1', profession: 'warrior', name: 'A' },
+      { characterId: 'c2', playerId: 'p1', userId: 'u1', profession: 'ranger', name: 'B' },
+      { characterId: 'c3', playerId: 'p1', userId: 'u1', profession: 'mage', name: 'C' },
+      { characterId: 'c4', playerId: 'p2', userId: 'u2', profession: 'warrior', name: 'D' },
+      { characterId: 'c5', playerId: 'p2', userId: 'u2', profession: 'ranger', name: 'E' },
+      { characterId: 'c6', playerId: 'p2', userId: 'u2', profession: 'mage', name: 'F' },
+    ] as any);
+    mockHGetAll.mockImplementation(async (key: string) => {
+      if (key === 'battle:b1:pieces') {
+        return {
+          c1: JSON.stringify({ is_alive: true }),
+          c2: JSON.stringify({ is_alive: true }),
+          c3: JSON.stringify({ is_alive: true }),
+          c4: JSON.stringify({ is_alive: true }),
+          c5: JSON.stringify({ is_alive: true }),
+          c6: JSON.stringify({ is_alive: true }),
+        };
+      }
+      if (key === 'battle:b1:positions') {
+        // 默认 c1-c6 都在远离据点的位置 (8,8)
+        return {
+          c1: JSON.stringify({ x: 8, y: 8 }),
+          c2: JSON.stringify({ x: 8, y: 8 }),
+          c3: JSON.stringify({ x: 8, y: 8 }),
+          c4: JSON.stringify({ x: 8, y: 8 }),
+          c5: JSON.stringify({ x: 8, y: 8 }),
+          c6: JSON.stringify({ x: 8, y: 8 }),
+        };
+      }
+      return {};
+    });
+    mockGet.mockImplementation(async (key: string) => {
+      if (key === 'battle:b1:stars:p1') return '0';
+      if (key === 'battle:b1:stars:p2') return '0';
+      return null;
+    });
+    mockIncrBy.mockImplementation(async (_key: string, increment: number) => increment);
+    mockExecuteDb.mockResolvedValue({ rowCount: 1 });
+  });
+
+  it('p1 占 1: (3,3) 范围 p1=2 alive, p2=1 alive → p1 +1 star', async () => {
+    mockHGetAll.mockImplementation(async (key: string) => {
+      if (key === 'battle:b1:pieces') {
+        return {
+          c1: JSON.stringify({ is_alive: true }),
+          c2: JSON.stringify({ is_alive: true }),
+          c3: JSON.stringify({ is_alive: true }),
+          c4: JSON.stringify({ is_alive: true }),
+          c5: JSON.stringify({ is_alive: false }),
+          c6: JSON.stringify({ is_alive: true }),
+        };
+      }
+      if (key === 'battle:b1:positions') {
+        // c1(3,3) 在 (3,3) 范围; c2(1,3) 在 (3,3) 范围但不在 (6,6) 范围;
+        // c3(0,0) 不在任何据点范围; c4(4,3) 在 (3,3) 范围但不在 (6,6) 范围;
+        // c6(8,0) 不在任何据点范围
+        return {
+          c1: JSON.stringify({ x: 3, y: 3 }),
+          c2: JSON.stringify({ x: 1, y: 3 }),
+          c3: JSON.stringify({ x: 0, y: 0 }),
+          c4: JSON.stringify({ x: 4, y: 3 }),
+          c5: JSON.stringify({ x: 8, y: 8 }),
+          c6: JSON.stringify({ x: 8, y: 0 }),
+        };
+      }
+      return {};
+    });
+
+    const result = await applyBaseStars('b1');
+
+    expect(result.p1Delta).toBe(1);
+    expect(result.p2Delta).toBe(0);
+    expect(result.p1StarsAfter).toBe(1);
+    expect(result.bases['3,3']).toBe('p1');
+    expect(result.bases['6,6']).toBe('neutral');
+  });
+
+  it('p2 占 2: (3,3) p1=0 p2=3; (6,6) p1=0 p2=1 → p2 +2 stars', async () => {
+    mockHGetAll.mockImplementation(async (key: string) => {
+      if (key === 'battle:b1:pieces') {
+        return {
+          c1: JSON.stringify({ is_alive: true }),
+          c2: JSON.stringify({ is_alive: true }),
+          c3: JSON.stringify({ is_alive: true }),
+          c4: JSON.stringify({ is_alive: true }),
+          c5: JSON.stringify({ is_alive: true }),
+          c6: JSON.stringify({ is_alive: true }),
+        };
+      }
+      if (key === 'battle:b1:positions') {
+        // p1 三子在 (0,*) 角落，远离两个据点; p2 占据 (3,3)/(4,3) (在 (3,3) 范围)
+        // 和 (5,5) (同时在 (3,3) 与 (6,6) 范围)
+        return {
+          c1: JSON.stringify({ x: 0, y: 0 }),
+          c2: JSON.stringify({ x: 0, y: 1 }),
+          c3: JSON.stringify({ x: 0, y: 2 }),
+          c4: JSON.stringify({ x: 3, y: 3 }),
+          c5: JSON.stringify({ x: 4, y: 3 }),
+          c6: JSON.stringify({ x: 5, y: 5 }),
+        };
+      }
+      return {};
+    });
+
+    const result = await applyBaseStars('b1');
+
+    expect(result.p1Delta).toBe(0);
+    expect(result.p2Delta).toBe(2);
+    expect(result.p2StarsAfter).toBe(2);
+    expect(result.bases['3,3']).toBe('p2');
+    expect(result.bases['6,6']).toBe('p2');
+  });
+
+  it('neutral: (3,3) p1=2 p2=2; (6,6) p1=3 p2=0 → p1 +1 (仅 6,6)', async () => {
+    mockHGetAll.mockImplementation(async (key: string) => {
+      if (key === 'battle:b1:pieces') {
+        return {
+          c1: JSON.stringify({ is_alive: true }),
+          c2: JSON.stringify({ is_alive: true }),
+          c3: JSON.stringify({ is_alive: true }),
+          c4: JSON.stringify({ is_alive: true }),
+          c5: JSON.stringify({ is_alive: true }),
+          c6: JSON.stringify({ is_alive: true }),
+        };
+      }
+      if (key === 'battle:b1:positions') {
+        // c1(4,4) c2(5,5): p1 在 (3,3)∩(6,6) overlap
+        // c3(6,6): p1 在 (6,6) 范围 only
+        // c4(1,1) c5(2,2): p2 在 (3,3) 范围 only
+        // c6(0,0): p2 远离两据点
+        return {
+          c1: JSON.stringify({ x: 4, y: 4 }),
+          c2: JSON.stringify({ x: 5, y: 5 }),
+          c3: JSON.stringify({ x: 6, y: 6 }),
+          c4: JSON.stringify({ x: 1, y: 1 }),
+          c5: JSON.stringify({ x: 2, y: 2 }),
+          c6: JSON.stringify({ x: 0, y: 0 }),
+        };
+      }
+      return {};
+    });
+
+    const result = await applyBaseStars('b1');
+
+    expect(result.p1Delta).toBe(1);
+    expect(result.bases['3,3']).toBe('neutral');
+    expect(result.bases['6,6']).toBe('p1');
+  });
+
+  it('both neutral: (3,3) p1=1 p2=1; (6,6) p1=1 p2=1 → 0 delta', async () => {
+    mockHGetAll.mockImplementation(async (key: string) => {
+      if (key === 'battle:b1:pieces') {
+        return {
+          c1: JSON.stringify({ is_alive: true }),
+          c2: JSON.stringify({ is_alive: true }),
+          c3: JSON.stringify({ is_alive: true }),
+          c4: JSON.stringify({ is_alive: true }),
+          c5: JSON.stringify({ is_alive: true }),
+          c6: JSON.stringify({ is_alive: true }),
+        };
+      }
+      if (key === 'battle:b1:positions') {
+        // c1(3,3) 在 (3,3) 范围 only; c2(8,8) 在 (6,6) 范围 only;
+        // c3(0,0) 远离两据点; c4(5,2) 在 (3,3) 范围 only;
+        // c5(8,6) 在 (6,6) 范围 only; c6(0,8) 远离两据点
+        return {
+          c1: JSON.stringify({ x: 3, y: 3 }),
+          c2: JSON.stringify({ x: 8, y: 8 }),
+          c3: JSON.stringify({ x: 0, y: 0 }),
+          c4: JSON.stringify({ x: 5, y: 2 }),
+          c5: JSON.stringify({ x: 8, y: 6 }),
+          c6: JSON.stringify({ x: 0, y: 8 }),
+        };
+      }
+      return {};
+    });
+
+    const result = await applyBaseStars('b1');
+
+    expect(result.p1Delta).toBe(0);
+    expect(result.p2Delta).toBe(0);
+    expect(result.bases['3,3']).toBe('neutral');
+    expect(result.bases['6,6']).toBe('neutral');
+  });
+
+  it('empty ranges: 所有棋子都出 (3,3) 范围 (在 8,8) → 0 delta', async () => {
+    // 默认 mockHGetAll 已经把 c1-c6 放在 (8,8)
+    const result = await applyBaseStars('b1');
+
+    expect(result.p1Delta).toBe(0);
+    expect(result.p2Delta).toBe(0);
+    expect(result.bases['3,3']).toBe('neutral');
+    expect(result.bases['6,6']).toBe('neutral');
   });
 });
