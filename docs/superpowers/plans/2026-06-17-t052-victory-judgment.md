@@ -1310,10 +1310,10 @@ describe('recordVictory', () => {
   it('win: DB UPDATE winner + status=finished + finishSession + broadcast', async () => {
     mockExecuteDb.mockResolvedValue({ rowCount: 1 });
     // winner_player_id 需要从 player 查询（p1 → userId）
-    mockQuery.mockResolvedValue([
-      { id: 'player-1', user_id: 'u1' },
-      { id: 'player-2', user_id: 'u2' },
-    ]);
+    // 注：recordVictory 内部调 3 次 query：1 次 UNION 拿 player 行，2 次 getPlayerId 拿 player1/2_id
+    //    用 mockImplementation 按 SQL 模式分发返回值。
+    //    原计划 v1 用 mockResolvedValue 一刀切，会让 getPlayerId 拿到错误 shape，已修正。
+    setupRecordVictoryMocks();
 
     const io = createMockIO();
     await recordVictory(io, 'b1', {
@@ -1323,10 +1323,12 @@ describe('recordVictory', () => {
       p2Stars: 2,
     });
 
-    // DB UPDATE
+    // DB UPDATE — winner_player_id 是 FK → players.id，所以传 player ID（'player-1'）而非 side 字符串 ('p1')。
+    //    原计划 v1 写 arrayContaining(['p1', 'kill_threshold', 'b1']) 是错的（side 字符串不是有效 FK），
+    //    已修正为 player ID 形式。
     expect(mockExecuteDb).toHaveBeenCalledWith(
-      expect.stringContaining('UPDATE battles SET'),
-      expect.arrayContaining(['p1', 'kill_threshold', 'b1'])
+      expect.stringContaining('UPDATE battles'),
+      expect.arrayContaining(['player-1', 'kill_threshold', 'b1'])
     );
     // finishSession
     expect(mockFinishSession).toHaveBeenCalledWith('b1');
@@ -1346,18 +1348,20 @@ describe('recordVictory', () => {
 
   it('win via base: victoryType=base_threshold', async () => {
     mockExecuteDb.mockResolvedValue({ rowCount: 1 });
-    mockQuery.mockResolvedValue([
-      { id: 'player-1', user_id: 'u1' },
-      { id: 'player-2', user_id: 'u2' },
-    ]);
+    setupRecordVictoryMocks();
 
     const io = createMockIO();
-    await recordVictory(io, 'b1', {
-      status: 'win',
-      winnerSide: 'p2',
-      p1Stars: 4,
-      p2Stars: 6,
-    }, 'base');  // ★ 显式传 source='base'
+    await recordVictory(
+      io,
+      'b1',
+      {
+        status: 'win',
+        winnerSide: 'p2',
+        p1Stars: 4,
+        p2Stars: 6,
+      },
+      'base'  // ★ 显式传 source='base'
+    );
 
     expect(mockBroadcastBattleEnd).toHaveBeenCalledWith(
       io,
@@ -1372,10 +1376,7 @@ describe('recordVictory', () => {
 
   it('draw: winnerUserId=null, winnerSide=null, victoryType=draw', async () => {
     mockExecuteDb.mockResolvedValue({ rowCount: 1 });
-    mockQuery.mockResolvedValue([
-      { id: 'player-1', user_id: 'u1' },
-      { id: 'player-2', user_id: 'u2' },
-    ]);
+    setupRecordVictoryMocks();
 
     const io = createMockIO();
     await recordVictory(io, 'b1', {
@@ -1385,7 +1386,7 @@ describe('recordVictory', () => {
     });
 
     expect(mockExecuteDb).toHaveBeenCalledWith(
-      expect.stringContaining('UPDATE battles SET'),
+      expect.stringContaining('UPDATE battles'),
       expect.arrayContaining([null, 'draw', 'b1'])
     );
     expect(mockBroadcastBattleEnd).toHaveBeenCalledWith(
@@ -1401,10 +1402,7 @@ describe('recordVictory', () => {
 
   it('finishSession 失败: 仍 broadcast (best-effort, 不 throw)', async () => {
     mockExecuteDb.mockResolvedValue({ rowCount: 1 });
-    mockQuery.mockResolvedValue([
-      { id: 'player-1', user_id: 'u1' },
-      { id: 'player-2', user_id: 'u2' },
-    ]);
+    setupRecordVictoryMocks();
     mockFinishSession.mockResolvedValue({ success: false, error: 'test' });
 
     const io = createMockIO();
@@ -1420,6 +1418,29 @@ describe('recordVictory', () => {
     expect(mockBroadcastBattleEnd).toHaveBeenCalled();
   });
 });
+
+/**
+ * Helper: 配置 recordVictory 所需的 3 次 query 返回值
+ * - 1 次 UNION 查 player 行（shape: {id, user_id}）
+ * - 2 次 getPlayerId 查 player1_id / player2_id（shape: {pid}）
+ */
+function setupRecordVictoryMocks(): void {
+  mockQuery.mockImplementation(async (sql: string) => {
+    if (sql.includes('FROM players WHERE id IN')) {
+      return [
+        { id: 'player-1', user_id: 'u1' },
+        { id: 'player-2', user_id: 'u2' },
+      ];
+    }
+    if (sql.includes('player1_id AS pid')) {
+      return [{ pid: 'player-1' }];
+    }
+    if (sql.includes('player2_id AS pid')) {
+      return [{ pid: 'player-2' }];
+    }
+    return [];
+  });
+}
 ```
 
 - [ ] **Step 3: 修正 recordVictory 签名 + 实现**
@@ -1462,6 +1483,8 @@ export async function recordVictory(
   source: StarSource = 'kill'
 ): Promise<void> {
   // 1. 查 player1/2 → userId 映射
+  //    注：原计划 v1 把 `await getPlayerId(...)` 内联在 `Array.find` 回调里，TypeScript
+  //        报错（箭头函数不是 async），已重构为显式 await 两次。
   const playerRows = await query<{ id: string; user_id: string }>(
     `SELECT id, user_id FROM players WHERE id IN (
        SELECT player1_id FROM battles WHERE id = $1
@@ -1470,8 +1493,10 @@ export async function recordVictory(
      )`,
     [battleId]
   );
-  const p1 = playerRows.find((r) => r.id === (await getPlayerId(battleId, 'p1')));
-  const p2 = playerRows.find((r) => r.id === (await getPlayerId(battleId, 'p2')));
+  const p1Id = await getPlayerId(battleId, 'p1');
+  const p2Id = await getPlayerId(battleId, 'p2');
+  const p1 = playerRows.find((r) => r.id === p1Id);
+  const p2 = playerRows.find((r) => r.id === p2Id);
 
   let winnerUserId: string | null = null;
   let winnerSide: 'p1' | 'p2' | null = null;
