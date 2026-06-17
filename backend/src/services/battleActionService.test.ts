@@ -264,22 +264,6 @@ describe('executeMove — error branches', () => {
 });
 
 describe('executePlayCard', () => {
-  it('placeholder — to be expanded in Task 2-7', async () => {
-    const { executePlayCard } = await import('./battleActionService');
-    const io = createMockIO();
-    const result = await executePlayCard(io, 'b1', 'c1', {
-      deck_id: 'd1',
-      card_id: 'pc1',
-      name: '轻击',
-      type: 'attack',
-      cost: 1,
-      effect: { damage: 2, range: 1 },
-      template_no: 1,
-      source: 'deck',
-    } as any, 'u1');
-    expect(result).toHaveProperty('success');
-  });
-
   it('happy path: attack single — calls all 17 steps in order and returns success', async () => {
     // 覆盖 T049 默认（move phase） → T050 happy 路径需要 play phase
     mockGetDbSessionState.mockResolvedValueOnce({
@@ -335,5 +319,67 @@ describe('executePlayCard', () => {
     const completeOrder = mockCompletePlayPhase.mock.invocationCallOrder[0];
     const broadcastBoardOrder = mockBroadcastBoardState.mock.invocationCallOrder[0];
     expect(completeOrder).toBeLessThan(broadcastBoardOrder);
+  });
+
+  it('happy path: attack AOE — dispatches to validateAOEAttack', async () => {
+    mockGetDbSessionState.mockResolvedValueOnce({
+      currentRound: 1, currentStep: 0, currentActorId: 'c1', currentPhase: 'play',
+    });
+    mockListCharactersInBattle.mockResolvedValueOnce([
+      { characterId: 'c1', playerId: 'p1', userId: 'u1', profession: 'warrior', name: 'A' },
+    ]);
+    mockGetActorHand.mockResolvedValueOnce([
+      { deck_id: 'd2', card_id: 'pc2', name: 'AOE 攻击', type: 'attack', cost: 2,
+        effect: { damage: 3, range: 2, aoe: true }, template_no: 2, source: 'deck' },
+    ]);
+
+    const { executePlayCard } = await import('./battleActionService');
+    const io = createMockIO();
+
+    const handCard: any = {
+      deck_id: 'd2', card_id: 'pc2', name: 'AOE 攻击', type: 'attack', cost: 2,
+      effect: { damage: 3, range: 2, aoe: true }, template_no: 2, source: 'deck',
+    };
+
+    const result = await executePlayCard(io, 'b1', 'c1', handCard, 'u1');
+
+    expect(result).toEqual({
+      success: true,
+      validation: expect.objectContaining({ valid: true }),
+    });
+    expect(mockValidateAOEAttack).toHaveBeenCalledWith('b1', 'c1', 'pc2', 'deck');
+    expect(mockValidateAttack).not.toHaveBeenCalled();
+  });
+
+  it('happy path: tactical taunt — dispatches to validateTauntCard', async () => {
+    mockGetDbSessionState.mockResolvedValueOnce({
+      currentRound: 1, currentStep: 0, currentActorId: 'c1', currentPhase: 'play',
+    });
+    mockListCharactersInBattle.mockResolvedValueOnce([
+      { characterId: 'c1', playerId: 'p1', userId: 'u1', profession: 'warrior', name: 'A' },
+    ]);
+    mockGetActorHand.mockResolvedValueOnce([
+      { deck_id: 'd3', card_id: 'pc3', name: '挑战', type: 'tactical', cost: 1,
+        effect: { type: 'taunt', range: 3 }, template_no: 3, source: 'deck' },
+    ]);
+
+    const { executePlayCard } = await import('./battleActionService');
+    const io = createMockIO();
+
+    const handCard: any = {
+      deck_id: 'd3', card_id: 'pc3', name: '挑战', type: 'tactical', cost: 1,
+      effect: { type: 'taunt', range: 3 }, template_no: 3, source: 'deck',
+      targetId: 't1',
+    };
+
+    const result = await executePlayCard(io, 'b1', 'c1', handCard, 'u1');
+
+    expect(result).toEqual({
+      success: true,
+      validation: expect.objectContaining({ valid: true }),
+    });
+    expect(mockValidateTauntCard).toHaveBeenCalledWith('b1', 'c1', 'pc3', 't1', expect.any(Number));
+    expect(mockValidateAttack).not.toHaveBeenCalled();
+    expect(mockValidateAOEAttack).not.toHaveBeenCalled();
   });
 });

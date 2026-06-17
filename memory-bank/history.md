@@ -1264,3 +1264,32 @@ T050（打牌操作同步）的第一个任务：在 battleActionService.ts 末�
 - battleService.ts 中的 `getCharacterPiece` 是 private async function（无 export），任务要求从 battleService import 它。最小改动：在签名前加 `export` 关键字，让其对模块外可见。这是 single-word 可见性变更，不改业务逻辑
 - TypeScript 编译 ts-jest 测试模式下，正常退出 0，无类型错误
 - 9 个测试全部通过（8 个 T049 + 1 个 T050 placeholder）
+
+---
+
+## 2026-06-17 - 任务：T050 Task 2 executePlayCard happy path - attack 单体
+
+### Prompt
+实现 executePlayCard 的 17 步流水（happy path - attack 单体）。流程：session → phase → actor → owner → hand → validate dispatch → 副作用（扣能量/删手牌/入弃牌堆）→ 广播 → 阶段推进 → 整盘广播。dispatch 顺序：AOE attack → 单体 attack → tactical taunt → unsupported。
+
+### 思考
+- 镜像 T049 executeMove 模式，但步骤从 6 步扩展到 17 步（多了 dispatch + 能量扣减 + 手牌删除 + 弃牌堆 + 双广播 + 阶段推进）
+- mock 默认桩是 T049 的 move-phase，需要用 mockResolvedValueOnce 覆盖为 play-phase + c1=u1 owner，避免破坏 T049 测试
+- 验证顺序：completePlayPhase 在 broadcastBoardState 之前（保证客户端先看到新 board 再看到 phase 推进）
+- 能量扣减：直接读 Redis HASH `battle:{id}:pieces` 的 piece JSON → 取 energy 字段 → setCharacterEnergy(current - cost)
+
+### 意外
+- TypeScript 报 `validation.energyCost is possibly undefined`：AttackValidationResult 中 energyCost 是 optional 字段。最小修复：用 `validation.energyCost ?? 0` 兜底，因为 valid=true 时必有 cost
+- happy path 测试在所有 10 个 mock 都被调到的基础上，额外断言 completePlayPhase.invocationCallOrder < broadcastBoardState.invocationCallOrder，确保阶段推进顺序正确
+- tsc --noEmit 退出 0；jest 全 10 个测试通过（9 T049 + 1 T050 happy path）
+
+## 2026-06-17 - 任务：T050 Task 3 - AOE + taunt dispatch 测试
+
+### Prompt
+添加 2 个 happy-path 测试验证 dispatch 路径（attack+effect.aoe → validateAOEAttack；tactical+effect.type=taunt → validateTauntCard），并删除 Task 1 的 placeholder 测试。
+
+### 思考
+Task 2 已实现 dispatch 逻辑，Task 3 只补测试。需要 mockResolvedValueOnce 覆盖 beforeEach 默认值（deck_id='d1'、draw phase），否则 hand 归属校验失败。
+
+### 意外
+无
