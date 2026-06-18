@@ -162,15 +162,30 @@ export type PlayCardResult =
   | { success: false; error: PlayCardError; detail?: string };
 
 /**
+ * 内部 sentinel: 至少一行已被别的路径删除（幂等边界）
+ * 抛出让 withTransaction 走 ROLLBACK 路径, 外层 catch 区分 partial vs error
+ */
+class PartialDeleteError extends Error {
+  constructor(
+    public readonly deckRows: number,
+    public readonly cardRows: number
+  ) {
+    super('partial_delete');
+    this.name = 'PartialDeleteError';
+  }
+}
+
+/**
  * T053: 卡牌消耗 - DB 实时删除 character_deck + player_cards 行
  *
  * - source='public_pool' → 跳过（不调事务）
  * - source='deck' → withTransaction(fn) 内:
  *     1. DELETE FROM character_deck WHERE id = $1
  *     2. DELETE FROM player_cards   WHERE id = $1
- *     3. 任一 rowCount=0 → client.query('ROLLBACK') + console.warn + return { consumed: false, reason: 'partial' }
+ *     3. 任一 rowCount=0 → 抛 PartialDeleteError → withTransaction 自动 ROLLBACK
+ *        外层 catch 识别 sentinel → console.warn + return { consumed: false, reason: 'partial' }
  *     4. 全成功 → withTransaction 自动 COMMIT
- *     5. 任何 SQL 抛错 → withTransaction 自动 ROLLBACK + 重新抛错 → 本函数 catch + console.error
+ *     5. 任何真实 SQL 抛错 → withTransaction 自动 ROLLBACK + 重新抛错 → 外层 catch → console.error
  *
  * best-effort: 不抛错给上层；返回值仅用于日志/调试
  *
@@ -200,21 +215,28 @@ async function consumePlayerCard(
       );
 
       // 幂等边界：双删任一返回 0 行（已被别的路径删了）
+      // 抛 PartialDeleteError → withTransaction 自动 ROLLBACK
       if (deckRes.rowCount === 0 || cardRes.rowCount === 0) {
-        await client.query('ROLLBACK');
-        console.warn(
-          `[consumePlayerCard] partial delete: charId=${characterId} ` +
-            `deckRows=${deckRes.rowCount} cardRows=${cardRes.rowCount} ` +
-            `deckId=${handCard.deck_id} cardId=${handCard.card_id}`
+        throw new PartialDeleteError(
+          deckRes.rowCount ?? 0,
+          cardRes.rowCount ?? 0
         );
-        return { consumed: false as const, reason: 'partial' as const };
       }
 
       return { consumed: true as const };
     });
     return result;
   } catch (err) {
-    // withTransaction 已 ROLLBACK；这里只记日志
+    if (err instanceof PartialDeleteError) {
+      // partial: withTransaction 已 ROLLBACK, 这里只记 warn
+      console.warn(
+        `[consumePlayerCard] partial delete: charId=${characterId} ` +
+          `deckRows=${err.deckRows} cardRows=${err.cardRows} ` +
+          `deckId=${handCard.deck_id} cardId=${handCard.card_id}`
+      );
+      return { consumed: false, reason: 'partial' };
+    }
+    // 真实错误: withTransaction 已 ROLLBACK, 这里记 error
     console.error(
       `[consumePlayerCard] failed: charId=${characterId} ` +
         `deckId=${handCard.deck_id} cardId=${handCard.card_id} ` +

@@ -936,21 +936,21 @@ describe('executePlayCard', () => {
 
     it('T053-4: DELETE returns rowCount=0 — ROLLBACK + warn, executePlayCard still success', async () => {
       const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
-      // 模拟 fn 内：第 1 个 DELETE 返回 rowCount=0 → 触发 ROLLBACK + warn
-      // 由于 withTransaction 不感知 rowCount，consumer 自己在 fn 内 ROLLBACK
-      // 这里 fn 内部检测 rowCount=0 → 调 client.query('ROLLBACK') + 抛 warn 行
+      // 新实现: fn 内部检测 rowCount=0 → 抛 PartialDeleteError
+      // withTransaction 接 throw → 自动 ROLLBACK → rethrow → 外层 catch 识别 sentinel → warn
       const fakeClient = {
         query: jest.fn()
           .mockResolvedValueOnce({ rowCount: 0, rows: [] })   // DELETE character_deck 返回 0 行
-          .mockResolvedValueOnce({ rowCount: 1, rows: [] }),  // DELETE player_cards
-        // ROLLBACK 也要能调
+          .mockResolvedValueOnce({ rows: [] }),               // ROLLBACK (被 withTransaction 调)
       };
-      // 让 withTransaction 跑 fn，但 fn 内自己处理 rowCount 0 → ROLLBACK + 返回特殊值
-      // 简化：直接模拟 fn 跑完后 withTransaction 调 ROLLBACK（实际 fn 内调）
       mockWithTransaction.mockImplementation(async (fn: any) => {
-        const result = await fn(fakeClient);
-        await fakeClient.query('ROLLBACK');  // 模拟 fn 内检测 rowCount=0 后的 ROLLBACK
-        return result;
+        try {
+          return await fn(fakeClient);
+        } catch (err) {
+          // 模拟真实 withTransaction: ROLLBACK 后 rethrow
+          await fakeClient.query('ROLLBACK');
+          throw err;
+        }
       });
 
       mockGetDbSessionState.mockResolvedValue({
@@ -978,6 +978,8 @@ describe('executePlayCard', () => {
       expect(consoleWarnSpy).toHaveBeenCalled();
       const warnMsg = consoleWarnSpy.mock.calls.flat().join(' ');
       expect(warnMsg).toMatch(/partial delete/);
+      // ROLLBACK was called by withTransaction (not by fn)
+      expect(fakeClient.query).toHaveBeenCalledWith('ROLLBACK');
       consoleWarnSpy.mockRestore();
     });
 
