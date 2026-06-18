@@ -149,18 +149,16 @@ describe('T045 + T046 socketServer', () => {
     return jwt.sign({ userId, username }, JWT_SECRET);
   };
 
-  const connectClient = (token?: string): ClientSocket => {
-    const client = Client(`http://localhost:${port}`, {
-      auth: token ? { token } : {},
-      transports: ['websocket'],
-    });
-    activeClients.push(client);
-    return client;
-  };
-
   const waitForConnect = (client: ClientSocket): Promise<void> => {
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('connect timeout')), 3000);
+      // 已连上直接 resolve（防止 connectClient 已 await 过 connect 事件后,显式 waitForConnect 二次监听永不触发）
+      if (client.connected) {
+        resolve();
+        return;
+      }
+      // 10s 超时（was 3s）。双 client 顺序握手 + 服务端处理 auth + room join 在 CI/负载下可能 > 3s。
+      // 10s 给足够 buffer 同时仍能在真 hang 时快速失败。
+      const timer = setTimeout(() => reject(new Error('connect timeout')), 10000);
       client.once('connect', () => {
         clearTimeout(timer);
         resolve();
@@ -170,6 +168,23 @@ describe('T045 + T046 socketServer', () => {
         reject(err);
       });
     });
+  };
+
+  const connectClient = async (token?: string): Promise<ClientSocket> => {
+    const client = Client(`http://localhost:${port}`, {
+      auth: token ? { token } : {},
+      transports: ['websocket'],
+    });
+    activeClients.push(client);
+    // 等 connect 事件（serializes 双 client 顺序握手,消除 50% race flake）。
+    // 失败路径（connect_error / 超时）stash 到 client._connectError 让调用方读取
+    // — waitForConnect 用 once 消费事件,后续 waitForConnectError 不能再监听到。
+    try {
+      await waitForConnect(client);
+    } catch (err) {
+      (client as ClientSocket & { _connectError?: Error })._connectError = err as Error;
+    }
+    return client;
   };
 
   const waitForConnectError = (client: ClientSocket): Promise<Error> => {
@@ -211,7 +226,7 @@ describe('T045 + T046 socketServer', () => {
   it('T045: 客户端带有效 JWT 应能成功连接,且服务端可读 userId/username', async () => {
     const userId = 'user-1';
     const username = 'alice';
-    const client = connectClient(generateToken(userId, username));
+    const client = await connectClient(generateToken(userId, username));
 
     await waitForConnect(client);
     expect(client.connected).toBe(true);
@@ -224,14 +239,15 @@ describe('T045 + T046 socketServer', () => {
   });
 
   it('T045: 客户端无 token 应触发 connect_error 且 message=No token provided', async () => {
-    const client = connectClient();
-    const err = await waitForConnectError(client);
-    expect(err.message).toBe('No token provided');
+    const client = await connectClient();
+    // connectClient 已消费 connect_error 事件并 stash 到 client._connectError（once 监听器只能触发一次）
+    const err = (client as ClientSocket & { _connectError?: Error })._connectError;
+    expect(err?.message).toBe('No token provided');
     expect(client.connected).toBe(false);
   });
 
   it('T045: 客户端连接后断开,服务端 disconnect handler 应被调用', async () => {
-    const client = connectClient(generateToken('user-2', 'bob'));
+    const client = await connectClient(generateToken('user-2', 'bob'));
     await waitForConnect(client);
     expect(client.connected).toBe(true);
 
@@ -248,7 +264,7 @@ describe('T045 + T046 socketServer', () => {
 
   it('T046: 连接成功后 socket 应自动加入 user:{userId} room', async () => {
     const userId = 'user-room-1';
-    const client = connectClient(generateToken(userId, 'alice'));
+    const client = await connectClient(generateToken(userId, 'alice'));
 
     await waitForConnect(client);
 
@@ -262,7 +278,7 @@ describe('T045 + T046 socketServer', () => {
   it('T046: battle:join 验证通过后,客户端应加入 battle room 并收到 join:ok', async () => {
     const userId = 'joiner-1';
     const battleId = 'battle-abc-123';
-    const client = connectClient(generateToken(userId, 'joiner'));
+    const client = await connectClient(generateToken(userId, 'joiner'));
 
     await waitForConnect(client);
 
@@ -293,7 +309,7 @@ describe('T045 + T046 socketServer', () => {
   });
 
   it('T046: battle:join 验证失败(非参与者)应收到 join:error', async () => {
-    const client = connectClient(generateToken('joiner-2', 'mallory'));
+    const client = await connectClient(generateToken('joiner-2', 'mallory'));
     await waitForConnect(client);
 
     // mock DB 鉴权失败(返回 null)
@@ -315,7 +331,7 @@ describe('T045 + T046 socketServer', () => {
   });
 
   it('T046: battle:join 缺 battleId 应收到 join:error', async () => {
-    const client = connectClient(generateToken('joiner-3', 'eve'));
+    const client = await connectClient(generateToken('joiner-3', 'eve'));
     await waitForConnect(client);
 
     const errPromise = waitForEvent<{ error: string }>(client, 'battle:join:error');
@@ -329,8 +345,8 @@ describe('T045 + T046 socketServer', () => {
 
   it('T046: 第二个 client join 同一 battle 时,第一个 client 应收到 opponent_joined', async () => {
     const battleId = 'battle-shared';
-    const client1 = connectClient(generateToken('player-1', 'alice'));
-    const client2 = connectClient(generateToken('player-2', 'bob'));
+    const client1 = await connectClient(generateToken('player-1', 'alice'));
+    const client2 = await connectClient(generateToken('player-2', 'bob'));
 
     await waitForConnect(client1);
     await waitForConnect(client2);
@@ -376,8 +392,8 @@ describe('T045 + T046 socketServer', () => {
 
   it('T046: 房间内一方断开时,另一方应收到 opponent_disconnected', async () => {
     const battleId = 'battle-disconn';
-    const client1 = connectClient(generateToken('disc-1', 'alice'));
-    const client2 = connectClient(generateToken('disc-2', 'bob'));
+    const client1 = await connectClient(generateToken('disc-1', 'alice'));
+    const client2 = await connectClient(generateToken('disc-2', 'bob'));
 
     await waitForConnect(client1);
     await waitForConnect(client2);
@@ -415,7 +431,7 @@ describe('T045 + T046 socketServer', () => {
   });
 
   it('T046: 断开时 socket.data.battleId 未设置 → 不应推送 opponent_disconnected', async () => {
-    const client = connectClient(generateToken('no-battle', 'eve'));
+    const client = await connectClient(generateToken('no-battle', 'eve'));
     await waitForConnect(client);
 
     // 监听 battle:opponent_disconnected(不应触发)
@@ -500,8 +516,8 @@ describe('T045 + T046 socketServer', () => {
   it('T047: 两个 client 都 join 后,后加入者收到 battle:state:full 且 ownHand 是自己的角色', async () => {
     const { battleId, p1, p2 } = setupFullStateMocks();
 
-    const client1 = connectClient(generateToken(p1, 'alice'));
-    const client2 = connectClient(generateToken(p2, 'bob'));
+    const client1 = await connectClient(generateToken(p1, 'alice'));
+    const client2 = await connectClient(generateToken(p2, 'bob'));
 
     await waitForConnect(client1);
     await waitForConnect(client2);
@@ -532,7 +548,7 @@ describe('T045 + T046 socketServer', () => {
   it('T047: 同一 socket join 时同时收到 battle:join:ok 和 battle:state:full', async () => {
     const { battleId, p1 } = setupFullStateMocks();
 
-    const client = connectClient(generateToken(p1, 'alice'));
+    const client = await connectClient(generateToken(p1, 'alice'));
     await waitForConnect(client);
 
     const okPromise = waitForEvent<{ battleId: string; opponentInRoom: boolean }>(
@@ -558,7 +574,7 @@ describe('T045 + T046 socketServer', () => {
   it('T047: broadcastFullState 内部异常时仍收到 join:ok,不发 join:error', async () => {
     const battleId = 'battle-t047-err';
     const userId = 'user-t047-err';
-    const client = connectClient(generateToken(userId, 'eve'));
+    const client = await connectClient(generateToken(userId, 'eve'));
     await waitForConnect(client);
 
     // getPendingBattleForJoin 通过
