@@ -61,9 +61,16 @@ backend/
 
 | 文件路径 | 作用 |
 |----------|------|
-| `src/config/database.ts` | PostgreSQL 连接池，封装 query/execute 方法 |
+| `src/config/database.ts` | PostgreSQL 连接池，封装 `query`/`queryOne`/`execute`/`withTransaction` 方法 |
 | `src/config/redis.ts` | Redis 客户端连接 |
 | `src/index.ts` | 应用入口，初始化数据库/Redis 连接 |
+
+### 事务 helper（withTransaction）
+
+- `src/config/database.ts` 导出 `withTransaction<T>(fn)`：拿单连接、`BEGIN`、把 client 传给 fn、fn 成功 `COMMIT`、fn 抛错 `ROLLBACK`、任意分支都 `release`
+- 为什么需要：单条 `query`/`execute` 每次都 `pool.connect()` + `finally release()`，跨调用落在不同连接，事务不生效。多步写（卡牌消耗 / applyDamage 等）必须用同一连接
+- 异常隔离：若 `ROLLBACK` 自身抛错，内部 `try/catch` 吞掉，避免影响外层 `release` 与原 fn 异常的传递
+- T053 卡牌消耗 / T054 战斗结算 API / T056 applyDamage 都会复用此 helper
 
 ## 认证模块
 
@@ -2092,4 +2099,9 @@ T051 实现回合切换 orchestrator, 在 T050 出牌后自动级联, 客户端�
 ---
 
 *文档版本：v1.38*
+*最后更新：2026-06-18*
+
+---
+
+*文档版本：v1.39*
 *最后更新：2026-06-18*
