@@ -816,180 +816,180 @@ describe('executePlayCard', () => {
     expect(mockAddToDiscardPile).not.toHaveBeenCalled();
     expect(mockBroadcastHandState).not.toHaveBeenCalled();
   });
-});
 
-    // ========================================
-    // ★ T053: 卡牌消耗 (consumePlayerCard)
-    // ========================================
-    describe('T053: card consumption (step 9.5)', () => {
-      beforeEach(() => {
-        // 默认 withTransaction 模拟：把传入的 fn 直接执行（透传 mockClient）
-        // 这里的 mockClient 形参对应 withTransaction 内部传给 fn 的 client
-        mockWithTransaction.mockImplementation(async (fn: any) => {
-          const fakeClient = { query: jest.fn() };
-          return await fn(fakeClient);
-        });
-      });
-
-      it('T053-1: source=deck happy path — calls DELETE character_deck + DELETE player_cards, returns success', async () => {
-        // 模拟 DELETE 返回 rowCount=1
-        const fakeClient = { query: jest.fn().mockResolvedValue({ rowCount: 1, rows: [] }) };
-        mockWithTransaction.mockImplementation(async (fn: any) => fn(fakeClient));
-
-        mockGetDbSessionState.mockResolvedValue({
-          battleId: 'b1',
-          currentRound: 1,
-          currentStep: 1,
-          currentActorId: 'c1',
-          currentPhase: 'play',
-        } as any);
-        mockListCharactersInBattle.mockResolvedValue([
-          { characterId: 'c1', userId: 'u1', playerId: 'p1', side: 'p1' },
-        ] as any);
-        mockGetActorHand.mockResolvedValue([
-          { deck_id: 'd1', card_id: 'pc1', source: 'deck', type: 'attack', name: 'X', cost: 1, effect: {}, template_no: 1 },
-        ] as any);
-        mockValidateAttack.mockResolvedValue({ valid: true, energyCost: 1, damage: 2 } as any);
-        (redisClient.hGet as jest.Mock).mockResolvedValue(JSON.stringify({ energy: 3 }));
-        (redisClient.lRem as jest.Mock).mockResolvedValue(1);
-
-        const handCard = {
-          deck_id: 'd1', card_id: 'pc1', source: 'deck' as const,
-          type: 'attack' as const, name: 'X', cost: 1, effect: {}, template_no: 1,
-        };
-        const io = {} as any;
-        const { executePlayCard } = await import('./battleActionService');
-        const result = await executePlayCard(io, 'b1', 'c1', handCard, 'u1');
-
-        expect(result.success).toBe(true);
-        // withTransaction 被调一次
-        expect(mockWithTransaction).toHaveBeenCalledTimes(1);
-        // fn 内 fakeClient.query 调过 2 次（2 个 DELETE）
-        expect(fakeClient.query).toHaveBeenCalledTimes(2);
-        expect(fakeClient.query.mock.calls[0][0]).toContain('DELETE FROM character_deck');
-        expect(fakeClient.query.mock.calls[1][0]).toContain('DELETE FROM player_cards');
-        // 不应有 query('BEGIN') / query('COMMIT') 直接调用
-        // （事务由 withTransaction 包，本测试不直接验 — Task 1 覆盖）
-      });
-
-      it('T053-2: source=public_pool — does NOT call withTransaction, no DELETE', async () => {
-        mockGetDbSessionState.mockResolvedValue({
-          battleId: 'b1', currentRound: 1, currentStep: 1, currentActorId: 'c1', currentPhase: 'play',
-        } as any);
-        mockListCharactersInBattle.mockResolvedValue([
-          { characterId: 'c1', userId: 'u1', playerId: 'p1', side: 'p1' },
-        ] as any);
-        mockGetActorHand.mockResolvedValue([
-          { deck_id: 'pool:1', card_id: 'pt1', source: 'public_pool', type: 'attack', name: '轻击', cost: 1, effect: { damage: 2 }, template_no: 1 },
-        ] as any);
-        mockValidateAttack.mockResolvedValue({ valid: true, energyCost: 1, damage: 2 } as any);
-        (redisClient.hGet as jest.Mock).mockResolvedValue(JSON.stringify({ energy: 3 }));
-        (redisClient.lRem as jest.Mock).mockResolvedValue(1);
-
-        const handCard = {
-          deck_id: 'pool:1', card_id: 'pt1', source: 'public_pool' as const,
-          type: 'attack' as const, name: '轻击', cost: 1, effect: { damage: 2 }, template_no: 1,
-        };
-        const io = {} as any;
-        const { executePlayCard } = await import('./battleActionService');
-        const result = await executePlayCard(io, 'b1', 'c1', handCard, 'u1');
-
-        expect(result.success).toBe(true);
-        // 公共池卡 → withTransaction 不被调
-        expect(mockWithTransaction).toHaveBeenCalledTimes(0);
-      });
-
-      it('T053-3: DELETE throws inside withTransaction — best-effort, executePlayCard still success', async () => {
-        // withTransaction 的 fn 抛错 → withTransaction 内部 ROLLBACK + 重新抛错
-        // → executePlayCard 步骤 9.5 应当不返错（吞掉）
-        const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
-        mockWithTransaction.mockRejectedValue(new Error('DB connection lost'));
-
-        mockGetDbSessionState.mockResolvedValue({
-          battleId: 'b1', currentRound: 1, currentStep: 1, currentActorId: 'c1', currentPhase: 'play',
-        } as any);
-        mockListCharactersInBattle.mockResolvedValue([
-          { characterId: 'c1', userId: 'u1', playerId: 'p1', side: 'p1' },
-        ] as any);
-        mockGetActorHand.mockResolvedValue([
-          { deck_id: 'd1', card_id: 'pc1', source: 'deck', type: 'attack', name: 'X', cost: 1, effect: {}, template_no: 1 },
-        ] as any);
-        mockValidateAttack.mockResolvedValue({ valid: true, energyCost: 1, damage: 2 } as any);
-        (redisClient.hGet as jest.Mock).mockResolvedValue(JSON.stringify({ energy: 3 }));
-        (redisClient.lRem as jest.Mock).mockResolvedValue(1);
-
-        const handCard = {
-          deck_id: 'd1', card_id: 'pc1', source: 'deck' as const,
-          type: 'attack' as const, name: 'X', cost: 1, effect: {}, template_no: 1,
-        };
-        const io = {} as any;
-        const { executePlayCard } = await import('./battleActionService');
-        const result = await executePlayCard(io, 'b1', 'c1', handCard, 'u1');
-
-        // best-effort: 仍然 success（步骤 9.5 失败不影响上层）
-        expect(result.success).toBe(true);
-        // console.error 被调（[consumePlayerCard] failed）
-        expect(consoleErrorSpy).toHaveBeenCalled();
-        const errorMsg = consoleErrorSpy.mock.calls.flat().join(' ');
-        expect(errorMsg).toMatch(/consumePlayerCard.*failed/);
-        consoleErrorSpy.mockRestore();
-      });
-
-      it('T053-4: DELETE returns rowCount=0 — ROLLBACK + warn, executePlayCard still success', async () => {
-        const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
-        // 模拟 fn 内：第 1 个 DELETE 返回 rowCount=0 → 触发 ROLLBACK + warn
-        // 由于 withTransaction 不感知 rowCount，consumer 自己在 fn 内 ROLLBACK
-        // 这里 fn 内部检测 rowCount=0 → 调 client.query('ROLLBACK') + 抛 warn 行
-        const fakeClient = {
-          query: jest.fn()
-            .mockResolvedValueOnce({ rowCount: 0, rows: [] })   // DELETE character_deck 返回 0 行
-            .mockResolvedValueOnce({ rowCount: 1, rows: [] }),  // DELETE player_cards
-          // ROLLBACK 也要能调
-        };
-        // 让 withTransaction 跑 fn，但 fn 内自己处理 rowCount 0 → ROLLBACK + 返回特殊值
-        // 简化：直接模拟 fn 跑完后 withTransaction 调 ROLLBACK（实际 fn 内调）
-        mockWithTransaction.mockImplementation(async (fn: any) => {
-          const result = await fn(fakeClient);
-          await fakeClient.query('ROLLBACK');  // 模拟 fn 内检测 rowCount=0 后的 ROLLBACK
-          return result;
-        });
-
-        mockGetDbSessionState.mockResolvedValue({
-          battleId: 'b1', currentRound: 1, currentStep: 1, currentActorId: 'c1', currentPhase: 'play',
-        } as any);
-        mockListCharactersInBattle.mockResolvedValue([
-          { characterId: 'c1', userId: 'u1', playerId: 'p1', side: 'p1' },
-        ] as any);
-        mockGetActorHand.mockResolvedValue([
-          { deck_id: 'd1', card_id: 'pc1', source: 'deck', type: 'attack', name: 'X', cost: 1, effect: {}, template_no: 1 },
-        ] as any);
-        mockValidateAttack.mockResolvedValue({ valid: true, energyCost: 1, damage: 2 } as any);
-        (redisClient.hGet as jest.Mock).mockResolvedValue(JSON.stringify({ energy: 3 }));
-        (redisClient.lRem as jest.Mock).mockResolvedValue(1);
-
-        const handCard = {
-          deck_id: 'd1', card_id: 'pc1', source: 'deck' as const,
-          type: 'attack' as const, name: 'X', cost: 1, effect: {}, template_no: 1,
-        };
-        const io = {} as any;
-        const { executePlayCard } = await import('./battleActionService');
-        const result = await executePlayCard(io, 'b1', 'c1', handCard, 'u1');
-
-        expect(result.success).toBe(true);
-        expect(consoleWarnSpy).toHaveBeenCalled();
-        const warnMsg = consoleWarnSpy.mock.calls.flat().join(' ');
-        expect(warnMsg).toMatch(/partial delete/);
-        consoleWarnSpy.mockRestore();
-      });
-
-      it('T053-5: T050 existing 18 tests still pass (regression check via test file run)', async () => {
-        // 这个 case 实质上是"跑整个 describe('executePlayCard') 块全绿"
-        // 不写额外 mock — 依赖 beforeEach 默认值
-        // 跑测试时这个 it 会跟其他 4 个一起跑，全部 pass 即说明 18+5 兼容性
-        // 本 it 本身不做事（仅占位），验证靠 jest run
-        expect(true).toBe(true);
+  // ========================================
+  // ★ T053: 卡牌消耗 (consumePlayerCard)
+  // ========================================
+  describe('T053: card consumption (step 9.5)', () => {
+    beforeEach(() => {
+      // 默认 withTransaction 模拟：把传入的 fn 直接执行（透传 mockClient）
+      // 这里的 mockClient 形参对应 withTransaction 内部传给 fn 的 client
+      mockWithTransaction.mockImplementation(async (fn: any) => {
+        const fakeClient = { query: jest.fn() };
+        return await fn(fakeClient);
       });
     });
+
+    it('T053-1: source=deck happy path — calls DELETE character_deck + DELETE player_cards, returns success', async () => {
+      // 模拟 DELETE 返回 rowCount=1
+      const fakeClient = { query: jest.fn().mockResolvedValue({ rowCount: 1, rows: [] }) };
+      mockWithTransaction.mockImplementation(async (fn: any) => fn(fakeClient));
+
+      mockGetDbSessionState.mockResolvedValue({
+        battleId: 'b1',
+        currentRound: 1,
+        currentStep: 1,
+        currentActorId: 'c1',
+        currentPhase: 'play',
+      } as any);
+      mockListCharactersInBattle.mockResolvedValue([
+        { characterId: 'c1', userId: 'u1', playerId: 'p1', side: 'p1' },
+      ] as any);
+      mockGetActorHand.mockResolvedValue([
+        { deck_id: 'd1', card_id: 'pc1', source: 'deck', type: 'attack', name: 'X', cost: 1, effect: {}, template_no: 1 },
+      ] as any);
+      mockValidateAttack.mockResolvedValue({ valid: true, energyCost: 1, damage: 2 } as any);
+      (redisClient.hGet as jest.Mock).mockResolvedValue(JSON.stringify({ energy: 3 }));
+      (redisClient.lRem as jest.Mock).mockResolvedValue(1);
+
+      const handCard = {
+        deck_id: 'd1', card_id: 'pc1', source: 'deck' as const,
+        type: 'attack' as const, name: 'X', cost: 1, effect: {}, template_no: 1,
+      };
+      const io = {} as any;
+      const { executePlayCard } = await import('./battleActionService');
+      const result = await executePlayCard(io, 'b1', 'c1', handCard, 'u1');
+
+      expect(result.success).toBe(true);
+      // withTransaction 被调一次
+      expect(mockWithTransaction).toHaveBeenCalledTimes(1);
+      // fn 内 fakeClient.query 调过 2 次（2 个 DELETE）
+      expect(fakeClient.query).toHaveBeenCalledTimes(2);
+      expect(fakeClient.query.mock.calls[0][0]).toContain('DELETE FROM character_deck');
+      expect(fakeClient.query.mock.calls[1][0]).toContain('DELETE FROM player_cards');
+      // 不应有 query('BEGIN') / query('COMMIT') 直接调用
+      // （事务由 withTransaction 包，本测试不直接验 — Task 1 覆盖）
+    });
+
+    it('T053-2: source=public_pool — does NOT call withTransaction, no DELETE', async () => {
+      mockGetDbSessionState.mockResolvedValue({
+        battleId: 'b1', currentRound: 1, currentStep: 1, currentActorId: 'c1', currentPhase: 'play',
+      } as any);
+      mockListCharactersInBattle.mockResolvedValue([
+        { characterId: 'c1', userId: 'u1', playerId: 'p1', side: 'p1' },
+      ] as any);
+      mockGetActorHand.mockResolvedValue([
+        { deck_id: 'pool:1', card_id: 'pt1', source: 'public_pool', type: 'attack', name: '轻击', cost: 1, effect: { damage: 2 }, template_no: 1 },
+      ] as any);
+      mockValidateAttack.mockResolvedValue({ valid: true, energyCost: 1, damage: 2 } as any);
+      (redisClient.hGet as jest.Mock).mockResolvedValue(JSON.stringify({ energy: 3 }));
+      (redisClient.lRem as jest.Mock).mockResolvedValue(1);
+
+      const handCard = {
+        deck_id: 'pool:1', card_id: 'pt1', source: 'public_pool' as const,
+        type: 'attack' as const, name: '轻击', cost: 1, effect: { damage: 2 }, template_no: 1,
+      };
+      const io = {} as any;
+      const { executePlayCard } = await import('./battleActionService');
+      const result = await executePlayCard(io, 'b1', 'c1', handCard, 'u1');
+
+      expect(result.success).toBe(true);
+      // 公共池卡 → withTransaction 不被调
+      expect(mockWithTransaction).toHaveBeenCalledTimes(0);
+    });
+
+    it('T053-3: DELETE throws inside withTransaction — best-effort, executePlayCard still success', async () => {
+      // withTransaction 的 fn 抛错 → withTransaction 内部 ROLLBACK + 重新抛错
+      // → executePlayCard 步骤 9.5 应当不返错（吞掉）
+      const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+      mockWithTransaction.mockRejectedValue(new Error('DB connection lost'));
+
+      mockGetDbSessionState.mockResolvedValue({
+        battleId: 'b1', currentRound: 1, currentStep: 1, currentActorId: 'c1', currentPhase: 'play',
+      } as any);
+      mockListCharactersInBattle.mockResolvedValue([
+        { characterId: 'c1', userId: 'u1', playerId: 'p1', side: 'p1' },
+      ] as any);
+      mockGetActorHand.mockResolvedValue([
+        { deck_id: 'd1', card_id: 'pc1', source: 'deck', type: 'attack', name: 'X', cost: 1, effect: {}, template_no: 1 },
+      ] as any);
+      mockValidateAttack.mockResolvedValue({ valid: true, energyCost: 1, damage: 2 } as any);
+      (redisClient.hGet as jest.Mock).mockResolvedValue(JSON.stringify({ energy: 3 }));
+      (redisClient.lRem as jest.Mock).mockResolvedValue(1);
+
+      const handCard = {
+        deck_id: 'd1', card_id: 'pc1', source: 'deck' as const,
+        type: 'attack' as const, name: 'X', cost: 1, effect: {}, template_no: 1,
+      };
+      const io = {} as any;
+      const { executePlayCard } = await import('./battleActionService');
+      const result = await executePlayCard(io, 'b1', 'c1', handCard, 'u1');
+
+      // best-effort: 仍然 success（步骤 9.5 失败不影响上层）
+      expect(result.success).toBe(true);
+      // console.error 被调（[consumePlayerCard] failed）
+      expect(consoleErrorSpy).toHaveBeenCalled();
+      const errorMsg = consoleErrorSpy.mock.calls.flat().join(' ');
+      expect(errorMsg).toMatch(/consumePlayerCard.*failed/);
+      consoleErrorSpy.mockRestore();
+    });
+
+    it('T053-4: DELETE returns rowCount=0 — ROLLBACK + warn, executePlayCard still success', async () => {
+      const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      // 模拟 fn 内：第 1 个 DELETE 返回 rowCount=0 → 触发 ROLLBACK + warn
+      // 由于 withTransaction 不感知 rowCount，consumer 自己在 fn 内 ROLLBACK
+      // 这里 fn 内部检测 rowCount=0 → 调 client.query('ROLLBACK') + 抛 warn 行
+      const fakeClient = {
+        query: jest.fn()
+          .mockResolvedValueOnce({ rowCount: 0, rows: [] })   // DELETE character_deck 返回 0 行
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }),  // DELETE player_cards
+        // ROLLBACK 也要能调
+      };
+      // 让 withTransaction 跑 fn，但 fn 内自己处理 rowCount 0 → ROLLBACK + 返回特殊值
+      // 简化：直接模拟 fn 跑完后 withTransaction 调 ROLLBACK（实际 fn 内调）
+      mockWithTransaction.mockImplementation(async (fn: any) => {
+        const result = await fn(fakeClient);
+        await fakeClient.query('ROLLBACK');  // 模拟 fn 内检测 rowCount=0 后的 ROLLBACK
+        return result;
+      });
+
+      mockGetDbSessionState.mockResolvedValue({
+        battleId: 'b1', currentRound: 1, currentStep: 1, currentActorId: 'c1', currentPhase: 'play',
+      } as any);
+      mockListCharactersInBattle.mockResolvedValue([
+        { characterId: 'c1', userId: 'u1', playerId: 'p1', side: 'p1' },
+      ] as any);
+      mockGetActorHand.mockResolvedValue([
+        { deck_id: 'd1', card_id: 'pc1', source: 'deck', type: 'attack', name: 'X', cost: 1, effect: {}, template_no: 1 },
+      ] as any);
+      mockValidateAttack.mockResolvedValue({ valid: true, energyCost: 1, damage: 2 } as any);
+      (redisClient.hGet as jest.Mock).mockResolvedValue(JSON.stringify({ energy: 3 }));
+      (redisClient.lRem as jest.Mock).mockResolvedValue(1);
+
+      const handCard = {
+        deck_id: 'd1', card_id: 'pc1', source: 'deck' as const,
+        type: 'attack' as const, name: 'X', cost: 1, effect: {}, template_no: 1,
+      };
+      const io = {} as any;
+      const { executePlayCard } = await import('./battleActionService');
+      const result = await executePlayCard(io, 'b1', 'c1', handCard, 'u1');
+
+      expect(result.success).toBe(true);
+      expect(consoleWarnSpy).toHaveBeenCalled();
+      const warnMsg = consoleWarnSpy.mock.calls.flat().join(' ');
+      expect(warnMsg).toMatch(/partial delete/);
+      consoleWarnSpy.mockRestore();
+    });
+
+    it('T053-5: T050 existing 18 tests still pass (regression check via test file run)', async () => {
+      // 这个 case 实质上是"跑整个 describe('executePlayCard') 块全绿"
+      // 不写额外 mock — 依赖 beforeEach 默认值
+      // 跑测试时这个 it 会跟其他 4 个一起跑，全部 pass 即说明 18+5 兼容性
+      // 本 it 本身不做事（仅占位），验证靠 jest run
+      expect(true).toBe(true);
+    });
+  });
+});
 
 describe('executeEndStep', () => {
   // 复用 helper 设置 mid-round state
