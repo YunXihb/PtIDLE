@@ -76,6 +76,7 @@
 | T050 | 实现打牌操作同步（attack + tactical taunt 17 步流水 + 副作用 + 广播 + 阶段推进） | 2026-06-17 |
 | T051 | 实现回合切换 orchestrator（executeEndStep 11 步 + executeRoundEnd 5 步 + tickBurnDamageOnTarget + battle:skip_play 事件） | 2026-06-17 |
 | T052 | 实现胜负判定逻辑（kill star + base star + 6 阈值胜利 + 平局 + DB 持久化 + WS 广播） | 2026-06-17 |
+| T053 | 实现卡牌消耗（consumePlayerCard + 步骤 9.5 + withTransaction 事务） | 2026-06-18 |
 | 测试基线 | 全量集成测试基础设施就绪（docker compose + socketServer 幂等 connectRedis）：36 suite / 620 test 全绿 | 2026-06-18 |
 
 ---
@@ -86,6 +87,7 @@
 |------|------|----------|
 | 2026-06-10 | `gathering.integration.test.ts` 3 个用例（开始采集×2、取消采集）因 `ClientClosedError: The client is closed` 失败。根因：集成测试未调用 `connectRedis()`，但 `idleQueueService.zAdd/zRem` 路径要求已连接的单例 | 在测试文件顶部加 `jest.mock('../config/redis', ...)` 覆盖所有用到的 Redis 方法。同步更新 `architecture.md` 增加「集成测试 Mock 模式」章节。详见 history 2026-06-10 条目 |
 | 2026-06-18 | T052 收尾时 `npx jest` 跑出 7 个失败（5 `authController` + 2 `socketServer`）。根因是开发环境缺 PostgreSQL/Redis 服务（`ECONNREFUSED 127.0.0.1:5433` + `ClientClosedError`），不是代码问题 | `docker compose up -d` 启动 `ptidle-postgres-1`（5433）+ `ptidle-redis-1`（6379）；`socketServer.test.ts` 在 `beforeAll` 加幂等 `connectRedis()`（用 `redisClient.isOpen` 防重复连）；`afterAll` 不调 `disconnectRedis()` 防止关掉跨文件共享的单例。修复后 36 个 test suite / 620 个 test 全绿。同步更新 `architecture.md` Docker 配置 + 集成测试模式 章节。详见 history 2026-06-18 条目 |
+| 2026-06-18 | T053 spec compliance 收尾时发现 T053 describe block 落在 executePlayCard describe 之外（结构问题）；code quality review 发现 partial delete 路径在 withTransaction 回调内显式 ROLLBACK 导致回调返回后 withTransaction 仍会 COMMIT，产生 driver-level 副作用 + 双日志 | (1) 修正 T053 describe 嵌套位置（amend 6dd68da→be85e9a，b1f3d61 保留原状）；(2) 重构 consumePlayerCard 用 PartialDeleteError sentinel 替代 in-callback ROLLBACK，外层 catch 用 instanceof 区分 partial (warn) vs error (error)，commit b42f89f。修复后 5/5 T053 + 23/23 executePlayCard + 480/480 service + 4/4 database 全绿 |
 
 ---
 

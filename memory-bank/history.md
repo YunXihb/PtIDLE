@@ -1474,3 +1474,23 @@ T052 推送后跑全量 `npx jest`, 7 个 pre-existing 失败 (5 authController 
 ### 范围外
 - socket.io 测试多客户端断连 flake 的根治 (T056 之后做整合测试时再研究)
 - 把 docker compose 改成开发期自动启动 (比如 `npm run dev:up` 脚本) — 后续 devx 优化任务
+
+## 2026-06-18 - 任务：T053 卡牌消耗实现收尾
+
+### Prompt
+实现 T053（卡牌消耗）：每打一张 deck 来源手牌立即在 DB 中删除 character_deck + player_cards 行（同一事务），公共池卡跳过。失败 best-effort 不影响上层。复用 withTransaction helper。
+
+### 思考
+- 关键发现：`query()` 不支持事务（每次 pool.connect() 拿新连接），必须新增 withTransaction helper 用单 client 包 BEGIN/COMMIT/ROLLBACK
+- 步骤 9.5 设计：插在 addToDiscardPile（步骤 9）与 broadcast（步骤 10）之间，best-effort 自身 try/catch 包 withTransaction，不让 SQL 错误冒泡到上层
+- partial delete 处理：用 throw PartialDeleteError sentinel 让 withTransaction 走 ROLLBACK 路径，外层 catch 用 instanceof 区分 partial (warn) vs error (error) — 避免 fn 内显式 ROLLBACK 后 withTransaction 仍 COMMIT 的副作用
+- ID 映射：card_id → player_cards.id，deck_id → character_deck.id，均 PK 查询 O(1)
+- 复用价值：withTransaction helper 后续 T054 / T056 直接复用
+
+### 意外
+- T053 describe block 初次提交 (b1f3d61) 嵌套位置错误（落在 executePlayCard describe 之外），amend 6dd68da→be85e9a 时同步修正（b1f3d61 保留原状）
+- code quality review 发现 partial delete 路径有 ROLLBACK-then-COMMIT 副作用（fn 内显式 ROLLBACK，withTransaction 仍 COMMIT），用 PartialDeleteError sentinel 重构（commit b42f89f）
+- T053-5 占位测试 (expect(true).toBe(true)) 在 red phase 不 fail 是预期行为（plan 已批准），不修改
+- 集成测试基础设施：docker compose up -d 起 ptidle-postgres-1 (5433) + ptidle-redis-1 (6379)，socketServer.test.ts 用 redisClient.isOpen 幂等 connectRedis 防重复连接
+- 测试结果：5/5 T053 + 23/23 executePlayCard (18 T050 + 5 T053) + 480/480 service + 4/4 database 全绿
+- 提交链：84f3ae7 (withTransaction) → b1f3d61 (T053 tests) → be85e9a (impl + structural fix) → b42f89f (I-1 sentinel fix)

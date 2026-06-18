@@ -2091,5 +2091,62 @@ T051 实现回合切换 orchestrator, 在 T050 出牌后自动级联, 客户端�
 
 ---
 
-*文档版本：v1.38*
+## T053 卡牌消耗
+
+T053 补全 T050 流水线的「库存落地」环节：每打一张 `source='deck'` 的手牌，立即在 DB 中删除对应的 `character_deck` 行 + `player_cards` 行（同一事务内）。`source='public_pool'` 卡不入 `player_cards`，跳过删除。失败采用 best-effort 策略：catch + `console.error` + 不影响后续广播 / 阶段推进。
+
+### 1. 触发流程
+
+T050 executePlayCard 17 步流水线（T053 改造后）
+  步骤 1-8:  session 读 / phase 校验 / actor 校验 / owner 校验 / hand 归属 / dispatch validate / 扣能量 / lRem 手牌
+  步骤 9:    addToDiscardPile (if source='deck')
+  步骤 9.5:  ★ T053 NEW: consumePlayerCard(handCard, characterId)  ← best-effort, 内部事务
+  步骤 10-17: 广播 / 阶段推进 / T051 executeEndStep 级联
+
+### 2. 新增基础设施
+
+`backend/src/config/database.ts` 新增 `withTransaction<T>(fn)` helper：
+- `pool.connect()` 拿单 client，fn 内部所有 SQL 走同一连接
+- fn 成功 → COMMIT
+- fn 抛错 → ROLLBACK + 重新抛错
+- ROLLBACK 自身抛错 → 内部吞掉，避免 release 失败
+- 任何情况下 `client.release()` 都被调用
+
+T054 / T056 后续可复用此 helper（battle result API、applyDamage 整合等）。
+
+### 3. 关键设计决策
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| 触发时机 | 实时（executePlayCard 步骤 9.5） | 玩家期望「打牌 → 库存 -1」原子；与 T050 既有控制流解耦 |
+| 删除范围 | `character_deck` + `player_cards` 双删 | spec 「卡牌为消耗品」语义；FK CASCADE 虽能自动删 character_deck，但显式双删可控可测 |
+| 失败处理 | best-effort + console.error + 不返错 | 上游（lRem / 能量扣 / 广播）已成功，回滚代价大 |
+| 事务策略 | `withTransaction` 单事务 | 避免「character_deck 删了 player_cards 没删」的中间态（野牌） |
+| 公共池卡 | 提前 return 跳过 | 不在 player_cards，无 DELETE 必要 |
+| ID 映射 | card_id → player_cards.id，deck_id → character_deck.id | PK 查询，O(1) |
+| 部分删除 | throw PartialDeleteError sentinel | withTransaction 统一管 COMMIT/ROLLBACK 边界，fn 不越权 |
+| 不复用 removeCardFromCharacter | 新写 `consumePlayerCard` | removeCardFromCharacter 是手动 API（无事务、单条 DELETE、抛错失败），与 T053 best-effort 实时事务语义不同 |
+
+### 4. 文件清单
+
+- `src/config/database.ts` — 新增 `withTransaction<T>(fn)` helper
+- `src/config/database.test.ts` — 4 个新测试 (commit/rollback/异常隔离/调用顺序)
+- `src/services/battleActionService.ts` — 新增 `consumePlayerCard` 内部函数 + executePlayCard 步骤 9.5 插入
+- `src/services/battleActionService.test.ts` — 5 个新测试 + 顶部 mock 补 `withTransaction`
+
+**无新增 migration / 无新增 Redis 键 / 无新增 WS 事件 / 无新增 T050 error 变体**。
+
+### 5. 范围外（明确不做）
+
+- ❌ 批量结算模式（对战结束统一删）
+- ❌ 「used」标记 + 后台清理
+- ❌ 退款 / 撤销
+- ❌ 失败时回滚 Redis 手牌 / 能量 / 广播
+- ❌ 失败时返回 error 变体
+- ❌ 5v5 / NvN 模式
+- ❌ 卡牌消耗统计 / 监控埋点
+
+---
+
+*文档版本：v1.39*
 *最后更新：2026-06-18*
