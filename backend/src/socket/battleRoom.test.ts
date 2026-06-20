@@ -5,6 +5,7 @@ jest.mock('../config/redis', () => ({
     del: jest.fn(),
     hGet: jest.fn(),
     hSet: jest.fn(),
+    eval: jest.fn(), // T055: rate-limit Lua
   },
   connectRedis: jest.fn(),
   disconnectRedis: jest.fn(),
@@ -48,10 +49,16 @@ const mockQueryOne = queryOne as jest.MockedFunction<typeof queryOne>;
 
 function createMockSocket(battleId?: string) {
   const handlers: Record<string, Function> = {};
+  // T055: socket.rooms Set 默认包含 battle:battleId（battleId='b1' 是测试常用 battleId）
+  const rooms = new Set<string>();
+  rooms.add('s1'); // socket.io 默认自身房间
+  const effectiveBattleId = battleId ?? 'b1';
+  rooms.add(`battle:${effectiveBattleId}`);
   const socket: any = {
     id: 's1',
-    data: { userId: 'u1', battleId },
+    data: { userId: 'u1', battleId: effectiveBattleId },
     handshake: { auth: { userId: 'u1' } },
+    rooms,
     join: jest.fn().mockResolvedValue(undefined),
     emit: jest.fn(),
     on: (event: string, cb: Function) => { handlers[event] = cb; },
@@ -79,9 +86,13 @@ function createMockIO(roomSize = 1) {
 
 beforeEach(() => {
   jest.clearAllMocks();
-  mockQueryOne.mockResolvedValue({ id: 'b1', player1_id: 'p1', player2_id: 'p2', status: 'pending' });
+  // T055: 默认 queryOne 返回 status='ongoing'（wsValidation 跨切校验通过所需）
+  // handleBattleJoin 测试会在 beforeEach / 各 case 中显式 override 为 'pending' 以测试 init 路径
+  mockQueryOne.mockResolvedValue({ id: 'b1', player1_id: 'p1', player2_id: 'p2', status: 'ongoing' });
   mockRedisSet.mockResolvedValue('OK');
   mockRedisDel.mockResolvedValue(1);
+  // T055: 默认 redisClient.eval 返回 1（rate-limit 未超限）
+  (redisClient.eval as jest.Mock).mockResolvedValue(1);
   mockInit.mockResolvedValue({ success: true, startedAt: new Date(), actorId: 'c1' });
   mockBroadcast.mockResolvedValue(undefined);
 });
@@ -380,7 +391,12 @@ describe('handleBattleSkipPlay', () => {
 
   beforeEach(() => {
     mockEmit = jest.fn();
-    mockSocket = { data: { userId: 'u1' }, emit: mockEmit };
+    // T055: 添加 rooms Set（含 battle:b1 让 wsValidation room check 通过）
+    mockSocket = {
+      data: { userId: 'u1' },
+      rooms: new Set(['s1', 'battle:b1']),
+      emit: mockEmit,
+    };
     mockIo = {} as any;
   });
 
@@ -426,5 +442,122 @@ describe('handleBattleSkipPlay', () => {
     (executeEndStep as jest.Mock).mockResolvedValue({ success: true, state: {} as any });
     await handleBattleSkipPlay(mockIo, mockSocket, { battleId: 'b1' });
     expect(mockEmit).not.toHaveBeenCalled();
+  });
+});
+
+// ========================================
+// T055: 跨切校验回归测试
+// ========================================
+describe('T055: handler 接入 validateOperationContext', () => {
+  let mockSocket: any;
+  let mockIo: any;
+  let mockEmit: jest.Mock;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockEmit = jest.fn();
+    mockSocket = {
+      data: { userId: 'u1' },
+      rooms: new Set(['s1']),
+      emit: mockEmit,
+    };
+    mockIo = {} as any;
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  // ----- handleBattleMove -----
+  it('T055-case 1: handleBattleMove + validator not_in_room → emit error，不调 executeMove', async () => {
+    // socket 不在 battle room
+    mockSocket.rooms = new Set(['s1']); // 仅自身房间，无 battle:b1
+    await handleBattleMove(mockIo, mockSocket, {
+      battleId: 'b1',
+      characterId: 'c1',
+      toX: 5,
+      toY: 3,
+    });
+    expect(mockEmit).toHaveBeenCalledWith('battle:move:error', { error: 'not_in_room' });
+    expect(mockExecuteMove).not.toHaveBeenCalled();
+  });
+
+  // ----- handleBattlePlayCard -----
+  it('T055-case 2: handleBattlePlayCard + validator battle_not_ongoing → emit error，不调 executePlayCard', async () => {
+    mockSocket.rooms = new Set(['s1', 'battle:b1']);
+    // queryOne 返回 status='pending' → 校验失败
+    mockQueryOne.mockResolvedValue({ status: 'pending' });
+    (redisClient.eval as jest.Mock).mockResolvedValue(1);
+
+    const handCard = {
+      deck_id: 'd1',
+      card_id: 'pc1',
+      name: 'X',
+      type: 'attack',
+      cost: 1,
+      effect: {},
+      template_no: 1,
+      source: 'deck',
+    };
+    await handleBattlePlayCard(mockIo, mockSocket, {
+      battleId: 'b1',
+      characterId: 'c1',
+      handCard,
+    });
+    expect(mockEmit).toHaveBeenCalledWith('battle:play_card:error', {
+      error: 'battle_not_ongoing',
+    });
+    expect(mockExecutePlayCard).not.toHaveBeenCalled();
+  });
+
+  // ----- handleBattleSkipPlay -----
+  it('T055-case 3: handleBattleSkipPlay + validator rate_limited → emit error，不调 executeEndStep', async () => {
+    mockSocket.rooms = new Set(['s1', 'battle:b1']);
+    mockQueryOne.mockResolvedValue({ status: 'ongoing' });
+    (redisClient.eval as jest.Mock).mockResolvedValue(61); // > 60 触发 rate_limited
+
+    await handleBattleSkipPlay(mockIo, mockSocket, { battleId: 'b1' });
+    expect(mockEmit).toHaveBeenCalledWith('battle:skip_play:error', {
+      error: 'rate_limited',
+    });
+
+    const { executeEndStep } = require('../services/battleActionService');
+    expect(executeEndStep).not.toHaveBeenCalled();
+  });
+
+  // ----- happy path 回归保护 -----
+  it('T055-case 4 (happy path regression): handleBattleMove + validator ok → executeMove 被调', async () => {
+    mockSocket.rooms = new Set(['s1', 'battle:b1']);
+    mockQueryOne.mockResolvedValue({ status: 'ongoing' });
+    (redisClient.eval as jest.Mock).mockResolvedValue(1);
+    mockExecuteMove.mockResolvedValue({ success: true });
+
+    await handleBattleMove(mockIo, mockSocket, {
+      battleId: 'b1',
+      characterId: 'c1',
+      toX: 5,
+      toY: 3,
+    });
+
+    expect(mockExecuteMove).toHaveBeenCalledWith(mockIo, 'b1', 'c1', 5, 3, 'u1');
+    // happy path 不 emit 任何 error
+    expect(mockEmit).not.toHaveBeenCalledWith('battle:move:error', expect.anything());
+  });
+
+  // ----- handleBattleJoin rate limit 回归 -----
+  it('T055-case 5: handleBattleJoin + validator rate_limited → emit join:error', async () => {
+    mockSocket.rooms = new Set(['s1']);
+    mockSocket.data.username = 'u1-name';
+    (redisClient.eval as jest.Mock).mockResolvedValue(61);
+
+    await handleBattleJoin(mockIo, mockSocket, { battleId: 'b1' });
+
+    expect(mockEmit).toHaveBeenCalledWith('battle:join:error', {
+      error: 'rate_limited',
+    });
+    // 不应触发 DB join 查询（rate-limit 短路在前面）
+    // 注: 第一行 queryOne 不应是 join 查询 — 但 jest 计数无法验证顺序,只能验证 mockGetPendingBattleForJoin
+    // 这里通过 mockEmit 调用验证
   });
 });

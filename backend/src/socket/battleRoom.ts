@@ -6,6 +6,7 @@ import { executeMove, executePlayCard, executeEndStep } from '../services/battle
 import type { HandCard } from '../services/handService';
 import { redisClient } from '../config/redis';
 import { queryOne } from '../config/database';
+import { validateOperationContext, validateJoinContext } from './wsValidation';
 
 /**
  * T046 房间管理 —— 集中 battle 房间相关的 socket.io 操作
@@ -69,6 +70,13 @@ export async function handleBattleJoin(
 
   const userId = socket.data.userId as string;
   const username = socket.data.username as string;
+
+  // 1.5 T055: 跨切校验 - 仅 rate-limit（join 之前不在 room，room 检查会失败；status=pending 由 DB 查吸收）
+  const rateCheck = await validateJoinContext(userId, 'battle:join');
+  if (!rateCheck.ok) {
+    socket.emit('battle:join:error', { error: rateCheck.reason });
+    return;
+  }
 
   // 2. DB 鉴权:验证 user 是该 battle 参与者且 status='pending'
   const battle = await getPendingBattleForJoin(battleId, userId);
@@ -221,6 +229,17 @@ export async function handleBattleMove(
 
   const userId = socket.data.userId as string;
 
+  // 1.5 T055: 跨切校验 - 房间成员 + battle status=ongoing + 速率限制
+  const opCheck = await validateOperationContext(socket, {
+    battleId,
+    userId,
+    eventName: 'battle:move',
+  });
+  if (!opCheck.ok) {
+    socket.emit('battle:move:error', { error: opCheck.reason });
+    return;
+  }
+
   // 2. 调 service
   const result = await executeMove(io, battleId, characterId, toX, toY, userId);
 
@@ -258,6 +277,17 @@ export async function handleBattlePlayCard(
   }
 
   const userId = socket.data.userId as string;
+
+  // 1.5 T055: 跨切校验 - 房间成员 + battle status=ongoing + 速率限制
+  const opCheck = await validateOperationContext(socket, {
+    battleId,
+    userId,
+    eventName: 'battle:play_card',
+  });
+  if (!opCheck.ok) {
+    socket.emit('battle:play_card:error', { error: opCheck.reason });
+    return;
+  }
 
   // 2. 调 service
   const result = await executePlayCard(io, battleId, characterId, handCard, userId);
@@ -322,6 +352,19 @@ export async function handleBattleSkipPlay(
   const battleId = typeof payload?.battleId === 'string' ? payload.battleId : null;
   if (!battleId) {
     socket.emit('battle:skip_play:error', { error: 'invalid_payload' });
+    return;
+  }
+
+  const userId = socket.data.userId as string;
+
+  // 1.5 T055: 跨切校验 - 房间成员 + battle status=ongoing + 速率限制
+  const opCheck = await validateOperationContext(socket, {
+    battleId,
+    userId,
+    eventName: 'battle:skip_play',
+  });
+  if (!opCheck.ok) {
+    socket.emit('battle:skip_play:error', { error: opCheck.reason });
     return;
   }
 
