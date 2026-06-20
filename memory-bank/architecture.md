@@ -2148,5 +2148,107 @@ T054 / T056 后续可复用此 helper（battle result API、applyDamage 整合�
 
 ---
 
-*文档版本：v1.39*
-*最后更新：2026-06-18*
+## T054 对战结算 API
+
+T054 补完一场 PvP 对战的「终局闭环」：T049-T052 让对战能跑到 `battles.status='finished'` + `winner_player_id` + `victory_type`，T053 把卡牌消耗接上，但**玩家战绩（wins/losses/draws）+ 对战历史从未被持久化，Redis 临时态（~30 个 key）也无人清理**。T054 加 `POST /api/battle/result`，任一方玩家触发即可，服务端原子地完成「写双方战绩 + 写对战历史 + 标 settled + 清 Redis」。
+
+### 1. 端点规范
+
+**POST /api/battle/result**
+
+- Auth：JWT 必需（沿用 `authMiddleware`）
+- Request body：`{ battleId: string }`
+- 成功响应 200：`{ success: true, data: SettlementResponse }`
+  - 含 `yourResult`（从调用者视角推 win/loss/draw）、`winner`、`victoryType`、`p1Stars/p2Stars`、`duration`（matched_at→finished_at 秒数）、`yourStats/opponentStats`
+- 错误码：`401 / 400 / 403 / 404 / 409`
+  - `400` 缺 battleId 或类型错
+  - `403` 调用者非 player1/player2
+  - `404` battle 不存在
+  - `409` battle 状态非 finished（pending/ongoing 都算「还没判完」）
+
+### 2. 流水线（settleBattle 8 步）
+
+1. `loadBattleForSettlement` — 单次 JOIN 拿 `status/matched_at/finished_at/settled_at/p1_stars/p2_stars/winner_player_id/victory_type/player1_id/player2_id/p1_user_id/p2_user_id`
+2. 鉴权 — 调用者必须是 p1UserId 或 p2UserId
+3. 状态校验 — `status === 'finished'`
+4. 幂等检测 — `settledAt !== null` → 跳过 5
+5. `withTransaction` 内：
+   - 4a: `UPDATE players SET wins/losses/draws += 1` × 2
+   - 4b: `INSERT INTO player_battle_history` × 2
+   - 4c: `UPDATE battles SET settled_at = NOW()`
+6. 并行 `loadPlayerStats(yourPlayerId)` + `loadPlayerStats(opponentPlayerId)` + `cleanupAllBattleRedisKeys`
+7. 构造 SettlementResponse
+
+### 3. 关键设计决策
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| 触发方式 | 任一方玩家 POST | 不需要双方都调；接收 `battle:end` WS 事件后任一方触发即可 |
+| 玩家数据范围 | `players.wins/losses/draws` + `player_battle_history` | MVP 范围；资源发放/Rating/段位留后续 |
+| 幂等策略 | `battles.settled_at` 非空 → 跳过写入 | DB 自带；第二次调用返相同数据；不依赖 Redis 状态 |
+| Redis 清理 | `keys('battle:{id}:*')` + `del(...)` | 一次性删全部 ~30 key；MVP 不上 SCAN（O(N) 可接受） |
+| Redis 失败处理 | best-effort + `console.error` + 不影响响应 | 玩家数据已落库；key 野掉下次自然清 |
+| 事务策略 | T053 `withTransaction` 复用 | 单 client 一致性；4a/4b/4c 全部回滚 |
+| controller 错误穷举 | switch + `default: never` | 新增 error variant 编译失败，杜绝静默漏分支 |
+| stats 查询 | 事务外 `loadPlayerStats × 2` 并行 | 事务已 commit，外部读最新 + 与 Redis 清理并发 |
+| 对战历史表约束 | `UNIQUE(player_id, battle_id)` + `CHECK(victory_type)` | 防御性：手动 SQL / 未来 bug 都不能写双行 |
+
+### 4. Migration 010
+
+`backend/src/migrations/010_t054_settlement.sql`：
+
+```sql
+-- players 加胜场/败场/平局三计数
+ALTER TABLE players
+  ADD COLUMN IF NOT EXISTS wins INTEGER NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS losses INTEGER NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS draws INTEGER NOT NULL DEFAULT 0;
+
+-- battles 加 settled_at 标记（T054 写入,幂等检测键）
+ALTER TABLE battles
+  ADD COLUMN IF NOT EXISTS settled_at TIMESTAMP WITH TIME ZONE;
+
+-- 对战历史表
+CREATE TABLE IF NOT EXISTS player_battle_history (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  player_id UUID NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  battle_id UUID NOT NULL REFERENCES battles(id) ON DELETE CASCADE,
+  result VARCHAR(10) NOT NULL CHECK (result IN ('win', 'loss', 'draw')),
+  opponent_player_id UUID REFERENCES players(id),
+  victory_type VARCHAR(20) NOT NULL CHECK (victory_type IN ('kill_threshold', 'base_threshold', 'draw')),
+  my_stars INTEGER NOT NULL,
+  opponent_stars INTEGER NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT uq_pbh_player_battle UNIQUE (player_id, battle_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pbh_player_created
+  ON player_battle_history(player_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_pbh_battle
+  ON player_battle_history(battle_id);
+```
+
+### 5. 文件清单
+
+- `src/migrations/010_t054_settlement.sql` — players 三计数 + player_battle_history + battles.settled_at
+- `src/services/battleSettlementService.ts` — `settleBattle` orchestrator + 内部 helpers（`loadBattleForSettlement` / `applySettlementInTransaction` / `updatePlayerCounter` / `insertBattleHistory` / `loadPlayerStats` / `cleanupAllBattleRedisKeys` / `buildResponse`）
+- `src/controllers/battleController.ts` — `settleBattleHandler`，switch + `never` exhaustiveness
+- `src/routes/battle.ts` — `POST /result`，沿用 `authMiddleware`
+- `src/index.ts` — `app.use('/api/battle', battleRoutes)`，按字母序插在 auth/player 之间
+- `src/services/battleSettlementService.test.ts` — 10 unit tests（happy path × 3 + 幂等 × 1 + 4 error branches + redis 失败 × 1 + transaction 回滚 × 1）
+- `src/routes/battle.settlement.integration.test.ts` — 11 integration tests（401 × 1 + 400 × 2 + 403 × 1 + 404 × 1 + 409 × 2 + 200 × 4 含平局 + 幂等 × 1）
+
+### 6. 范围外（明确不做）
+
+- ❌ 资源发放（金币/经验/制造点）— 后续任务
+- ❌ Rating / 段位 — 后续任务
+- ❌ 战报回放（`battle_data` JSON 内容暴露）— 后续任务
+- ❌ 5v5 / NvN 通用（T054 沿用 T052 3v3 假设）
+- ❌ Redis SCAN 优化（KEYS 够用，MVP 不上）
+- ❌ 清理 `idle:*` 全局匹配队列 key（不在 battle 范围内）
+- ❌ WebSocket 推送结算事件（客户端走 `battle:end` 已有事件，POST /result 仅作持久化触发）
+
+---
+
+*文档版本：v1.40*
+*最后更新：2026-06-20*

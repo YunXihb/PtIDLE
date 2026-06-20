@@ -1494,3 +1494,49 @@ T052 推送后跑全量 `npx jest`, 7 个 pre-existing 失败 (5 authController 
 - 集成测试基础设施：docker compose up -d 起 ptidle-postgres-1 (5433) + ptidle-redis-1 (6379)，socketServer.test.ts 用 redisClient.isOpen 幂等 connectRedis 防重复连接
 - 测试结果：5/5 T053 + 23/23 executePlayCard (18 T050 + 5 T053) + 480/480 service + 4/4 database 全绿
 - 提交链：84f3ae7 (withTransaction) → b1f3d61 (T053 tests) → be85e9a (impl + structural fix) → b42f89f (I-1 sentinel fix)
+
+
+## 2026-06-20 - 任务：T054 对战结算 API
+
+### Prompt
+实现 T054（对战结算 API）：POST /api/battle/result，任一方玩家触发即可，服务端原子写双方 wins/losses/draws + player_battle_history + battles.settled_at + 清理 Redis 全部 battle 临时态，幂等（第二次调用跳过玩家数据写入只返已存数据）。依赖 T052（胜负已判）+ T053（卡牌已消耗 + withTransaction helper）。
+
+### 思考
+- 7 步流水线（后调为 8 步）：loadBattle（JOIN 一次拿双方 user_id 复用 recordVictory 模式）/ 鉴权 / 状态校验 / 幂等检测 / withTransaction 内写 4a UPDATE players × 2 + 4b INSERT pbh × 2 + 4c UPDATE battles.settled_at / 并行 loadPlayerStats × 2 + cleanupAllBattleRedisKeys / buildResponse
+- 幂等键选择：`battles.settled_at` (TIMESTAMPTZ) 而非 Redis SETNX — DB 自带，崩溃恢复也安全；第二次调用 `settledAt !== null` 跳过整个 withTransaction
+- Redis 清理策略：`keys('battle:{id}:*')` 拿全 key 一次性 del；best-effort try/catch + console.error（玩家数据已落库）；KEYS O(N) 在 ~30 key 范围内可接受，MVP 不上 SCAN
+- controller error 映射：discriminated union `SettleResult` + switch + `default: never` 编译期穷举 — 新增 error variant 编译失败，杜绝静默漏分支
+- stats 查询放事务外：事务已 commit，外部读最新 + 与 Redis 清理并发（Promise.all 3 并行）— 不污染事务边界
+- 复用 T053 `withTransaction` helper：单 client BEGIN/COMMIT/ROLLBACK 复用模式
+- migration 设计：`UNIQUE(player_id, battle_id)` 防双行 + `CHECK(victory_type IN ...)` 防御性约束；`idx_pbh_player_created` 走「最近对战」查询，`idx_pbh_battle` 走单场反查（每场只有 2 行，索引价值低但保留）
+
+### 意外
+- 首次 import `PoolClient` 从 `../config/database` 失败（PG 类型未从该模块 re-export）— 改成 `import type { PoolClient } from 'pg'`
+- simplify review 发现 4 个高/中优先级问题：
+  1. **copy-paste in applySettlementInTransaction**: 4 个对称 SQL 调用（4a 双 UPDATE + 4b 双 INSERT）易引入参数错位 bug；重构为 `for side of [p1/p2]` 循环 + `insertBattleHistory(client, battle, side)` 收 1 个 `side` 对象替代 7 位置参数
+  2. **controller switch 缺 exhaustiveness**: 新增 error variant 会静默漏分支；加 `default: const _exhaustive: never = result.error; throw` 让 TS 编译失败
+  3. **stats + Redis 清理串行**: 优化为 `Promise.all([statsA, statsB, cleanup])` 3 并行（cleanup 与 stats 独立）
+  4. **test `console.error` spy 顶层不还原**: 改 `beforeEach` 局部 spy + `afterEach mockRestore` 防污染同进程后续 test 输出；集成 test 顺手删 `_refs` 占位语句
+- migration 010 第一次应用后我又改了约束（加 UNIQUE + CHECK），需要 drop+recreate `player_battle_history`（dev 表为空，安全）；最终版完整应用一次
+- 测试结果：10/10 unit + 11/11 integration + 39/39 全量 suite 全绿（650 tests，比 T053 基线 +30）
+
+### 修复
+- 新增 6 文件：`src/migrations/010_t054_settlement.sql` / `src/services/battleSettlementService.ts` (407 行) / `src/services/battleSettlementService.test.ts` (397 行) / `src/controllers/battleController.ts` (83 行) / `src/routes/battle.ts` (22 行) / `src/routes/battle.settlement.integration.test.ts` (317 行)
+- 改 1 文件：`src/index.ts` +2 行（battleRoutes import + app.use，按字母序插在 auth/player 之间）
+- 改 `memory-bank/architecture.md`：v1.39 → v1.40，加 T054 完整章节（端点规范 + 8 步流水线 + 设计决策 + migration + 文件清单 + 范围外）
+- 改 `memory-bank/progress.md`：加 T054 完成行 + 6-20 测试基线行 + 6-20 simplify 修复条目
+
+### 验证
+- `npx tsc --noEmit` exit 0，无 TS 错
+- `npx jest src/services/battleSettlementService.test.ts --forceExit` → 10/10 pass
+- `npx jest src/routes/battle.settlement.integration.test.ts --forceExit` → 11/11 pass
+- `npx jest --forceExit` → 39/39 suite, 650/650 test 全绿
+- migration 010 已应用到 ptidle-postgres-1：players.wins/losses/draws / battles.settled_at / player_battle_history（含 UNIQUE + CHECK）全部就位
+
+### 范围外
+- 资源发放（金币/经验/制造点）— T055+ 后续
+- Rating / 段位 — 后续
+- 战报回放（battle_data JSON 暴露）— 后续
+- 5v5 / NvN 通用（T054 沿用 T052 3v3 假设）
+- Redis SCAN 优化（KEYS MVP 够用）
+- WebSocket 推送结算事件（客户端走已有 battle:end 事件，POST /result 仅作持久化触发）
