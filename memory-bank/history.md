@@ -1540,3 +1540,50 @@ T052 推送后跑全量 `npx jest`, 7 个 pre-existing 失败 (5 authController 
 - 5v5 / NvN 通用（T054 沿用 T052 3v3 假设）
 - Redis SCAN 优化（KEYS MVP 够用）
 - WebSocket 推送结算事件（客户端走已有 battle:end 事件，POST /result 仅作持久化触发）
+
+---
+
+## 2026-06-20 - 任务：T055 操作合法性校验中心化（WS Handler 入口跨切校验）
+
+### Prompt
+T049-T054 实现 PvP 对战完整闭环，但 WS handler 入口层（`battleRoom.ts`）只做了 payload 形状检查，缺 3 类跨切校验：房间成员资格、对战状态、速率限制。T055 在 WS handler 入口引入统一 `validateOperationContext`，覆盖跨切校验，handler 入口 fail-fast 返回 `battle:X:error`，不动 orchestrator 内部校验。Redis 后端，不做 nonce-based replay 防护。
+
+### 思考
+- **跨切校验分层**：业务级校验（actor/phase/owner/range/能量）已在 T049/T050 orchestrator 6/17 步流水线内，**不应外移**避免回归；T055 只做 3 类跨切（room/status/rate），位于 handler 入口层，与 payload 形状检查同一阶段。
+- **降级策略**：Redis/DB 异常 → allow + console.error。理由：跨切校验目的是防攻击，正常玩家在 Redis/DB 故障时仍应能玩；T049/T050 orchestrator 内已有业务校验兜底，跨切 fail-open 不会导致严重后果。
+- **Lua 原子 INCR+EXPIRE**：避免「INCR 后 EXPIRE 之间挂掉导致永久不过期」的边界 bug。固定窗口语义（EXPIRE 只在首次设置，不刷新），简单清晰。
+- **4 handler 改造点差异**：`handleBattleJoin` 只加 rate-limit（不加 room：因为 join 前不在 room；不加 status='ongoing'：因为 join 只允许 pending，由 `getPendingBattleForJoin` 吸收）。其余 3 个加完整 opContext。
+- **error 事件格式**：复用现有 `battle:X:error { error: '...' }` 格式，让 reason 直接作为 error 字段，前端可识别（reason 枚举与 T049/T050 error variant 命名风格一致：`not_in_room` / `battle_not_ongoing` / `rate_limited`）。
+- **mock 改造最小化**：现有 `battleRoom.test.ts` 23 个测试不动逻辑，只更新 mock：`redisClient` 加 `eval` mock、`createMockSocket` 默认 rooms 含 `battle:b1`、`beforeEach` 默认 queryOne 返回 'ongoing' + eval 返回 1。新增 5 个 T055 回归测试覆盖 3 类校验失败 + happy path + handleBattleJoin rate-limit。
+- **集成测试用真实 Redis+PG**：rate-limit 跑满 60 次（真实 Redis 计数器）、EXPIRE 用 1s 窗口+1.5s sleep 加速、PG 三种状态（pending/finished/ongoing）插入真实数据。FK 清理顺序：先删 battles → 再删 players → users CASCADE。
+
+### 意外
+- 单元测试 case 12（DB fail-open 后 Redis 是否被调）最初断言 `expect(mockEval).not.toHaveBeenCalled()` — **这是测试预期错误**。DB 异常 → checkBattleOngoing 返回 ok → validateOperationContext 继续往下走 → 调 checkRateLimit → mockEval 被调。修正断言为「只验证 console.error 被调，不验证 mockEval」+ 加注释说明 status fail-open 后续步骤仍执行。
+- 集成测试 `deleteTestBattle` 一开始直接 `DELETE FROM players`，触发 FK 约束（battles 还引用 player）— 改为「先删 battles 解除 FK → 再删 players」两步走。
+- 集成测试 `redisClient.del` 不接受 variadic args（TS 类型 `[keys: RedisCommandArgument[]]`），必须传数组 `[key1, key2]`。
+- 现有 `battleRoom.test.ts` 的 `handleBattleSkipPlay` describe 用独立 mockSocket（无 rooms 字段），validator 调 `socket.rooms.has(...)` 抛 TypeError — 加 `rooms: new Set(['s1', 'battle:b1'])`。
+- 现有测试 `beforeEach` 默认 `queryOne` 返回 `status: 'pending'`（为 handleBattleJoin 的 `getPendingBattleForJoin` 服务），但 move/play_card/skip_play 需要 `status: 'ongoing'`。改全局默认 `ongoing`，handleBattleJoin 自身 beforeEach 显式 override `pending`（已有此模式，未新增）。
+- 测试结果：23/23 wsValidation unit + 10/10 wsValidation integration + 28/28 battleRoom（含 5 新 T055 case）+ 41/41 全量 suite 全绿（688 tests = 650 基线 + 38 新）
+
+### 修复
+- 新增 2 文件：`src/socket/wsValidation.ts` (243 行, validateOperationContext + 3 helpers + Lua 脚本 + 类型) / `src/socket/wsValidation.test.ts` (333 行, 23 case)
+- 新增 1 文件：`src/socket/wsValidation.integration.test.ts` (288 行, 10 case, 真实 Redis + PG)
+- 改 1 文件：`src/socket/battleRoom.ts` 4 个 handler 各加 validator 调用（joinContext 仅 rate-limit；其余 3 个 opContext 完整）
+- 改 1 文件：`src/socket/battleRoom.test.ts` mock 工厂加 `eval` + createMockSocket 加 rooms Set + beforeEach 默认 mockEval=1 + 默认 status='ongoing' + handleBattleSkipPlay mockSocket 加 rooms + 新增 5 个 T055 describe
+- 改 `memory-bank/architecture.md`：v1.40 → v1.41，加 T055 完整章节（背景动机 + 设计决策 + 流水线 + 模块 + Lua + handler 改造点 + Redis key + 降级 + 范围外 + 测试）
+- 改 `memory-bank/progress.md`：加 T055 完成行 + 6-20 测试基线行
+
+### 验证
+- `npx jest src/socket/wsValidation.test.ts --forceExit` → 23/23 pass
+- `npx jest src/socket/wsValidation.integration.test.ts --forceExit` → 10/10 pass（真实 Redis Lua + 真实 PG battle row）
+- `npx jest src/socket/battleRoom.test.ts --forceExit` → 28/28 pass（23 旧 + 5 新 T055 回归）
+- `npx jest --forceExit` → 41/41 suite, 688/688 test 全绿（无 regression）
+
+### 范围外（明确不做）
+- Nonce-based replay 防护（每条 WS 消息带 nonce）— MVP 外
+- orchestrator 内部校验重构（T049/T050 6/17 步内部校验保留）
+- per-battle 全局 rate-limit（防双玩家协调攻击）— T055 仅 per-user
+- WS 消息结构校验（payload 形状检查保留在 handler 内）
+- 能量平衡审计（move + play_card 总扣能量 vs 初始能量）— T056+ 处理
+- 跨进程速率聚合（多 instance 时 Redis Lua 已 global，因为用 Redis 单点）
+- 5v5 / NvN 通用（T055 沿用 3v3）

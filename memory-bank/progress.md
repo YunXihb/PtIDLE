@@ -78,7 +78,8 @@
 | T052 | 实现胜负判定逻辑（kill star + base star + 6 阈值胜利 + 平局 + DB 持久化 + WS 广播） | 2026-06-17 |
 | T053 | 实现卡牌消耗（consumePlayerCard + 步骤 9.5 + withTransaction 事务） | 2026-06-18 |
 | T054 | 实现对战结算 API（POST /api/battle/result + 玩家 wins/losses/draws 累加 + player_battle_history + Redis 清理 + 幂等） | 2026-06-20 |
-| 测试基线 | T054 收尾：39 suite / 650 test 全绿（新增 10 unit + 11 integration） | 2026-06-20 |
+| T055 | 操作合法性校验中心化（WS Handler 入口跨切校验：room membership + battle status + rate-limit via Redis Lua） | 2026-06-20 |
+| 测试基线 | T055 收尾：41 suite / 688 test 全绿（新增 23 unit + 10 integration + 5 battleRoom 回归 = 38 新测试） | 2026-06-20 |
 
 ---
 

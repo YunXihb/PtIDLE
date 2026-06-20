@@ -2250,5 +2250,129 @@ CREATE INDEX IF NOT EXISTS idx_pbh_battle
 
 ---
 
-*文档版本：v1.40*
+## T055 操作合法性校验中心化
+
+### 1. 背景与动机
+
+T049-T054 在 orchestrator 内部（`executeMove` / `executePlayCard` / `executeEndStep`）实现了 per-action 业务校验（actor / phase / owner / range / 能量等），是 process 内的 6/17 步流水线之一。但 **WS handler 入口层**（`battleRoom.ts:58-339`）只做了 payload 形状检查（battleId 是 string、characterId 是 string、handCard 形状合法），**完全没做跨切校验**：
+
+1. **房间成员资格**：未验证 socket 真的在 `battle:{battleId}` 房间（攻击者可伪造任意 battleId）
+2. **对战状态**：未验证 `battles.status='ongoing'`（已结算的对战还能继续收到 move）
+3. **速率限制**：完全没有任何限流（单连接可无限刷 `battle:move`）
+4. **代码重复**：4 个 handler 各自手写 payload 形状检查，没有共享模板
+
+### 2. 设计决策
+
+| # | 决策点 | 选择 |
+|---|--------|------|
+| 1 | T055 范围 | **中心化 + 跨切校验**（WS handler 入口加统一 validator + 新增 3 类跨切校验） |
+| 2 | 存储后端 | **Redis**（rate-limit 计数器 + battle 状态 DB 查询） |
+| 3 | 不动 orchestrator | T049/T050 内部校验逻辑保留（避免回归） |
+| 4 | 非 nonce | **不做 nonce-based replay 防护**（MVP 范围外） |
+
+### 3. 端到端流水线
+
+```
+WS Event (battle:move, payload: {battleId, characterId, toX, toY})
+   │
+   ▼
+socket.io.on('battle:move', async (payload) => {
+   │
+   ▼  handleBattleMove (battleRoom.ts)
+   │
+   ├─ 1. payload 形状检查（现有，保留）
+   │     battleId/characterId 是 string, toX/toY 是 finite number
+   │
+   ├─ 2. validateOperationContext(socket, payload, 'battle:move')  ★ T055 NEW
+   │     ├─ 2a. socket.rooms.has(battleRoom(battleId))     ← 房间成员
+   │     ├─ 2b. SELECT status FROM battles WHERE id=$1      ← 对战状态
+   │     │        expect 'ongoing'
+   │     └─ 2c. Redis Lua INCR rl:ws:user:{uid}:battle:move ← 速率限制
+   │              if first: EXPIRE 60s
+   │              if count > 60: rate_limited
+   │
+   ├─ 3. executeMove(...) (T049 orchestrator, 不动)
+   │
+   └─ 4. emit success or error
+})
+```
+
+### 4. 模块: `backend/src/socket/wsValidation.ts`
+
+```typescript
+export type ValidationFailureReason =
+  | 'invalid_payload'        // 400-equivalent (payload 缺字段)
+  | 'not_in_room'             // socket 不在 battle room
+  | 'battle_not_found'        // battleId 不存在
+  | 'battle_not_ongoing'      // status != 'ongoing'
+  | 'rate_limited';           // Redis 计数超阈值
+
+export interface OperationContext {
+  battleId: string;
+  userId: string;          // 来自 socket.data.userId (T045 写入)
+  eventName: string;       // 'battle:move' 等
+}
+
+export async function validateOperationContext(
+  socket: BattleSocket,
+  ctx: OperationContext
+): Promise<ValidationResult>;
+
+export async function validateJoinContext(  // 用于 handleBattleJoin（仅 rate-limit）
+  userId: string,
+  eventName: string
+): Promise<ValidationResult>;
+```
+
+### 5. Rate Limit Lua 脚本（原子 INCR + EXPIRE）
+
+```lua
+local current = redis.call('INCR', KEYS[1])
+if current == 1 then
+  redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return current
+```
+
+**阈值**：60 次/分钟/用户/事件（足够人类操作；防脚本刷）。
+
+### 6. 4 个 handler 的改造点
+
+| Handler | 加的校验 | 不加的校验 | 原因 |
+|---------|----------|-----------|------|
+| `handleBattleJoin` | rate-limit | room / status='ongoing' | join 之前不在 room；status='pending' 由 `getPendingBattleForJoin` 吸收 |
+| `handleBattleMove` | 完整 opContext | - | 全跨切校验 |
+| `handleBattlePlayCard` | 完整 opContext | - | 同 move |
+| `handleBattleSkipPlay` | 完整 opContext | - | 同 move |
+
+### 7. Redis Key 设计
+
+| Key 模式 | 类型 | 用途 | TTL |
+|---------|------|------|-----|
+| `rl:ws:user:{userId}:{eventName}` | STRING (counter) | 每用户每事件速率 | 60s |
+| `battle:{battleId}` (已有) | ROOM | Socket.IO 房间 | session |
+
+### 8. 降级策略
+
+每步独立 try/catch，Redis/DB 异常 → **降级为 allow + console.error**。避免 Redis/DB 故障阻塞合法玩家。
+
+### 9. 范围外（明确不做）
+
+- ❌ Nonce-based replay 防护
+- ❌ orchestrator 内部校验重构（T049/T050 的 6/17 步内部校验保留）
+- ❌ per-battle 全局 rate-limit
+- ❌ WS 消息结构校验（payload 形状检查保留在 handler 内）
+- ❌ 能量平衡审计
+- ❌ 跨进程速率聚合（T055 沿用单 Redis 即可，Lua global）
+- ❌ 5v5 / NvN（T055 沿用 3v3）
+
+### 10. 测试覆盖
+
+- 单元测试 `wsValidation.test.ts`: 23 case（happy path / 3 类校验失败 / 降级 / Lua 边界）
+- 集成测试 `wsValidation.integration.test.ts`: 10 case（真实 Redis Lua + 真实 PG battle row + EXPIRE 加速验证）
+- 回归测试 `battleRoom.test.ts`: 5 case（验证 handler 调用 validator 后 emit error + 不调 orchestrator + happy path）
+
+---
+
+*文档版本：v1.41*
 *最后更新：2026-06-20*
