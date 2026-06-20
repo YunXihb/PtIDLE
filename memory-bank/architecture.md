@@ -2479,7 +2479,7 @@ npm run dev
 ### 8. 测试覆盖
 
 - 单元测试 `src/scripts/migrate.test.ts`: **8 case**（listMigrations 排序 / runMigrations 全应用/部分应用/全跳过/失败 abort + ROLLBACK / printStatus / 二次运行幂等）
-- 手动验证：本地 dev DB 跑 `npm run db:status` → 9 files, 9 applied, 0 pending；`npm run db:migrate` → "All migrations already applied. Nothing to do."
+- 手动验证：本地 dev DB 跑 `npm run db:migrate` 跑通后 → `npm run db:status` → 9 files, 9 applied, 0 pending；二次 `npm run db:migrate` → "All migrations already applied. Nothing to do."
 
 ### 9. 范围外（明确不做）
 
@@ -2491,5 +2491,137 @@ npm run dev
 
 ---
 
-*文档版本：v1.42*
+## T-FOLLOW-2 Migrations 启动期集成 + README 文档
+
+### 1. 背景与动机
+
+T-FOLLOW-1 把迁移 runner 跑通了，但仍有 2 个 gap：
+1. **README 缺失** — 仓库根 + backend 都没有 README，新开发者不知道启动顺序
+2. **启动时无感知** — dev DB 缺 migration 时，server 也能正常起来，但运行时报 `column "xxx" does not exist`，排查浪费时间
+
+**T-FOLLOW-2 目标**：
+1. 新增根 `README.md` + `backend/README.md`，写明 4 步启动顺序
+2. `src/index.ts` 启动时自动检测 migrations 状态，缺时 console.warn（**不阻塞**）
+
+### 2. 设计决策
+
+| # | 决策点 | 选择 |
+|---|--------|------|
+| 1 | 警告 vs 阻塞 | **警告**（fail-open）— DB 状态问题不应拖垮 server 启动；运维友好 |
+| 2 | 检测函数 | `checkMigrationsStatus()` 加到 `migrate.ts`（与 runMigrations/printStatus 平级），只读 |
+| 3 | 返回结构 | `{ total, applied, pending, missing, hasPending, ok, error? }` — 程序化可消费 |
+| 4 | 错误处理 | DB 错误 → `ok=false + error`，**不抛错**（避免 server 启动失败） |
+| 5 | README 范围 | 2 份：根（项目概览 + 4 步启动）+ backend（细节 + 命令 + API） |
+
+### 3. 模块: `checkMigrationsStatus`
+
+```typescript
+// backend/src/scripts/migrate.ts
+export interface MigrationStatus {
+  total: number;
+  applied: number;
+  pending: number;
+  missing: string[];   // pending 文件名（按文件名升序）
+  hasPending: boolean;
+  ok: boolean;          // false = DB 错误
+  error?: string;
+}
+
+export async function checkMigrationsStatus(): Promise<MigrationStatus>;
+```
+
+**关键不变量**：
+- `missing` 数组保留 sorted order → 日志逐行展示友好
+- `ok=false` 时所有计数为 0，`missing=[]` — 防止 caller 误用脏数据
+- 不修改 DB（只调 `ensureMigrationsTable` 自我修复 + read 一次 `schema_migrations`）
+
+### 4. index.ts 启动期集成
+
+```typescript
+// backend/src/index.ts
+async function initializeApp() {
+  try {
+    await testDb();
+    await warnIfMigrationsPending();   // ← T-FOLLOW-2 NEW
+    await connectRedis();
+    await initializeGatheringConfig();
+    startGatheringChecker();
+    console.log('✅ All services initialized');
+  } catch (error) { ... }
+}
+
+async function warnIfMigrationsPending(): Promise<void> {
+  const status = await checkMigrationsStatus();
+  if (!status.ok) {
+    console.error(`[migrations] ⚠️  Failed to check migration status: ${status.error}`);
+    console.error(`[migrations]    Server will start anyway. Run 'npm run db:migrate' manually.`);
+    return;
+  }
+  if (status.hasPending) {
+    console.warn(`\n[migrations] ⚠️  ${status.pending} pending migration(s) detected:`);
+    for (const m of status.missing) console.warn(`[migrations]    ○ ${m}`);
+    console.warn(`[migrations]    Run 'npm run db:migrate' to apply.\n`);
+  }
+  // 全 applied → 静默（不刷日志）
+}
+```
+
+**日志样式**（与 T055 validator 风格一致）：
+- 全 applied → 静默
+- 有 pending → ⚠️ 警告 + 列表 + 修复命令
+- DB 错误 → ⚠️ 错误 + 提示手动跑 migrate
+
+### 5. README 结构
+
+#### 根 `README.md`（`/home/lovept/PtIDLE/README.md`）
+- 项目简介 + 技术栈
+- **4 步快速启动**（docker compose up → npm install → npm run db:migrate → npm run dev）
+- 项目结构 + 常用命令 + 验证步骤
+- 文档索引 + 贡献流程
+
+#### `backend/README.md`
+- 后端快速启动（含启动日志样例）
+- 目录结构（含文件统计：51 源 + 42 测试 + 9 SQL）
+- npm scripts 详解
+- 数据库 / 测试结构 / 调试技巧
+- REST API + WS 事件概览
+
+### 6. 启动顺序（最终标准）
+
+```bash
+# 1. 起 DB
+docker compose up -d               # PG 5433 + Redis 6379
+
+# 2. 装依赖
+cd backend && npm install
+
+# 3. 应用迁移（首次或 schema 变更后）
+npm run db:migrate
+
+# 4. 起后端
+npm run dev
+```
+
+**漏跑 `db:migrate` 的现象**：
+- 启动看到 `[migrations] ⚠️  N pending migration(s) detected`
+- 部分 query 报 `column "xxx" does not exist`
+- 修复：执行 `npm run db:migrate` 即可
+
+### 7. 测试覆盖
+
+- 单元测试 `migrate.test.ts` 新增 5 case（happy path 全 applied / 部分 pending / 全 pending / DB 错误 fail-open / bootstrap 失败）
+- 全量基线：42/42 suite, 701/701 test 全绿（696 → 701 = 5 新）
+- 手动 smoke：故意 DELETE 一行 `schema_migrations`，调 `checkMigrationsStatus` 验证返回 `hasPending=true + missing=['010_xxx.sql']`
+
+### 8. 范围外（明确不做）
+
+- ❌ **强制阻塞启动**（fail-open 是有意的，dev 体验 > 严格性）
+- ❌ **自动跑 migrate**（用户应主动控制 schema 变更时机）
+- ❌ **per-migration 详细 diff**（仅文件名列表，不解析 SQL 内容）
+- ❌ **CLI 集成警告**（仅 server 启动时检测，`migrate.ts` 自身保持纯 CLI）
+- ❌ **TS 编译时类型生成**（每次 migration 仍是手写 SQL，不接入 prisma/typeorm）
+
+---
+
+*文档版本：v1.43*
 *最后更新：2026-06-20*

@@ -33,7 +33,7 @@ const _refs = { mockQuery, mockPoolConnect, mockPoolEnd, mockClientQuery, mockRe
 
 // Imports must come AFTER all jest.mock calls
 // 注意：migrate.ts 在 main() 自动跑，需要用 jest.isolateModules 隔离
-import { runMigrations, printStatus, listMigrations } from './migrate';
+import { runMigrations, printStatus, listMigrations, checkMigrationsStatus } from './migrate';
 
 // ============== Helpers ==============
 
@@ -219,5 +219,79 @@ describe('idempotency behavior', () => {
     setupMocks({ files: ['001_a.sql', '002_b.sql'], applied: ['001_a.sql', '002_b.sql'] });
     await runMigrations();
     expect(mockPoolConnect).not.toHaveBeenCalled();
+  });
+});
+
+// ========================================
+// 5. checkMigrationsStatus (T-FOLLOW-2)
+// 启动期只读检测，index.ts 用
+// ========================================
+
+describe('checkMigrationsStatus', () => {
+  it('case 9: 全部已 applied → ok=true, hasPending=false, missing=[]', async () => {
+    setupMocks({ files: ['001_a.sql', '002_b.sql'], applied: ['001_a.sql', '002_b.sql'] });
+    const status = await checkMigrationsStatus();
+
+    expect(status.ok).toBe(true);
+    expect(status.total).toBe(2);
+    expect(status.applied).toBe(2);
+    expect(status.pending).toBe(0);
+    expect(status.hasPending).toBe(false);
+    expect(status.missing).toEqual([]);
+    expect(status.error).toBeUndefined();
+  });
+
+  it('case 10: 部分未 applied → ok=true, hasPending=true, missing 列出文件名', async () => {
+    setupMocks({ files: ['001_a.sql', '002_b.sql', '003_c.sql'], applied: ['001_a.sql'] });
+    const status = await checkMigrationsStatus();
+
+    expect(status.ok).toBe(true);
+    expect(status.total).toBe(3);
+    expect(status.applied).toBe(1);
+    expect(status.pending).toBe(2);
+    expect(status.hasPending).toBe(true);
+    expect(status.missing).toEqual(['002_b.sql', '003_c.sql']);
+  });
+
+  it('case 11: 全部未 applied → missing 包含所有 .sql 文件', async () => {
+    setupMocks({ files: ['001_a.sql', '002_b.sql'], applied: [] });
+    const status = await checkMigrationsStatus();
+
+    expect(status.ok).toBe(true);
+    expect(status.total).toBe(2);
+    expect(status.applied).toBe(0);
+    expect(status.pending).toBe(2);
+    expect(status.hasPending).toBe(true);
+    expect(status.missing).toEqual(['001_a.sql', '002_b.sql']);
+  });
+
+  it('case 12: DB 错误 → fail-open 返回 ok=false + error，不抛错', async () => {
+    setupMocks({ files: ['001_a.sql'], applied: [] });
+    // 强制 mockQuery bootstrap 失败
+    mockQuery.mockRejectedValueOnce(new Error('relation "schema_migrations" does not exist'));
+
+    const status = await checkMigrationsStatus();
+
+    expect(status.ok).toBe(false);
+    expect(status.error).toContain('schema_migrations');
+    expect(status.hasPending).toBe(false);
+    expect(status.missing).toEqual([]);
+    // 不阻塞调用方：返回的对象可用，不抛异常
+  });
+
+  it('case 13: bootstrap 之前 query 抛错（极端 DB 离线）→ ok=false，total=0', async () => {
+    setupMocks({ files: ['001_a.sql'], applied: [] });
+    // 第一次 mockQuery（bootstrap）抛错
+    mockQuery.mockImplementation(async () => {
+      throw new Error('DB connection refused');
+    });
+
+    const status = await checkMigrationsStatus();
+
+    expect(status.ok).toBe(false);
+    expect(status.error).toBe('DB connection refused');
+    expect(status.total).toBe(0);
+    expect(status.applied).toBe(0);
+    expect(status.pending).toBe(0);
   });
 });

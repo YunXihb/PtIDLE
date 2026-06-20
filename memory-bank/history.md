@@ -1663,3 +1663,86 @@ T055 smoke test 暴露 dev DB 长期缺 8 migrations（手动 apply 才能 smoke
 - README 启动顺序文档
 - `src/index.ts` 启动时检测 migrations 缺失并 console.warn
 - 未来 prod 部署的 advisory lock 包装
+
+---
+
+## 2026-06-20 - 任务：T-FOLLOW-2 Migrations 启动期集成 + README 文档
+
+### Prompt
+T-FOLLOW-1 实现了 migration runner，但还差两件事：(1) 仓库根 + backend 都没有 README，新开发者不知道启动顺序；(2) dev DB 缺 migration 时 server 仍能起，运行时才发现 `column "xxx" does not exist`，排查浪费时间。需要：(a) 加根 README + backend README 写明 4 步启动；(b) `src/index.ts` 启动时检测 migrations 缺失并 console.warn。
+
+### 思考
+**核心设计抉择：警告 vs 阻塞**？
+- **阻塞**（schema 缺就 process.exit(1)）：安全第一，但 dev 体验差 — 用户可能想用 `db:migrate` 修，或者只是临时跑测试
+- **警告**（console.warn 但启动）：运维友好，符合 T055 已有 fail-open 风格（wsValidation.ts Redis/DB 错误也是 fail-open allow）
+- **选择警告**。理由：dev 场景下"DB schema 错"只是诸多可能问题之一；强制阻塞会让 hot-reload 期间 schema 调整痛苦。生产环境会有 CI/CD 拦截（未来 T-FOLLOW-3），不需要 server 自身做强校验。
+
+**`checkMigrationsStatus` 函数设计**：
+- **返回结构**：`{ total, applied, pending, missing, hasPending, ok, error? }` —— **类型化**，调用方不用解析字符串
+- **Fail-open**：`ok=false` 时所有计数为 0，`missing=[]` —— 防止 caller 在 DB 错误时误用脏数据
+- **`hasPending` 便捷布尔**：避免调用方写 `status.pending > 0` 这种模板代码
+- **`missing` 保留 sorted order**：`listMigrations()` 已经是 sort 过的，`filter().map()` 不打乱顺序 → 日志逐行展示友好
+
+**README 双文件策略**：
+- 根 README：项目概览 + 4 步快速启动 + 文档索引。新人第一个看的就是这个
+- backend/README：后端细节（目录、scripts、API、调试）。常驻开发者查这个
+- 避免单文件过长（单文件 200+ 行新手不愿意读完），也避免太短缺信息
+
+**index.ts 集成位置**：
+- `testDb()` 之后、`connectRedis()` 之前 —— DB 已确认在线，可以 query `schema_migrations`
+- `console.warn`（不是 `console.error`）—— 这是预期内的状态，不是错误
+- 静默成功 —— 全部 applied 时不刷日志，避免每次重启都看到 noise
+
+**测试策略**：
+- 5 case 覆盖核心路径：all applied / partial pending / all pending / DB error / bootstrap error
+- 不用 `jest.isolateModules`（migrate.ts 已经用 `require.main === module` 守卫，import 不会跑 CLI）
+- **不写** index.ts 的 e2e 集成测试（项目无 index.ts 单元测试惯例；功能靠单测覆盖 checkMigrationsStatus + 手动 smoke 验证 warn 路径）
+
+### 意外
+1. **Smoke test 路径坑**（连续 2 次失败）——
+   - 第一次：在 `/tmp/smoke-warn.ts` 写脚本，`./src/config/database` 相对路径 → ts-node 报 `Cannot find module`（因为 /tmp 不在 backend/ 内）
+   - 第二次：移到 /tmp/ 后，`ts-node` 仍调用但被 Node ESM loader 拒绝：`TypeError: Unknown file extension ".ts" for /tmp/smoke-warn.ts`（Node 18+ ESM 默认不识别 .ts）
+   - **修**：把脚本挪到 `backend/src/scripts/smoke-warn.ts`，import 用相对路径（`../config/database` + `./migrate`）。验证 3 状态切换（before 全 applied → drop 010 → after hasPending=true + missing=['010_xxx.sql'] → 恢复）全 OK 后删除文件
+
+2. **`ok=false` 时 missing 必须为空**的隐含约定 — 写测试时差点断言 `missing=[]` 是因为 `ok=false`，但实际是"DB 错误时我们不知道缺啥"所以留空。代码用 `try/catch` 把所有逻辑都包住，`catch` 块明确给空数组，caller 拿到 `ok=false` 时不应该用 `missing` —— 这是一个隐式契约，写在注释里更明确
+
+3. **`sort()` 返回 reference**？—— `listMigrations()` 用了 `Array.prototype.sort()` 返回 `this`（mutates in place），但因为我们 return 一个新 array（`.map()`），所以 `missing` 不会影响原数组。无 bug，但写测试时确认了一下
+
+### 修复
+- 改 1 文件：`backend/src/scripts/migrate.ts` 加 `MigrationStatus` interface + `checkMigrationsStatus()` 函数 + 文件头注释升级（T-FOLLOW-1 → T-FOLLOW-1 + T-FOLLOW-2，新增程序化 API 段）
+- 改 1 文件：`backend/src/scripts/migrate.test.ts` import 新函数 + 新增 5 case（case 9-13: 全 applied / 部分 pending / 全 pending / DB 错误 / bootstrap 失败）
+- 改 1 文件：`backend/src/index.ts` import `checkMigrationsStatus` + 在 `initializeApp()` 调 `warnIfMigrationsPending()` + 新增 helper 函数
+- 新增 2 文件：
+  - `README.md`（根，96 行）— 项目概览 + 4 步快速启动 + 项目结构 + 常用命令 + 验证步骤 + 文档索引 + 贡献流程
+  - `backend/README.md`（170 行）— 后端快速启动 + 目录结构 + npm scripts + 数据库 + 测试 + API 概览 + 调试技巧
+- 改 `memory-bank/architecture.md`：v1.42 → **v1.43**，加 T-FOLLOW-2 完整章节（背景 / 设计 / 模块 / 集成 / README 结构 / 启动顺序 / 测试 / 范围外）
+- 改 `memory-bank/progress.md`：
+  - T-FOLLOW-2 从「待开发」移到「已完成」（2026-06-20）
+  - 新增 T-FOLLOW-3 跟踪后续：CI/CD GitHub Actions
+  - 加「问题与解决」行：smoke test 路径坑（/tmp/ 相对路径 + ESM loader）
+  - 测试基线更新：42/696 → 42/701
+
+### 验证
+- `cd /home/lovept/PtIDLE/backend && npx jest src/scripts/migrate.test.ts --forceExit` → **13/13 pass**（8 旧 + 5 新 checkMigrationsStatus）
+- `cd /home/lovept/PtIDLE/backend && npx jest --forceExit` → **42/42 suite, 701/701 test 全绿**（无 regression）
+- `npx tsc --noEmit` → 0 错误（type check 干净）
+- **手动 smoke test**（一次性脚本 `src/scripts/smoke-warn.ts`）→ 3 状态切换全 OK：
+  ```
+  before: 9 total, 9 applied, 0 pending, hasPending=false
+  DELETE schema_migrations 010 → 9 total, 8 applied, 1 pending, missing=['010_t054_settlement.sql'], hasPending=true
+  INSERT 010 → 9 total, 9 applied, 0 pending, hasPending=false ✓ restored
+  ```
+- **README 验证**：根 README 4 步启动顺序完整 + 链接到 backend/README + backend/README 启动日志样例正确（含 `[migrations] ⚠️  N pending` 警告格式）
+
+### 范围外（明确不做）
+- **强制阻塞启动**（fail-open 是有意的，dev 体验 > 严格性；CI/生产用其他方式拦截）
+- **自动跑 migrate**（用户应主动控制 schema 变更时机，server 不应有副作用）
+- **per-migration 详细 diff**（仅文件名列表，不解析 SQL 内容，避免变 schema diff 工具）
+- **CLI 集成警告**（仅 server 启动时检测，`migrate.ts` 自身保持纯 CLI，可独立调用）
+- **TS 编译时类型生成**（每次 migration 仍是手写 SQL，不接入 prisma/typeorm/drizzle 等 ORM）
+- **prod 多 instance advisory lock**（T-FOLLOW-1 范围外 + 未来 prod 部署才需要）
+
+### T-FOLLOW-3 跟踪
+- GitHub Actions CI 跑 jest + db:migrate
+- Status badge 加到 README
+- Coverage 上传（codecov）可选

@@ -9,7 +9,7 @@
 
 | 任务ID | 名称 | 备注 |
 |--------|------|------|
-| T-FOLLOW-2 | 集成 T-FOLLOW-1 进 README + bootstrap 流程 | T-FOLLOW-1 已在 `package.json` 加 `db:migrate` / `db:status` 脚本 + `schema_migrations` 表追踪 + 8 case 单元测试覆盖。**待办**：(1) 在 `backend/README.md` / 仓库根 README 写明首次启动顺序（docker compose up → npm install → npm run db:migrate → npm run dev）；(2) 在 `src/index.ts` 启动时检测 migrations 缺失并 console.warn（T056+ 配合 init log 友好提示）。 |
+| T-FOLLOW-3 | CI/CD 接入（GitHub Actions 跑 jest + db:migrate 集成测试） | 当前所有测试靠本地 `npx jest`，无 CI 自动化。**待办**：(1) 新增 `.github/workflows/ci.yml`（on push/PR → 启 PG/Redis service → npm install → npm run db:migrate → npm test）；(2) 加 status badge 到 README；(3) coverage 上传 codecov（可选）。 |
 
 ---
 
@@ -80,7 +80,8 @@
 | T054 | 实现对战结算 API（POST /api/battle/result + 玩家 wins/losses/draws 累加 + player_battle_history + Redis 清理 + 幂等） | 2026-06-20 |
 | T055 | 操作合法性校验中心化（WS Handler 入口跨切校验：room membership + battle status + rate-limit via Redis Lua） | 2026-06-20 |
 | T-FOLLOW-1 | 实现 migrations runner 自动化（`npm run db:migrate` 脚本 + `schema_migrations` 跟踪表 + idempotent 事务 + 启动顺序） | 2026-06-20 |
-| 测试基线 | T-FOLLOW-1 收尾：42 suite / 696 test 全绿（新增 8 migrate unit test） | 2026-06-20 |
+| T-FOLLOW-2 | Migrations 启动期集成 + README 文档（`checkMigrationsStatus` 只读检测 + `index.ts` 启动 warn + 根 + backend 双 README） | 2026-06-20 |
+| 测试基线 | T-FOLLOW-2 收尾：42 suite / 701 test 全绿（新增 5 checkMigrationsStatus unit test） | 2026-06-20 |
 
 ---
 
@@ -93,6 +94,7 @@
 | 2026-06-18 | T053 spec compliance 收尾时发现 T053 describe block 落在 executePlayCard describe 之外（结构问题）；code quality review 发现 partial delete 路径在 withTransaction 回调内显式 ROLLBACK 导致回调返回后 withTransaction 仍会 COMMIT，产生 driver-level 副作用 + 双日志 | (1) 修正 T053 describe 嵌套位置（amend 6dd68da→be85e9a，b1f3d61 保留原状）；(2) 重构 consumePlayerCard 用 PartialDeleteError sentinel 替代 in-callback ROLLBACK，外层 catch 用 instanceof 区分 partial (warn) vs error (error)，commit b42f89f。修复后 5/5 T053 + 23/23 executePlayCard + 480/480 service + 4/4 database 全绿 |
 | 2026-06-20 | T054 simplify review 发现：(1) applySettlementInTransaction 4 个近重复调用（4a 双 UPDATE + 4b 双 INSERT）易引入参数错位 bug；(2) controller switch 缺 exhaustiveness 检查，新增 error variant 会静默漏分支；(3) integration/unit test 的 `jest.spyOn(console, 'error')` 在 describe 顶层 spy，永不 mockRestore 会污染同进程后续测试输出；(4) integration test 残留无用 `_refs = {...}` 占位语句 | (1) 把 4 个对称 SQL 调用改写为 `for side of [p1/p2]` 循环 + `insertBattleHistory` 收 1 个 `side` 对象替代 7 位置参数；(2) controller switch 加 `default: const _exhaustive: never = result.error` + throw，让新增 error variant 编译失败；(3) 两处 console.error spy 改用 `beforeEach` 局部 spy + `afterEach mockRestore()`；(4) 删 `_refs` 行。修复后 21/21 T054 + 39/39 全量 suite 全绿 |
 | 2026-06-20 | T-FOLLOW-1 单测初次运行全部失败：`process.exit called with "1"` 立即终止 jest 进程，无任何 case 输出。根因 mockClient 缺 `release` 方法 → `applyMigration` `finally` 块 `client.release()` 抛 TypeError → 失败被 runMigrations 捕获 → `failureCount++` → 走 process.exit(1) | mockClient 加 `release: jest.fn()`。修复后 8/8 migrate test + 42/42 全量 suite 全绿 |
+| 2026-06-20 | T-FOLLOW-2 smoke test 在 /tmp/ 写脚本跑 ts-node 失败 2 次：第一次相对路径解析失败（`./src/config/database` 在 /tmp/ 找不到），第二次 /tmp/ 文件被 ESM loader 拒绝（`ERR_UNKNOWN_FILE_EXTENSION`） | 把脚本挪到 `backend/src/scripts/smoke-warn.ts` 内部 + 用绝对路径 import。修复后 3 个状态切换（before 全 applied → drop 一行 → after hasPending=true → 恢复）全部正确 |
 
 ---
 

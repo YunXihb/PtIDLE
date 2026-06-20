@@ -20,6 +20,7 @@ import cardRoutes from './routes/cards';
 import { query } from './config/database';
 import { checkAndCompleteGathering, initializeGatheringConfig, processDueGatheringTasks } from './services/gatheringService';
 import { initializeSocketServer } from './socket/socketServer';
+import { checkMigrationsStatus } from './scripts/migrate';
 
 dotenv.config();
 
@@ -62,6 +63,9 @@ async function initializeApp() {
     // Test database connection
     await testDb();
 
+    // T-FOLLOW-2: 启动期检测 migrations 状态（fail-open，缺时只 warn 不阻塞）
+    await warnIfMigrationsPending();
+
     // Connect to Redis
     await connectRedis();
 
@@ -76,6 +80,30 @@ async function initializeApp() {
     console.error('❌ Failed to initialize services:', error);
     process.exit(1);
   }
+}
+
+/**
+ * T-FOLLOW-2: 启动期检查 migrations 状态
+ * - 全部已 applied → 静默通过
+ * - 有 pending → console.warn 列出 missing 文件 + 提示运行 `npm run db:migrate`
+ * - DB 错误 → console.error（fail-open，不阻塞启动）
+ */
+async function warnIfMigrationsPending(): Promise<void> {
+  const status = await checkMigrationsStatus();
+  if (!status.ok) {
+    // DB 不可达 / 权限不足 — 不阻塞，但提示
+    console.error(`[migrations] ⚠️  Failed to check migration status: ${status.error}`);
+    console.error(`[migrations]    Server will start anyway. Run 'npm run db:migrate' manually.`);
+    return;
+  }
+  if (status.hasPending) {
+    console.warn(`\n[migrations] ⚠️  ${status.pending} pending migration(s) detected:`);
+    for (const m of status.missing) {
+      console.warn(`[migrations]    ○ ${m}`);
+    }
+    console.warn(`[migrations]    Run 'npm run db:migrate' to apply.\n`);
+  }
+  // 全部已 applied → 静默（不刷日志）
 }
 
 // T045: 同一 HTTP server 挂 WebSocket,共享端口 + CORS
