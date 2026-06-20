@@ -9,7 +9,7 @@
 
 | 任务ID | 名称 | 备注 |
 |--------|------|------|
-| T-FOLLOW-1 | Migrations setup / runner | dev DB 无自动迁移机制 — T055 smoke test 暴露缺失 8 migrations（003/005/006/007/008/009/010）。需实现：(1) `npm run db:migrate` 脚本按数字顺序自动应用 `src/migrations/*.sql`；(2) `migrations` 表记录已应用版本（idempotent）；(3) README + `package.json` scripts 写明启动顺序（docker compose up → npm install → npm run db:migrate → npm run dev）。建议在 backend/ 下做，因为 docker compose + backend 紧耦合。 |
+| T-FOLLOW-2 | 集成 T-FOLLOW-1 进 README + bootstrap 流程 | T-FOLLOW-1 已在 `package.json` 加 `db:migrate` / `db:status` 脚本 + `schema_migrations` 表追踪 + 8 case 单元测试覆盖。**待办**：(1) 在 `backend/README.md` / 仓库根 README 写明首次启动顺序（docker compose up → npm install → npm run db:migrate → npm run dev）；(2) 在 `src/index.ts` 启动时检测 migrations 缺失并 console.warn（T056+ 配合 init log 友好提示）。 |
 
 ---
 
@@ -79,7 +79,8 @@
 | T053 | 实现卡牌消耗（consumePlayerCard + 步骤 9.5 + withTransaction 事务） | 2026-06-18 |
 | T054 | 实现对战结算 API（POST /api/battle/result + 玩家 wins/losses/draws 累加 + player_battle_history + Redis 清理 + 幂等） | 2026-06-20 |
 | T055 | 操作合法性校验中心化（WS Handler 入口跨切校验：room membership + battle status + rate-limit via Redis Lua） | 2026-06-20 |
-| 测试基线 | T055 收尾：41 suite / 688 test 全绿（新增 23 unit + 10 integration + 5 battleRoom 回归 = 38 新测试） | 2026-06-20 |
+| T-FOLLOW-1 | 实现 migrations runner 自动化（`npm run db:migrate` 脚本 + `schema_migrations` 跟踪表 + idempotent 事务 + 启动顺序） | 2026-06-20 |
+| 测试基线 | T-FOLLOW-1 收尾：42 suite / 696 test 全绿（新增 8 migrate unit test） | 2026-06-20 |
 
 ---
 
@@ -91,6 +92,7 @@
 | 2026-06-18 | T052 收尾时 `npx jest` 跑出 7 个失败（5 `authController` + 2 `socketServer`）。根因是开发环境缺 PostgreSQL/Redis 服务（`ECONNREFUSED 127.0.0.1:5433` + `ClientClosedError`），不是代码问题 | `docker compose up -d` 启动 `ptidle-postgres-1`（5433）+ `ptidle-redis-1`（6379）；`socketServer.test.ts` 在 `beforeAll` 加幂等 `connectRedis()`（用 `redisClient.isOpen` 防重复连）；`afterAll` 不调 `disconnectRedis()` 防止关掉跨文件共享的单例。修复后 36 个 test suite / 620 个 test 全绿。同步更新 `architecture.md` Docker 配置 + 集成测试模式 章节。详见 history 2026-06-18 条目 |
 | 2026-06-18 | T053 spec compliance 收尾时发现 T053 describe block 落在 executePlayCard describe 之外（结构问题）；code quality review 发现 partial delete 路径在 withTransaction 回调内显式 ROLLBACK 导致回调返回后 withTransaction 仍会 COMMIT，产生 driver-level 副作用 + 双日志 | (1) 修正 T053 describe 嵌套位置（amend 6dd68da→be85e9a，b1f3d61 保留原状）；(2) 重构 consumePlayerCard 用 PartialDeleteError sentinel 替代 in-callback ROLLBACK，外层 catch 用 instanceof 区分 partial (warn) vs error (error)，commit b42f89f。修复后 5/5 T053 + 23/23 executePlayCard + 480/480 service + 4/4 database 全绿 |
 | 2026-06-20 | T054 simplify review 发现：(1) applySettlementInTransaction 4 个近重复调用（4a 双 UPDATE + 4b 双 INSERT）易引入参数错位 bug；(2) controller switch 缺 exhaustiveness 检查，新增 error variant 会静默漏分支；(3) integration/unit test 的 `jest.spyOn(console, 'error')` 在 describe 顶层 spy，永不 mockRestore 会污染同进程后续测试输出；(4) integration test 残留无用 `_refs = {...}` 占位语句 | (1) 把 4 个对称 SQL 调用改写为 `for side of [p1/p2]` 循环 + `insertBattleHistory` 收 1 个 `side` 对象替代 7 位置参数；(2) controller switch 加 `default: const _exhaustive: never = result.error` + throw，让新增 error variant 编译失败；(3) 两处 console.error spy 改用 `beforeEach` 局部 spy + `afterEach mockRestore()`；(4) 删 `_refs` 行。修复后 21/21 T054 + 39/39 全量 suite 全绿 |
+| 2026-06-20 | T-FOLLOW-1 单测初次运行全部失败：`process.exit called with "1"` 立即终止 jest 进程，无任何 case 输出。根因 mockClient 缺 `release` 方法 → `applyMigration` `finally` 块 `client.release()` 抛 TypeError → 失败被 runMigrations 捕获 → `failureCount++` → 走 process.exit(1) | mockClient 加 `release: jest.fn()`。修复后 8/8 migrate test + 42/42 全量 suite 全绿 |
 
 ---
 

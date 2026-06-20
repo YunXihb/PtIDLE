@@ -1601,3 +1601,65 @@ T049-T054 实现 PvP 对战完整闭环，但 WS handler 入口层（`battleRoom
 - 能量平衡审计（move + play_card 总扣能量 vs 初始能量）— T056+ 处理
 - 跨进程速率聚合（多 instance 时 Redis Lua 已 global，因为用 Redis 单点）
 - 5v5 / NvN 通用（T055 沿用 3v3）
+
+---
+
+## 2026-06-20 - 任务：T-FOLLOW-1 实现 migrations runner 自动化
+
+### Prompt
+T055 smoke test 暴露 dev DB 长期缺 8 migrations（手动 apply 才能 smoke 起来），需要补齐：(1) `npm run db:migrate` 脚本按数字顺序自动应用 `src/migrations/*.sql`；(2) `migrations` 表记录已应用版本（idempotent）；(3) README + `package.json` scripts 写明启动顺序。
+
+### 思考
+**三件套设计**：
+1. **跟踪表 `schema_migrations`**：`id SERIAL PK + filename TEXT UNIQUE + applied_at TIMESTAMPTZ DEFAULT NOW()`。UNIQUE 是幂等核心，重复跑第二次会被 `UNIQUE constraint violation` 卡住 → 改为"先 SELECT 已 applied，filter out pending"模式而不是"无脑 apply"，更友好。
+2. **排序策略**：直接 `Array.sort()` 字符串升序。`"001_..." < "002_..." < ... < "010_..."` 字典序天然正确，**避免** `parseInt` + 数字排序带来的 edge case（010 会被解析为 10 而非 10？实际上 JS parseInt 没问题，但 simple sort 减少出错面）。004 空缺直接跳过，list 自然不返回。
+3. **事务粒度**：**每文件独立事务**（一个 .sql = 一个 BEGIN/COMMIT），不能用整个 batch 一个事务：
+   - 后置 migration 可能依赖前置 schema；如果 batch 失败，rollback 全部 → 前置好的也回滚 → 二次跑仍 fail
+   - per-file transaction: 001-009 成功 + 010 失败 → 001-009 已 applied，re-run 时 listMigrations 只剩 010，单独排查 010 SQL 即可
+4. **CLI 入口模式**：`if (require.main === module) { main(); }` —— 单测 `import { runMigrations }` 不会触发 CLI，避免 jest 一加载就跑数据库。
+5. **Bootstrap 自愈**：`ensureMigrationsTable()` 用 `CREATE TABLE IF NOT EXISTS` 自我创建跟踪表，**首次运行也能用**，无需任何前置步骤。
+6. **状态码**：`runMigrations` 失败时 `process.exit(1)`，CI 友好；正常完成静默 exit 0。
+7. **`printStatus` 分离**：不动 DB 的"看状态"命令独立出来（`--status` / `-s` flag），运维友好。
+
+**实现选择**：
+- 位置 `backend/src/scripts/migrate.ts` 而非仓库根 `scripts/`，因为 `tsconfig` + jest roots 都 `<rootDir>/src` 覆盖这里，与 docker compose + backend 紧耦合
+- 复用 `pool` / `query` 从 `../config/database`（已配过 PG 5433）
+
+### 意外
+1. **mockClient 缺 `release` 方法** — 单测初次跑 8 case 全失败，jest 进程被 `process.exit(1)` 立即终止无任何 case 输出。debug：迁移 `applyMigration` 末尾 `finally { client.release(); }` → mockClient 没 release 方法 → TypeError → runMigrations catch → failureCount++ → process.exit(1)。修：mockClient 加 `release: jest.fn()`。
+2. **`MIGRATIONS_DIR` 路径** — 文件从 `backend/scripts/` 移到 `backend/src/scripts/` 后，原 `resolve(__dirname, '../src/migrations')` 解析为 `backend/src/src/migrations/`（双重 src）。修：改为 `resolve(__dirname, '../migrations')`（从 src/scripts/ 回到 src/migrations/ 只需回退一级）。这是 ts-jest + ts-node 路径在 src/ 内的常见 pitfall。
+3. **`package.json` scripts 路径滞后** — 改完文件位置后忘记同步 `package.json` 的 `db:migrate` / `db:status` 命令的 `scripts/migrate.ts` 路径 → `npm run` 找不到文件。修：同步改为 `src/scripts/migrate.ts`。
+4. **export 缺失** — migrate.ts 三个核心函数 (listMigrations/runMigrations/printStatus) 默认是模块私有，jest 报 `not exported` 编译错误。修：加 `export` 关键字。
+5. **Jest roots 配置** — 项目 jest config `roots: ['<rootDir>/src']` 不包含 `backend/scripts/`。最初把 migrate 放仓库根的 `scripts/` 时，jest 找不到测试文件。修：直接挪到 `backend/src/scripts/` 一并解决。
+
+### 修复
+- 新增 2 文件：
+  - `backend/src/scripts/migrate.ts` (209 行, listMigrations/runMigrations/printStatus + ensureMigrationsTable + getAppliedMigrations + applyMigration + main CLI + require.main 守卫)
+  - `backend/src/scripts/migrate.test.ts` (221 行, 8 case: listMigrations 排序 / runMigrations 全应用/部分应用/全跳过/失败 abort + ROLLBACK + 二次运行幂等 / printStatus)
+- 改 `backend/package.json`：
+  - 新增 scripts: `db:migrate: "ts-node src/scripts/migrate.ts"` + `db:status: "ts-node src/scripts/migrate.ts --status"`
+- 改 `memory-bank/architecture.md`：v1.41 → v1.42，加 T-FOLLOW-1 完整章节（背景动机 + 设计决策 + 流水线 + 模块 + SQL 目录约定 + 启动顺序 + 幂等性 + 测试 + 范围外）
+- 改 `memory-bank/progress.md`：
+  - T-FOLLOW-1 从「待开发」移到「已完成」（2026-06-20）
+  - 新增 T-FOLLOW-2 跟踪后续：README 启动顺序 + index.ts 检测缺失 migrations 警告
+  - 加「问题与解决」行：mockClient.release 缺失的 fix
+  - 测试基线更新：41/688 → 42/696
+
+### 验证
+- `cd /home/lovept/PtIDLE/backend && npx jest src/scripts/migrate.test.ts --forceExit` → **8/8 pass**（listMigrations 排序 / runMigrations 5 场景 / printStatus / 二次运行幂等）
+- `cd /home/lovept/PtIDLE/backend && npx jest --forceExit` → **42/42 suite, 696/696 test 全绿**（41 基线 + 8 新 migrate test）
+- `npm run db:status` → 9 files / 9 applied / 0 pending（004 故意空缺）— schema_migrations 表正确追踪
+- `npm run db:migrate` → "All migrations already applied. Nothing to do."（**幂等性确认**：二次运行 0 个 pending + 0 个 connect 调用）
+
+### 范围外（明确不做）
+- Down/rollback migrations（项目无 .down.sql 文件，down 是 destructive 操作需要人工 review）
+- Non-SQL migrations（未来加 JS/TS migrations 需要扩展 runner，目前纯 SQL）
+- Schema diff 自动生成（手写 SQL，配合 architecture.md 文档）
+- Migration 锁 / advisory lock（防多进程并发 apply）— 单 dev 场景不需要，未来 prod 多 instance 需要 `pg_try_advisory_lock` 包装
+- 自动回滚失败 migration（per-file transaction 已保证 DB 干净，修复 SQL 重跑即可）
+- 5v5 / NvN（沿用 3v3）
+
+### T-FOLLOW-2 跟踪
+- README 启动顺序文档
+- `src/index.ts` 启动时检测 migrations 缺失并 console.warn
+- 未来 prod 部署的 advisory lock 包装

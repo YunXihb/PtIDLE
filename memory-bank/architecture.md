@@ -2374,5 +2374,122 @@ return current
 
 ---
 
-*文档版本：v1.41*
+## T-FOLLOW-1 Migrations Runner（迁移自动化）
+
+### 1. 背景与动机
+
+T055 smoke test 真实暴露 dev DB 缺 8 migrations（003/005-010），单测 + 集成测试均不暴露（mock 隔离），只有真实 end-to-end smoke test 能发现。**项目此前无自动迁移机制**：SQL 文件躺在 `backend/src/migrations/`，但没 `npm run db:migrate` 脚本、没 `schema_migrations` 表追踪已应用版本、没 README 启动顺序说明。
+
+**T-FOLLOW-1 目标**：补齐 migrations 三件套：
+1. 自动化脚本（`npm run db:migrate` / `npm run db:status`）
+2. `schema_migrations` 表（idempotent 追踪）
+3. 启动顺序文档
+
+### 2. 设计决策
+
+| # | 决策点 | 选择 |
+|---|--------|------|
+| 1 | 位置 | `backend/src/scripts/migrate.ts`（与 docker compose + backend 紧耦合） |
+| 2 | 跟踪表 | `schema_migrations`（filename UNIQUE + applied_at） |
+| 3 | 排序 | 按文件名字符串升序（"001_" < "002_" < "010_"） |
+| 4 | 事务粒度 | **每个迁移独立事务**（BEGIN/COMMIT），失败 ROLLBACK + abort |
+| 5 | Bootstrap | 第一次运行自动 CREATE TABLE IF NOT EXISTS `schema_migrations` |
+| 6 | 范围外 | 不支持 down/rollback（项目无 .down.sql） |
+
+### 3. 模块: `backend/src/scripts/migrate.ts`
+
+```typescript
+// 核心导出
+export async function runMigrations(): Promise<void>  // 应用所有未运行迁移
+export async function printStatus(): Promise<void>    // 仅打印当前状态
+export function listMigrations(): MigrationFile[]     // 列出目录所有 .sql 文件（纯函数）
+```
+
+**CLI 入口**（`require.main === module` 模式）：
+- `ts-node src/scripts/migrate.ts` → apply all pending
+- `ts-node src/scripts/migrate.ts --status` → print only
+- 单测 `import { runMigrations }` 不触发 CLI（避免 main 自动跑）
+
+### 4. 端到端流水线
+
+```
+$ npm run db:migrate
+   │
+   ▼
+migrate.ts main()
+   │
+   ├─ 1. ensureMigrationsTable()      ← CREATE TABLE IF NOT EXISTS schema_migrations
+   │
+   ├─ 2. listMigrations()             ← readdirSync *.sql, sort
+   │
+   ├─ 3. getAppliedMigrations()       ← SELECT filename FROM schema_migrations
+   │
+   ├─ 4. pending = all - applied
+   │
+   ├─ 5. for each pending: applyMigration(file)
+   │     ├─ pool.connect()
+   │     ├─ BEGIN
+   │     ├─ client.query(sql)         ← 执行 .sql 文件
+   │     ├─ INSERT INTO schema_migrations (filename)
+   │     ├─ COMMIT
+   │     └─ client.release()
+   │     失败 → ROLLBACK + abort + process.exit(1)
+   │
+   └─ 6. Summary: Applied/Failed/Remaining
+```
+
+### 5. SQL 目录约定
+
+`backend/src/migrations/0NN_*.sql`（10 个文件，编号 001-010 但 004 故意空缺 = T019 仓储上限无 SQL 变更）：
+
+| 编号 | 文件 | T 任务 |
+|------|------|--------|
+| 001 | `001_initial_schema.sql` | T003 数据库设计 |
+| 002 | `002_add_card_sequence.sql` | T016 加工 |
+| 003 | `003_add_battle_session_state.sql` | T036 回合流程 |
+| 005 | `005_seed_taunt_card.sql` | T039 战士嘲讽 |
+| 006 | `006_public_pool.sql` | T1001 公共池 |
+| 007 | `007_add_match_metadata.sql` | T042 撮合 |
+| 008 | `008_t048_battle_init.sql` | T048 战场初始化 |
+| 009 | `009_t052_victory_stars.sql` | T052 胜利判定 |
+| 010 | `010_t054_settlement.sql` | T054 结算 |
+
+### 6. 启动顺序（README 标准）
+
+```bash
+# 1. 起 DB
+docker compose up -d               # PG 5433 + Redis 6379
+
+# 2. 装依赖
+cd backend && npm install
+
+# 3. 应用迁移（首次或 schema 变更后必跑）
+npm run db:migrate
+
+# 4. 起后端
+npm run dev
+```
+
+### 7. 幂等性
+
+- **重复运行安全**：`schema_migrations` 表 UNIQUE(filename) 防止重复 INSERT；已 applied 的文件 `getAppliedMigrations` 直接跳过
+- **Bootstrap 自愈**：`CREATE TABLE IF NOT EXISTS` 即使跟踪表不存在也安全
+- **失败可重试**：失败 migration ROLLBACK，事务保证 DB 状态干净；修复 SQL 后 re-run，已 applied 的会跳过
+
+### 8. 测试覆盖
+
+- 单元测试 `src/scripts/migrate.test.ts`: **8 case**（listMigrations 排序 / runMigrations 全应用/部分应用/全跳过/失败 abort + ROLLBACK / printStatus / 二次运行幂等）
+- 手动验证：本地 dev DB 跑 `npm run db:status` → 9 files, 9 applied, 0 pending；`npm run db:migrate` → "All migrations already applied. Nothing to do."
+
+### 9. 范围外（明确不做）
+
+- ❌ Down/rollback migrations（项目无 .down.sql 文件）
+- ❌ Non-SQL migrations（未来加 JS/TS 需扩展 runner）
+- ❌ Schema diff 自动生成（手写 SQL）
+- ❌ Migration 锁（防多进程并发 apply）— 单 dev 场景不需要
+- ❌ 5v5 / NvN（沿用 3v3）
+
+---
+
+*文档版本：v1.42*
 *最后更新：2026-06-20*
