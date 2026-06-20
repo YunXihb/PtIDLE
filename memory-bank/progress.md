@@ -9,7 +9,7 @@
 
 | 任务ID | 名称 | 备注 |
 |--------|------|------|
-|  |  |  |
+| T-FOLLOW-1 | Migrations setup / runner | dev DB 无自动迁移机制 — T055 smoke test 暴露缺失 8 migrations（003/005/006/007/008/009/010）。需实现：(1) `npm run db:migrate` 脚本按数字顺序自动应用 `src/migrations/*.sql`；(2) `migrations` 表记录已应用版本（idempotent）；(3) README + `package.json` scripts 写明启动顺序（docker compose up → npm install → npm run db:migrate → npm run dev）。建议在 backend/ 下做，因为 docker compose + backend 紧耦合。 |
 
 ---
 
