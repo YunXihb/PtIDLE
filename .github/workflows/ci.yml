@@ -1,0 +1,112 @@
+# GitHub Actions CI for PtIDLE
+# 触发: push to master / pull_request to master / manual workflow_dispatch
+# 跑: PG 16 + Redis 7 services → Node 20 → npm ci → db:migrate → jest → coverage
+# 参考: docs/specs 启动顺序 (docker compose up → npm install → npm run db:migrate → npm run dev)
+#       T-FOLLOW-2 README 文档化的 4 步流程
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+# 防止同一 PR 上多次 push 触发排队: 自动取消旧 runs
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (Node 20 + PostgreSQL 16 + Redis 7)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # Service containers - GitHub Actions 内部用标准端口 (PG 5432 / Redis 6379)
+    # 与 dev docker-compose (PG 5433) 不同 - CI runner 内部访问 service 直接走 5432
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: ptidle
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        # health check 防止 jest 启动比 PG ready 还快
+        options: >-
+          --health-cmd "pg_isready -U postgres -d ptidle"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      NODE_ENV: test
+
+      # Database - 走 service container 内部端口
+      DB_HOST: localhost
+      DB_PORT: 5432
+      DB_NAME: ptidle
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+
+      # Redis
+      REDIS_HOST: localhost
+      REDIS_PORT: 6379
+
+      # JWT - 测试用 secret (生产绝不能用!)
+      JWT_SECRET: ci-test-secret-not-for-prod-do-not-use
+      JWT_EXPIRES_IN: 7d
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          # cache npm 基于 backend/package-lock.json,自动失效
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies (npm ci)
+        working-directory: backend
+        run: npm ci
+
+      - name: Apply database migrations
+        # T-FOLLOW-1: idempotent, 已 applied 的会 skip
+        # 失败 → 整个 job fail, jest 不会跑 (schema 错就白测)
+        working-directory: backend
+        run: npm run db:migrate
+
+      - name: Run tests (jest --forceExit)
+        # jest.config.js 已含 forceExit:true, 这里显式传避免 race
+        # 全量: 42 suite / 701 test (T-FOLLOW-2 收尾基线)
+        working-directory: backend
+        run: npx jest --forceExit
+
+      - name: Generate coverage report
+        # 仅在 test 通过后跑 (success() guard)
+        if: success()
+        working-directory: backend
+        run: npm run test:coverage
+
+      - name: Upload coverage artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: backend/coverage
+          retention-days: 30
+          if-no-files-found: warn

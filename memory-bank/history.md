@@ -1746,3 +1746,76 @@ T-FOLLOW-1 实现了 migration runner，但还差两件事：(1) 仓库根 + bac
 - GitHub Actions CI 跑 jest + db:migrate
 - Status badge 加到 README
 - Coverage 上传（codecov）可选
+
+---
+
+## 2026-06-20 - 任务：T-FOLLOW-3 CI/CD 接入（GitHub Actions）
+
+### Prompt
+T-FOLLOW-1/2 把 dev DB 启动流程自动化了，但所有测试仍靠本地 `npx jest`：新 PR 无自动校验、协作时 "在我机器上能跑" 问题频发、T055 smoke test 暴露的「dev DB 缺 8 migrations」问题应自动拦截。**待办**：(1) 新增 `.github/workflows/ci.yml`（on push/PR → 启 PG/Redis service → npm install → npm run db:migrate → npm test）；(2) 加 status badge 到 README；(3) coverage 上传 codecov（可选）。
+
+### 思考
+**核心设计抉择**：
+
+1. **CI 平台**：仓库已在 GitHub → 用 GitHub Actions（免费 + 集成 PR 状态 + 用户已熟悉）
+2. **端口差异**：dev docker-compose PG 用 5433（host 端口避开本机冲突）→ 但 GitHub Actions service container 内部就是 5432 → **CI 显式用 5432**。`database.ts` 兜底 `|| '5432'` 自动兼容两端
+3. **service container health check**：必须有，否则 jest 启动可能比 PG ready 快 → ECONNREFUSED flake
+4. **装包用 `npm ci` 不是 `npm install`**：CI 场景下用 lock file 精确版本，避免 package.json 与 lock 不同步的随机性
+5. **先 migrate 再 test**：避免 schema 缺失时跑出假阳性测试失败。T-FOLLOW-1 的 `db:migrate` 幂等，可重复跑
+6. **Coverage 处理**：用 `actions/upload-artifact@v4` 保留 30 天 → 不接 codecov（避免 `CODECOV_TOKEN` secret 管理复杂度）。后期需要 badge 时再补
+7. **Concurrency 取消**：PR 多次 push 自动取消旧 run（`cancel-in-progress: true`）→ 节省 runner 时间
+8. **env vars 必填**：
+   - `JWT_SECRET=ci-test-secret-not-for-prod`（auth 测试需要真 token）
+   - `DB_PASSWORD=postgres`（service container 配的密码）
+   - `NODE_ENV=test`（避免任何 dev 副作用）
+
+**架构亮点**：
+- 单 job（`test`）覆盖全量：lint 已由 tsc + jest 类型检查隐式覆盖（jest 用 ts-jest）
+- 单 OS（ubuntu-latest）：项目 target Linux server，跨 OS 不是 MVP 目标
+- 7 步流水线：checkout → setup-node → npm ci → migrate → test → coverage → upload-artifact
+- `cache-dependency-path: backend/package-lock.json` 加速依赖安装
+
+**Badge 设计**：
+- shields.io 动态 badge：`https://github.com/YunXihb/PtIDLE/actions/workflows/ci.yml/badge.svg`
+- 链接到 Actions page
+- 首次跑前显示 "no status"，跑过后显示 pass/fail
+- 加了 2 个静态 badge 凑数：tests=701 passing、migrations=9 applied（来自 README 的硬编码数字，CI 真跑通后可考虑改动态）
+
+### 意外
+1. **初次写 workflow 时差点把 `DB_PORT: 5433` 复制过去**（沿用 dev .env）→ 在 review 阶段意识到 CI 内部端口不是 host 端口 → 改 5432。这个混淆点是 dev vs CI 最大的区别
+2. **`concurrency.group` 语法**：最初想用 `${{ github.workflow }}-${{ github.ref }}` → 简化成 `ci-${{ github.ref }}` 足够（一个 repo 一个 workflow）
+3. **没写 workflow 单测**（写不出来，本地没 GitHub Actions runner；用户 push 后首次跑通才验证）→ 接受这个限制，加 YAML 语法 validate (`python3 -c "import yaml; yaml.safe_load(...)"`) 作为本地最小化验证
+4. **`if-no-files-found: warn` 弃用警告**：v4 upload-artifact 已支持；用 `warn` 等级让 coverage 生成失败时 workflow 不直接红（保留 test 失败信号更重要）
+
+### 修复
+- 新增 1 文件：`.github/workflows/ci.yml`（128 行，jobs.test 含 7 steps + 2 services + env 9 vars）
+- 改 1 文件：`README.md`
+  - 顶部加 3 个 badge（CI status + tests count + migrations count）
+  - 加新章节「🤖 CI（GitHub Actions）」说明 workflow 行为 + 本地等效命令
+- 改 `memory-bank/architecture.md`：v1.43 → **v1.44**，加 T-FOLLOW-3 完整章节（背景 / 设计决策 / workflow 结构 / 端口差异表 / 关键踩坑 / 未来增强 / 测试覆盖）
+- 改 `memory-bank/progress.md`：
+  - T-FOLLOW-3 从「待开发」移到「已完成」（2026-06-20）
+  - 新增 T-FOLLOW-4 跟踪后续：CD 自动部署（Docker image + 编排平台）
+  - 加「问题与解决」行：dev vs CI 端口混淆
+  - 测试基线更新：本地 42/701（CI 待 push 后验证）
+
+### 验证
+- `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))"` → **YAML valid** + jobs=['test'] + services=['postgres', 'redis'] + 7 steps
+- `cd /home/lovept/PtIDLE/backend && npx jest --forceExit` → **42/42 suite, 701/701 test 全绿**（无 regression，CI workflow 是新增不是修改）
+- 静态检查：workflow 包含必要 steps（checkout / setup-node / npm ci / db:migrate / jest / coverage / upload-artifact）
+- **真实验证**：用户 push 后，GitHub Actions runner 跑通才算 CI 成功（本机无 act runner，不能本地模拟）
+
+### 范围外（明确不做）
+- **Codecov 集成**（需 CODECOV_TOKEN secret 管理；artifact 30 天保留够 review 用）
+- **Lint 独立 workflow**（jest + tsc 已覆盖类型错误；ESLint 可加但本期不阻塞 CI）
+- **多 Node 版本矩阵**（package.json 锁 `engines.node >= 20`，单 20.x 足够）
+- **多 OS 矩阵**（dev/prod 都 Linux，Windows/Mac 兼容非目标）
+- **CD（自动 deploy）**（dev 手动部署；prod 部署是 T-FOLLOW-4）
+- **PR 状态检查 / required checks**（仓库 settings，非 workflow 文件控制；用户审阅后配置）
+- **Dependabot 自动 PR**（依赖更新非 MVP 目标）
+
+### T-FOLLOW-4 跟踪
+- 多环境部署策略（dev 手动 / staging 自动 from master / prod 手动 trigger）
+- Docker image 构建 + push 到 GHCR
+- ECS/k8s 部署脚本（项目尚未选定编排平台）
+- 部署后 smoke test

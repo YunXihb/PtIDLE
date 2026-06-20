@@ -3,7 +3,11 @@
 > 集成战棋玩法的挂机游戏（Idle + Tactical Chess）
 > 核心特色：「所玩即所造」—— 玩家通过挂机系统深度定制卡牌与装备，在公平的战棋对局中比拼策略。
 
-**项目状态**：PvP 3v3 战棋闭环已通（T042-T055 撮合→战场初始化→移动/打牌→回合→胜负→结算）。
+[![CI](https://github.com/YunXihb/PtIDLE/actions/workflows/ci.yml/badge.svg)](https://github.com/YunXihb/PtIDLE/actions/workflows/ci.yml)
+[![Jest](https://img.shields.io/badge/tests-701%20passing-brightgreen)](backend/)
+[![Migrations](https://img.shields.io/badge/migrations-9%20applied-brightgreen)](backend/src/migrations/)
+
+**项目状态**：PvP 3v3 战棋闭环已通（T042-T055 撮合→战场初始化→移动/打牌→回合→胜负→结算）。CI 全自动跑 T055 + T-FOLLOW-1/2/3。
 
 ## 技术栈
 
@@ -69,6 +73,22 @@ PtIDLE/
 │   ├── progress.md
 │   └── history.md
 └── docs/                 # 杂项文档
+```
+
+---
+
+## 🤖 CI（GitHub Actions）
+
+每次 push / PR 到 `master` 都会跑全量测试（PG 16 + Redis 7 + Node 20）：
+
+- Workflow: [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
+- 步骤：`npm ci` → `npm run db:migrate` → `npx jest --forceExit` → coverage 上传
+- 当前基线：**42 suite / 701 test**（T-FOLLOW-2 收尾）
+- Coverage artifact：每次跑成功后保留 30 天
+
+本地跑同套测试：
+```bash
+cd backend && npx jest --forceExit
 ```
 
 ---

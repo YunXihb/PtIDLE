@@ -9,7 +9,7 @@
 
 | 任务ID | 名称 | 备注 |
 |--------|------|------|
-| T-FOLLOW-3 | CI/CD 接入（GitHub Actions 跑 jest + db:migrate 集成测试） | 当前所有测试靠本地 `npx jest`，无 CI 自动化。**待办**：(1) 新增 `.github/workflows/ci.yml`（on push/PR → 启 PG/Redis service → npm install → npm run db:migrate → npm test）；(2) 加 status badge 到 README；(3) coverage 上传 codecov（可选）。 |
+| T-FOLLOW-4 | CD 接入（生产环境自动部署） | T-FOLLOW-3 接入 CI（push 时跑测试），但 dev/prod 部署仍手动。**待办**：(1) 多环境部署策略（dev 手动 / staging 自动 from master / prod 手动 trigger）；(2) Docker image 构建 + push 到 GHCR；(3) ECS/k8s 部署脚本（项目尚未选定编排平台）；(4) 部署后 smoke test。T-FOLLOW-3 是 CI（测试拦截），T-FOLLOW-4 是 CD（自动部署）。 |
 
 ---
 
@@ -81,7 +81,8 @@
 | T055 | 操作合法性校验中心化（WS Handler 入口跨切校验：room membership + battle status + rate-limit via Redis Lua） | 2026-06-20 |
 | T-FOLLOW-1 | 实现 migrations runner 自动化（`npm run db:migrate` 脚本 + `schema_migrations` 跟踪表 + idempotent 事务 + 启动顺序） | 2026-06-20 |
 | T-FOLLOW-2 | Migrations 启动期集成 + README 文档（`checkMigrationsStatus` 只读检测 + `index.ts` 启动 warn + 根 + backend 双 README） | 2026-06-20 |
-| 测试基线 | T-FOLLOW-2 收尾：42 suite / 701 test 全绿（新增 5 checkMigrationsStatus unit test） | 2026-06-20 |
+| T-FOLLOW-3 | CI/CD 接入（GitHub Actions ci.yml + PG 16 / Redis 7 service containers + 42/701 jest 全量 + coverage artifact + README badge） | 2026-06-20 |
+| 测试基线 | T-FOLLOW-3 收尾：CI workflow 文件就绪，待 push 后首次跑通验证（本地 42/701 仍全绿） | 2026-06-20 |
 
 ---
 
@@ -95,6 +96,7 @@
 | 2026-06-20 | T054 simplify review 发现：(1) applySettlementInTransaction 4 个近重复调用（4a 双 UPDATE + 4b 双 INSERT）易引入参数错位 bug；(2) controller switch 缺 exhaustiveness 检查，新增 error variant 会静默漏分支；(3) integration/unit test 的 `jest.spyOn(console, 'error')` 在 describe 顶层 spy，永不 mockRestore 会污染同进程后续测试输出；(4) integration test 残留无用 `_refs = {...}` 占位语句 | (1) 把 4 个对称 SQL 调用改写为 `for side of [p1/p2]` 循环 + `insertBattleHistory` 收 1 个 `side` 对象替代 7 位置参数；(2) controller switch 加 `default: const _exhaustive: never = result.error` + throw，让新增 error variant 编译失败；(3) 两处 console.error spy 改用 `beforeEach` 局部 spy + `afterEach mockRestore()`；(4) 删 `_refs` 行。修复后 21/21 T054 + 39/39 全量 suite 全绿 |
 | 2026-06-20 | T-FOLLOW-1 单测初次运行全部失败：`process.exit called with "1"` 立即终止 jest 进程，无任何 case 输出。根因 mockClient 缺 `release` 方法 → `applyMigration` `finally` 块 `client.release()` 抛 TypeError → 失败被 runMigrations 捕获 → `failureCount++` → 走 process.exit(1) | mockClient 加 `release: jest.fn()`。修复后 8/8 migrate test + 42/42 全量 suite 全绿 |
 | 2026-06-20 | T-FOLLOW-2 smoke test 在 /tmp/ 写脚本跑 ts-node 失败 2 次：第一次相对路径解析失败（`./src/config/database` 在 /tmp/ 找不到），第二次 /tmp/ 文件被 ESM loader 拒绝（`ERR_UNKNOWN_FILE_EXTENSION`） | 把脚本挪到 `backend/src/scripts/smoke-warn.ts` 内部 + 用绝对路径 import。修复后 3 个状态切换（before 全 applied → drop 一行 → after hasPending=true → 恢复）全部正确 |
+| 2026-06-20 | T-FOLLOW-3 端口混淆风险：dev docker-compose 把 PG 5432 → 5433（host 端口）避免本机冲突，但 CI GitHub Actions service container 内部就是 5432，**用 5433 会连不上** | workflow 显式 `DB_PORT: 5432` + `REDIS_PORT: 6379`，并加注释说明「dev = 5433 / CI = 5432」。`database.ts` 兜底 `|| '5432'` 兼容两端 |
 
 ---
 

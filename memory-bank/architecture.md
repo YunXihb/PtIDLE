@@ -2623,5 +2623,125 @@ npm run dev
 
 ---
 
-*文档版本：v1.43*
+## T-FOLLOW-3 CI/CD 接入（GitHub Actions）
+
+### 1. 背景与动机
+
+T-FOLLOW-1/2 把 dev DB 启动流程自动化了，但**所有测试仍靠本地 `npx jest`**：
+- 新 PR 没有自动化校验，merge 前需 reviewer 手动跑测试
+- 多 contributor 协作时"在我机器上能跑"问题频发
+- 没有 coverage 历史趋势
+- T055 smoke test 暴露的「dev DB 缺 8 migrations」问题，在 CI 上**应该自动发现**（而不是等 reviewer 跑 smoke test）
+
+**T-FOLLOW-3 目标**：用 GitHub Actions 跑全量测试 + migrations，PR 阶段自动拦截 schema / 测试问题。
+
+### 2. 设计决策
+
+| # | 决策点 | 选择 |
+|---|--------|------|
+| 1 | CI 平台 | **GitHub Actions**（仓库已在 GitHub，免费 + 集成 PR 状态检查） |
+| 2 | Service 端口 | **标准端口**（PG 5432 / Redis 6379），与 dev docker-compose (PG 5433) 不同 |
+| 3 | 触发条件 | `push` 到 master + `pull_request` 到 master + 手动 `workflow_dispatch` |
+| 4 | Node 版本 | 20.x（对齐 `engines.node >= 20.0.0`） |
+| 5 | 装包 | `npm ci`（用 lock file 精确版本，比 `npm install` 可靠） |
+| 6 | Migration | **先跑 `npm run db:migrate`，再跑 jest**（避免 schema 缺失时跑出假阳性测试失败） |
+| 7 | Coverage | `actions/upload-artifact@v4` 上传 30 天（**不接 codecov**，避免 secret 管理复杂度） |
+| 8 | 并发控制 | `concurrency.cancel-in-progress: true`（PR 多次 push 自动取消旧 run） |
+| 9 | Health check | service container 必须有 health check，jest 启动不能比 PG ready 快 |
+
+### 3. Workflow 文件结构
+
+```yaml
+# .github/workflows/ci.yml
+name: CI
+on:
+  push: { branches: [master] }
+  pull_request: { branches: [master] }
+  workflow_dispatch:        # 手动触发
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true   # 新 push 取消旧 run
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres: { image: postgres:16, ports: [5432:5432], health-cmd: pg_isready ... }
+      redis:    { image: redis:7-alpine, ports: [6379:6379], health-cmd: redis-cli ping ... }
+    env:
+      NODE_ENV: test
+      DB_HOST: localhost
+      DB_PORT: 5432                # ← 标准端口（dev 是 5433）
+      DB_NAME: ptidle
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      REDIS_HOST: localhost
+      REDIS_PORT: 6379
+      JWT_SECRET: ci-test-secret-not-for-prod  # 必填，否则 auth 测试 fail
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm', cache-dependency-path: backend/package-lock.json }
+      - working-directory: backend
+        run: npm ci
+      - working-directory: backend
+        run: npm run db:migrate              # T-FOLLOW-1 幂等
+      - working-directory: backend
+        run: npx jest --forceExit            # 42/701 全量
+      - if: success()
+        working-directory: backend
+        run: npm run test:coverage
+      - if: success()
+        uses: actions/upload-artifact@v4
+        with: { name: coverage-report, path: backend/coverage, retention-days: 30 }
+```
+
+### 4. 端口差异：dev vs CI
+
+| 环境 | PG 端口 | Redis 端口 | 备注 |
+|------|---------|-----------|------|
+| Dev (docker-compose) | **5433** (host) → 5432 (container) | 6379 | 避免与本机已装 PG 冲突 |
+| CI (GitHub Actions) | **5432** | 6379 | service container 内部端口 |
+| Tests (`*.integration.test.ts`) | 读 `process.env.DB_PORT` | 读 `process.env.REDIS_PORT` | 自动适配 |
+
+**关键**：`backend/src/config/database.ts` 用 `process.env.DB_PORT || '5432'` 兜底，所以 dev .env 设 5433 / CI workflow 设 5432 都对。
+
+### 5. README Badge
+
+```markdown
+[![CI](https://github.com/YunXihb/PtIDLE/actions/workflows/ci.yml/badge.svg)](https://github.com/YunXihb/PtIDLE/actions/workflows/ci.yml)
+```
+
+shields.io 动态 badge，首次跑前显示 "no status"，跑过后显示 pass/fail。
+
+### 6. 关键踩坑（CI 调试要点）
+
+1. **service container 必须有 health check** — 否则 jest 启动可能比 PG ready 还快 → `ECONNREFUSED 127.0.0.1:5432`
+2. **`DB_PORT` 必须是 5432** — GitHub Actions 内部 `localhost:5432` 走 service container 端口映射；用 5433 会连不上
+3. **`JWT_SECRET` 必填** — `authController` 测试需要真 token，secret 空会 401
+4. **`npm ci` 不是 `npm install`** — CI 场景下用 lock file 精确版本，避免 `package.json` 与 lock 不同步的随机性
+5. **`concurrency.cancel-in-progress`** — PR 上多次 push 排队浪费 runner 时间
+6. **Coverage 用 artifact 不用 codecov** — 避免 `CODECOV_TOKEN` secret 管理；后期需要时再加
+
+### 7. 未来增强（明确不做）
+
+- ❌ **Codecov 集成**（需 `CODECOV_TOKEN` secret 管理，本期 MVP 不做；artifact 30 天保留够 review 用）
+- ❌ **Lint 独立 workflow**（当前 jest + tsc 已覆盖类型错误；eslint 可加但本期不阻塞）
+- ❌ **多 Node 版本矩阵**（package.json 已锁 `engines.node >= 20`，单 20.x 足够）
+- ❌ **多 OS 矩阵**（dev/prod 都 Linux，Windows/Mac 兼容非目标）
+- ❌ **CD（自动 deploy）**（dev 手动部署；prod 部署是另一个任务）
+- ❌ **PR 状态检查 / required checks**（仓库 settings，非 workflow 文件控制；用户审阅后配置）
+
+### 8. 测试覆盖
+
+- **不写新单测**（CI 是基础设施，不需单测）
+- **真实验证**：用户 push 后，GitHub Actions runner 跑通才算成功
+- 当前本地基线：**42/42 suite, 701/701 test**（T-FOLLOW-2 收尾）
+
+---
+
+*文档版本：v1.44*
 *最后更新：2026-06-20*
