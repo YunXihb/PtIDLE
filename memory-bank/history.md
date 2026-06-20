@@ -1565,11 +1565,20 @@ T049-T054 实现 PvP 对战完整闭环，但 WS handler 入口层（`battleRoom
 - 现有测试 `beforeEach` 默认 `queryOne` 返回 `status: 'pending'`（为 handleBattleJoin 的 `getPendingBattleForJoin` 服务），但 move/play_card/skip_play 需要 `status: 'ongoing'`。改全局默认 `ongoing`，handleBattleJoin 自身 beforeEach 显式 override `pending`（已有此模式，未新增）。
 - 测试结果：23/23 wsValidation unit + 10/10 wsValidation integration + 28/28 battleRoom（含 5 新 T055 case）+ 41/41 全量 suite 全绿（688 tests = 650 基线 + 38 新）
 
+### 意外（Smoke Test 后续发现 — Pre-existing DB Schema 缺失）
+- **手动 smoke test 暴露 dev DB 缺少 8 个 migrations**（不是 T055 引入的问题，但 smoke test 必须解决才能验证 T055）：
+  1. **Migration 003** (`003_add_battle_session_state.sql`): battles 表缺 `current_round` / `current_step` / `current_phase` / `current_actor_id` 列 → `broadcastFullState` 抛 `column "current_round" does not exist`，**init 也因为 phase 状态缺失而失败**
+  2. **Migration 006** (`006_public_pool.sql`): `cards` 表缺 `is_public_pool` 列 → initBattleField step 4 (drawCards) 抛 `column "is_public_pool" does not exist`
+  3. Migration 005 / 007 / 008 / 009 / 010 同样未应用（缺失 `taunt` 种子卡 / match metadata / battle init 支持表 / 胜利进度 keys / 结算 API 表）
+- **修复**：写 `apply-mig-temp.ts` 一次性应用 003-010 共 8 个 SQL 文件到 `ptidle-postgres-1`。**应用顺序严格按数字升序**（003 → 005 → 006 → 007 → 008 → 009 → 010），因为后置 migration 依赖前置 schema。Migration 004 不存在（命名空缺，正常跳过）。
+- **影响**：T055 单测 + 集成测试都不依赖此 schema（用 mock 或自己 insert 数据），所以测试套件全绿；**只有真实 end-to-end smoke test 才能暴露**。未来 T056+ 任务需要在 README / setup 脚本中加 "run all migrations" 步骤，否则 dev DB 长期处于缺失状态。
+
 ### 修复
 - 新增 2 文件：`src/socket/wsValidation.ts` (243 行, validateOperationContext + 3 helpers + Lua 脚本 + 类型) / `src/socket/wsValidation.test.ts` (333 行, 23 case)
 - 新增 1 文件：`src/socket/wsValidation.integration.test.ts` (288 行, 10 case, 真实 Redis + PG)
 - 改 1 文件：`src/socket/battleRoom.ts` 4 个 handler 各加 validator 调用（joinContext 仅 rate-limit；其余 3 个 opContext 完整）
 - 改 1 文件：`src/socket/battleRoom.test.ts` mock 工厂加 `eval` + createMockSocket 加 rooms Set + beforeEach 默认 mockEval=1 + 默认 status='ongoing' + handleBattleSkipPlay mockSocket 加 rooms + 新增 5 个 T055 describe
+- 应用 8 个 migrations 到 dev DB（003/005/006/007/008/009/010），smoke test 前置步骤（手动一次性操作）
 - 改 `memory-bank/architecture.md`：v1.40 → v1.41，加 T055 完整章节（背景动机 + 设计决策 + 流水线 + 模块 + Lua + handler 改造点 + Redis key + 降级 + 范围外 + 测试）
 - 改 `memory-bank/progress.md`：加 T055 完成行 + 6-20 测试基线行
 
@@ -1578,6 +1587,11 @@ T049-T054 实现 PvP 对战完整闭环，但 WS handler 入口层（`battleRoom
 - `npx jest src/socket/wsValidation.integration.test.ts --forceExit` → 10/10 pass（真实 Redis Lua + 真实 PG battle row）
 - `npx jest src/socket/battleRoom.test.ts --forceExit` → 28/28 pass（23 旧 + 5 新 T055 回归）
 - `npx jest --forceExit` → 41/41 suite, 688/688 test 全绿（无 regression）
+- **手动 smoke test**（注册 2 用户 → 撮合 → 双 join → 等 ongoing → 刷 65 次 battle:move）：
+  - 前 60 次进入业务校验（39 个 `not_in_move_phase` 错误 + 21 个 silent success 走 broadcaster）
+  - 第 61-65 次被 rate-limit 拦下，返回 `battle:move:error { error: 'rate_limited' }`
+  - Redis 计数器验证：`rl:ws:user:{userId}:battle:move` counter = 65，TTL = 60s
+  - smoke test 脚本已在结束后清理（删除 temp .ts 文件 + kill server）
 
 ### 范围外（明确不做）
 - Nonce-based replay 防护（每条 WS 消息带 nonce）— MVP 外
