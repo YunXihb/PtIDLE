@@ -2835,5 +2835,88 @@ T-FOLLOW-3 接入 CI 后，dev/prod 部署仍手动。T-FOLLOW-4 把"打镜像 +
 
 ---
 
-*文档版本：v1.45*
+---
+
+## T-FOLLOW-5 单 VPS 部署编排（Docker Compose + GitHub Actions SSH deploy）
+
+### 1. 背景
+
+T-FOLLOW-4 完成镜像 + GHCR 发布，但生产部署仍手动。T-FOLLOW-5 在 T-FOLLOW-4 之上加 deploy workflow，让 push tag v* 自动部署到单 VPS。
+
+### 2. 用户决策
+
+- ✅ 编排平台: **单 VPS + Docker Compose**（不是 k8s/ECS/Serverless）
+- ✅ Deploy 自动化: **CI 触发 SSH deploy**（workflow_run + appleboy/ssh-action）
+- ✅ DB / Redis 位置: **同 VPS, docker compose**（4 services）
+- ✅ 错误处理: **方案 A — 失败手动 SSH 修**（不做 auto-rollback）
+- ❌ 编排平台选型后续（k8s/ECS/Serverless）：不在本任务范围
+- ❌ HTTPS / TLS / domain：T-FOLLOW-6 决定
+- ❌ 监控 / alerting：T-FOLLOW-6+
+- ❌ 备份：MVP 阶段不加（数据可重建）
+
+### 3. 8 个交付物
+
+| 文件 | 作用 |
+|---|---|
+| `backend/src/scripts/migrate.js` | 纯 JS 迁移 runner（替代 migrate.ts），不需 ts-node + `MIGRATIONS_DIR` env var |
+| `backend/src/scripts/migrate.d.ts` | TS 声明文件（migrate.js 是 JS, 需 .d.ts 供 .ts 引用） |
+| `backend/Dockerfile` | 加 `COPY src/migrations /app/migrations` + `COPY src/scripts/migrate.js` (tsc 不编译 .js) |
+| `docker-compose.yml` | 4 services (postgres/redis/backend/migrate), VPS 部署模板 |
+| `.env.example` | VPS env vars 模板 |
+| `scripts/deploy.sh` | VPS 上跑: pull + migrate + restart + 30s health check + `--force-recreate` |
+| `.github/workflows/deploy.yml` | workflow_run trigger + appleboy/ssh-action + actions/checkout |
+| `docs/deploy.md` | 加 § 5.3 单 VPS CI 自动部署指南 |
+
+### 4. 关键设计决策
+
+1. **migrate.js 替代 migrate.ts**: 生产 image 不含 ts-node (dev dep), 改纯 JS. 新增 `MIGRATIONS_DIR` env var (默认 `/app/migrations`) 让 prod image 找到 baked-in SQL
+2. **migrate 复用 backend image**: 不用独立 `node:20-alpine` + bind mount, 避免 VPS 维护额外目录 + 每次 deploy 重 npm ci ~60s
+3. **migrate 用 `profiles: ["migrate"]`**: 隔离 one-shot service, 平时不启, deploy 时显式 `run --rm`
+4. **depends_on `condition: service_healthy`**: backend 等 PG/Redis 健康才启, 避免 cold start race
+5. **healthcheck 用 `node -e`**: alpine 无 wget/curl, 跟 Dockerfile / deploy.sh 一致
+6. **trigger = `workflow_run`**: 监听 release.yml 成功事件, 不独立触发, 避免「未发布就部署」
+7. **`actions/checkout@v4` 必须显式加**: `workflow_run` 触发时**不**自动 checkout, 需显式 `actions/checkout@v4` 才能让 `script_path: scripts/deploy.sh` 找到脚本
+8. **`--force-recreate` 必须显式加**: `docker compose up -d` 只在 config 变化时 recreate, pull 新镜像不算 config 变化, 不加 `--force-recreate` 新镜像不会被加载
+9. **方案 A 不做 auto-rollback**: solo dev, 失败时手动 SSH 修, 简单可靠; 自动回滚的 schema 兼容性问题留 TODO
+
+### 5. 关键踩坑（deploy 调试要点）
+
+1. **VPS 一次性配置**: 非 root 用户 + docker group, `/opt/ptidle` 目录权限
+2. **GitHub Secrets**: `VPS_SSH_KEY` 是专用 key (不与个人 key 混用), `secrets.GITHUB_TOKEN` 自动给 release.yml 用
+3. **image 默认 private**: 部署前需在 GHCR package settings 改 public, 否则 `docker compose pull` 401
+4. **MIGRATIONS_DIR 必须显式设**: prod image baked-in 是 `/app/migrations`, 不设 env 会落到 `__dirname/../migrations = dist/migrations` (空目录, 跑报错)
+5. **`docker compose exec -T`**: 交互式 TTY 在 SSH + workflow_run 场景会卡, 用 `-T` 禁用
+6. **workflow_run 的 `conclusion`**: 在 if guard 里要明确 `conclusion == 'success'`, 否则 cancelled/failed release 也会触发 deploy
+7. **`tsc` 不编译 `.js`**: `migrate.js` 不会被 tsc 输出到 `dist/scripts/`, 需 Dockerfile 显式 `COPY src/scripts/migrate.js /app/dist/scripts/migrate.js`
+8. **`workflow_run` 不自动 checkout**: 需显式 `actions/checkout@v4`, ref 用 `head_sha` (release run 的 commit)
+
+### 6. 镜像 baked migrations 的优势
+
+| 维度 | 旧 (migrate.ts + bind mount) | 新 (migrate.js + baked) |
+|---|---|---|
+| 镜像大小 | + node:20-alpine (~50MB) | 0 (复用 backend image) |
+| 部署时间 | npm ci ~60s | 0 (image 内已含) |
+| VPS 维护 | 需 backend-migrations 目录 | 无 |
+| Schema 漂移风险 | bind mount 跟 image 可能不同步 | 原子一致 (同 image) |
+
+### 7. 未来增强（明确不做 / 留 TODO）
+
+- ❌ **HTTPS / TLS**: T-FOLLOW-6 用 Caddy / nginx + Let's Encrypt
+- ❌ **Domain 绑定**: T-FOLLOW-6
+- ❌ **自动回滚**: T-FOLLOW-7+ (记录 .last-good tag + health check fail 时 restore)
+- ❌ **备份策略**: T-FOLLOW-8+ (daily pg_dump → B2 / S3)
+- ❌ **监控**: T-FOLLOW-9+ (UptimeRobot + GH Actions scheduled health check)
+- ❌ **镜像签名 / 扫描**: T-FOLLOW-10+ (cosign / trivy)
+- ❌ **Distroless 镜像**: T-FOLLOW-11+ (体积优化)
+- ❌ **HA / multi-instance**: T-FOLLOW-12+ (load balancer + 2 VPS, 仅在用户量到时考虑)
+
+### 8. 测试覆盖
+
+- **单元测试**: migrate.js 9/9 (8 原有 + 1 新增 MIGRATIONS_DIR env var), 全量 42/42 suite, 702/702 test pass
+- **集成测试**: 本地 `docker build` + `docker run ls /app/migrations` 验证 baked
+- **真实验证**: 用户 push v* tag 触发完整 deploy 链路 → 看到 GH Actions success
+
+---
+
+*文档版本：v1.46*
 *最后更新：2026-06-22*

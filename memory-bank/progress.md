@@ -9,7 +9,7 @@
 
 | 任务ID | 名称 | 备注 |
 |--------|------|------|
-| T-FOLLOW-5 | 部署编排平台选型 + deploy workflow | T-FOLLOW-4 完成 Docker image + GHCR + deploy docs，但**未**做自动部署。**待办**：(1) 选编排平台（k8s / ECS / Docker Compose / Serverless）；(2) 写 deploy workflow（trigger / 平台 auth / 滚动更新 / 回滚 / smoke test）；(3) 多环境策略（dev 手动 / staging 自动 from master / prod 手动 trigger）；(4) secrets 管理（GH secrets / Vault / 平台 secret store）。**前置条件**：项目需确定目标部署环境。 |
+| T-FOLLOW-6 | HTTPS / TLS / domain + 自动回滚 + 备份 + 监控 | T-FOLLOW-5 完成单 VPS CI 自动部署, 但生产级仍缺 4 件事。**待办**：(1) HTTPS (Caddy / nginx + Let's Encrypt) + domain 配置；(2) 自动回滚（记录 .last-good tag + health check fail 时 restore）；(3) 备份策略（daily pg_dump → Backblaze B2 / S3）；(4) 监控 (UptimeRobot free tier + GH Actions scheduled health check) |
 
 ---
 
@@ -86,6 +86,7 @@
 | CI 首次跑通 | T-FOLLOW-4 commit 5582977 推送后, GitHub Actions CI 首次跑通 (run #27936624591): 2 min 17 sec, 14/14 steps success, jest 42/701 + db:migrate + coverage artifact 全过 | 2026-06-22 |
 | v0.1.0 Release | T-FOLLOW-4 release workflow 首次跑通: 推送 tag v0.1.0 (commit 634e2ee) → run #27937392708, 3 min 19 sec, 6/6 steps success → GHCR 4 tag 上传 (latest / 0.1 / 0.1.0 / 634e2ee)。Multi-arch (linux/amd64+arm64) build 无失败但需 make public 后 docker manifest 验证。**默认 private** — 需用户手动在 package settings 改 public | 2026-06-22 |
 | T-FOLLOW-4 | CD 接入 - 镜像层（Dockerfile multi-stage + .dockerignore + release.yml multi-arch GHCR + docs/deploy.md + 本地 smoke test 通过 /health 200） | 2026-06-22 |
+| T-FOLLOW-5 | 单 VPS 部署编排（migrate.js 重写 + Dockerfile baked migrations + docker-compose 4 services + deploy.yml workflow_run trigger + scripts/deploy.sh + docs/deploy.md § 5.3 + memory-bank 同步） | 2026-06-22 |
 
 ---
 
@@ -101,6 +102,10 @@
 | 2026-06-20 | T-FOLLOW-2 smoke test 在 /tmp/ 写脚本跑 ts-node 失败 2 次：第一次相对路径解析失败（`./src/config/database` 在 /tmp/ 找不到），第二次 /tmp/ 文件被 ESM loader 拒绝（`ERR_UNKNOWN_FILE_EXTENSION`） | 把脚本挪到 `backend/src/scripts/smoke-warn.ts` 内部 + 用绝对路径 import。修复后 3 个状态切换（before 全 applied → drop 一行 → after hasPending=true → 恢复）全部正确 |
 | 2026-06-20 | T-FOLLOW-3 端口混淆风险：dev docker-compose 把 PG 5432 → 5433（host 端口）避免本机冲突，但 CI GitHub Actions service container 内部就是 5432，**用 5433 会连不上** | workflow 显式 `DB_PORT: 5432` + `REDIS_PORT: 6379`，并加注释说明「dev = 5433 / CI = 5432」。`database.ts` 兜底 `|| '5432'` 兼容两端 |
 | 2026-06-22 | T-FOLLOW-4 smoke test 容器内 `localhost` 解析问题：容器内 `localhost` = 容器自己 loopback，不是 host。直接用 `DB_HOST=localhost` 会连不上 host 上的 PG/Redis | `docker run --add-host=host.docker.internal:host-gateway` + `DB_HOST=host.docker.internal`（Docker 20.10+ Linux 支持）。文档化在 `docs/deploy.md` § 自定义 build |
+| 2026-06-22 | T-FOLLOW-5 Task 1 spec 偏差: 实际 test 数 14 (8 已有 + 1 env var + 5 checkMigrationsStatus 边界), 不是 spec 写的 9; 需新增 `migrate.d.ts` 声明文件供 .ts 引用 | 实测 14/14, 接受偏差; `migrate.d.ts` 是 TS interop 标准做法, ts-jest + tsc 都需 |
+| 2026-06-22 | T-FOLLOW-5 Task 2 spec 偏差: `tsc` 不编译 `.js` 文件, `dist/scripts/migrate.js` 不会自动生成 | Dockerfile 显式加 `COPY src/scripts/migrate.js /app/dist/scripts/migrate.js` |
+| 2026-06-22 | T-FOLLOW-5 Task 4 code review 发现 bug: `docker compose up -d backend` 不加 `--force-recreate` 时, pull 新镜像不会被实际加载, 旧容器继续跑 | 改为 `docker compose up -d --force-recreate backend` (commit 52c625e) |
+| 2026-06-22 | T-FOLLOW-5 Task 5 code review 发现 bug: `workflow_run` 触发时**不**自动 checkout, `script_path: scripts/deploy.sh` 找不到文件 | 加 `actions/checkout@v4` step, ref 用 `head_sha || github.sha` (commit eee5c29) |
 
 ---
 

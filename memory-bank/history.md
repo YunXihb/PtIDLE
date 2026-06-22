@@ -1959,3 +1959,68 @@ T-FOLLOW-3 (CI) + T-FOLLOW-4 (CD/image) 已就绪, 但 release workflow 真实 G
 - **Multi-arch 实测** — 待 public 后 `docker manifest inspect ghcr.io/yunxihb/ptidle-backend:v0.1.0` 验证两个平台
 - **Trigger workflow_dispatch** — 手动触发留后续测试 (e.g. 跑一个 dev tag)
 - **后续 tag** — 0.1.1 / 0.2.0 / 1.0.0 等, 按需打
+
+---
+
+## 2026-06-22 - 任务：T-FOLLOW-5 单 VPS 部署编排（migrate.js + Dockerfile + docker-compose + deploy workflow）
+
+### Prompt
+T-FOLLOW-4 完成镜像 + GHCR + deploy docs, 但生产部署仍手动。**待办**: (1) 选编排平台 (用户选单 VPS); (2) CI 触发 SSH deploy (workflow_run + appleboy/ssh-action); (3) docker-compose 4 services (postgres/redis/backend/migrate); (4) 写 deploy.sh + deploy.yml; (5) docs/deploy.md 加 § 5.3; (6) memory-bank 同步。
+
+### 思考
+**关键决策路径**:
+1. **migrate.ts → migrate.js** — 生产 image 不含 ts-node, 改纯 JS. 新增 MIGRATIONS_DIR env var 让 prod image 从 baked-in `/app/migrations` 读 SQL
+2. **migrate 复用 backend image** — 不用独立 node:20-alpine + bind mount, 避免 VPS 维护额外目录 + 每次 deploy 重 npm ci ~60s
+3. **4 services compose** — postgres/redis/backend/migrate, migrate 用 profiles 隔离 one-shot
+4. **healthcheck 一致性** — Dockerfile, docker-compose, deploy.sh 全部用 `node -e "http.get(...)"` (alpine 无 wget/curl)
+5. **trigger = workflow_run** — 监听 release.yml success, 不独立触发, 避免「未发布就部署」
+6. **方案 A — 无 auto-rollback** — solo dev, 失败时手动 SSH 修, 简单可靠
+
+**架构亮点**:
+- image baked migrations: 原子一致 (同 image), 无 schema 漂移风险
+- 同一 image 多用途: backend + migrate 共用, 减少 50MB alpine 镜像
+- profiles 隔离: 平时不启 migrate, deploy 时显式 `run --rm`
+- depends_on `condition: service_healthy`: backend 等 PG/Redis ready 才启, 避免 cold start race
+
+**踩坑**:
+1. `docker compose exec -T` 必须用 `-T` 禁用 TTY (SSH + workflow_run 场景)
+2. workflow_run if guard 需 `conclusion == 'success'`, 否则 cancelled release 也会触发 deploy
+3. MIGRATIONS_DIR 不显式设会落到 `__dirname/../migrations = dist/migrations` (空目录, 跑报错)
+4. package.json 改用 `node src/scripts/migrate.js` (不再用 ts-node), dev 也受益 (启动快 1-2s)
+5. **`tsc` 不编译 `.js`** — `migrate.js` 不会被 emit 到 `dist/scripts/`, Dockerfile 需显式 `COPY src/scripts/migrate.js /app/dist/scripts/migrate.js` (Task 2 spec 偏差)
+6. **`docker compose up -d` 不 `--force-recreate`** — pull 新镜像不算 config 变化, 旧容器继续跑 (Task 4 code review bug, 需修)
+7. **`workflow_run` 不自动 checkout** — `script_path: scripts/deploy.sh` 找不到文件, 需显式 `actions/checkout@v4` (Task 5 code review bug, 需修)
+
+### 意外
+1. **T-FOLLOW-4 的 image 默认 private** — `docker compose pull` 在 VPS 上 401, 用户需手动在 GHCR package settings 改 public. 文档化在 docs/deploy.md § 5.3
+2. **spec self-review 发现 healthcheck test 行写错** — 初始版 `["CMD", "node", "-e "]` 缺 JS 代码, 修正为 `CMD-SHELL` + 完整 inline script
+3. **migrate 复用 backend image 节省 ~50MB + 60s/deploy** — 替代方案独立 alpine image 多 50MB, 且每次 deploy `npm ci` ~60s
+4. **Task 1 test 实际 14 个, 不是 spec 写的 9** — 现有 test 文件比 spec 假设的更完善, 包含 5 个 checkMigrationsStatus 边界用例. 接受偏差
+5. **Task 1 需新增 `migrate.d.ts`** — 纯 JS 文件被 .ts test 引用需声明文件, ts-jest + tsc 都依赖. spec 没提到, 实操必须
+6. **Task 2 / 4 / 5 都有 spec 偏差或 bug** — 详见 progress.md「问题与解决」
+
+### 修复
+- 新增 6 文件: `backend/src/scripts/migrate.js`, `backend/src/scripts/migrate.d.ts`, `docker-compose.yml`, `.env.example`, `scripts/deploy.sh`, `.github/workflows/deploy.yml`
+- 改 4 文件: `backend/Dockerfile`, `backend/package.json`, `.gitignore`, `docs/deploy.md`, `memory-bank/{architecture,progress,history}.md`
+- 删除 1 文件: `backend/src/scripts/migrate.ts` (被 migrate.js 替代)
+- 3 个 fix commit: Task 4 `--force-recreate` (52c625e) + Task 5 `actions/checkout` (eee5c29) + 1
+- 测试: 14/14 migrate (含 1 新增 MIGRATIONS_DIR env var), 全量 42/42 suite / 702/702 test pass
+
+### 验证
+- `npx jest --forceExit` → **42/42 suite, 702/702 test 全绿** (无 regression)
+- `python3 -c "import yaml; yaml.safe_load(...release.yml)"` → valid
+- `python3 -c "import yaml; yaml.safe_load(...deploy.yml)"` → valid
+- `docker build -t ptidle-backend:deploy-test .` → 成功
+- `docker run --rm ptidle-backend:deploy-test ls /app/migrations` → 9 SQL 文件
+- `docker compose config` (with test env) → valid YAML, 4 services + 2 volumes
+- `bash -n scripts/deploy.sh` → 语法 OK
+- **真实验证**: 用户 push v* tag → 完整 deploy 链路 (待 push 后验证)
+
+### 范围外（明确不做 / T-FOLLOW-6+）
+- HTTPS / TLS / domain (T-FOLLOW-6)
+- 自动回滚 (T-FOLLOW-7+)
+- 备份 (T-FOLLOW-8+)
+- 监控 (T-FOLLOW-9+)
+- 镜像签名 / 扫描 (T-FOLLOW-10+)
+- Distroless 镜像 (T-FOLLOW-11+)
+- HA / multi-instance (T-FOLLOW-12+, 仅在用户量到时考虑)
