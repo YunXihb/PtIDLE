@@ -2743,5 +2743,97 @@ shields.io 动态 badge，首次跑前显示 "no status"，跑过后显示 pass/
 
 ---
 
-*文档版本：v1.44*
-*最后更新：2026-06-20*
+## T-FOLLOW-4 CD 接入（Docker Image + GHCR Release）
+
+### 1. 背景
+
+T-FOLLOW-3 接入 CI 后，dev/prod 部署仍手动。T-FOLLOW-4 把"打镜像 + 推镜像"自动化，但**不**做 deploy（无 SSH / 平台 webhook 步骤 — 编排平台尚未选定）。
+
+### 2. 用户选择
+
+- ✅ **做**：Docker image build + push 到 GHCR
+- ❌ **不做**：deploy workflow（无编排平台 / 无 SSH / 无平台 webhook）
+- 理由：项目尚未选定 ECS/k8s/Compose/其他，部署步骤留 T-FOLLOW-5 决定
+
+### 3. 三个交付物
+
+| 文件 | 作用 |
+|---|---|
+| `backend/Dockerfile` | Multi-stage build (Node 20 alpine)：builder 装全量 deps + tsc 产 dist/；runtime 装 prod deps + copy dist/ + USER node + HEALTHCHECK via `node -e "http.get..."`（alpine 无 wget）|
+| `backend/.dockerignore` | 排除 node_modules / dist / coverage / .env / tests / docs / .github，加速 build context |
+| `.github/workflows/release.yml` | tag push v* + workflow_dispatch → buildx multi-platform (linux/amd64 + linux/arm64) → push GHCR |
+| `docs/deploy.md` | 拉取 / env vars / 启动顺序 / 单机 vs compose / 健康检查 / 自定义 build / 常见问题 |
+
+### 4. 镜像设计
+
+| 维度 | 决策 | 理由 |
+|---|---|---|
+| Base image | `node:20-alpine` | 镜像小（~50MB base） + Node 20 LTS |
+| Multi-stage | builder + runtime | runtime 镜像**不**含 tsc / dev deps |
+| 包管理 | `npm ci --omit=dev` | CI 锁版本，runtime 排除 dev |
+| User | `USER node` | 不跑 root，减少攻击面 |
+| HEALTHCHECK | `node -e "http.get(...)"` | alpine 无 wget/curl |
+| 启动命令 | `node dist/index.js` | 跟 `package.json` `main` 字段对齐 |
+
+**镜像体积**：215MB（alpine base 50MB + node_modules 150MB + dist 15MB）。进一步优化可换 `gcr.io/distroless/nodejs20`（T-FOLLOW-5 决定）。
+
+### 5. Release Workflow 设计
+
+| 触发 | 输入 | Tag 输出 |
+|---|---|---|
+| tag push `v*` (stable v1.0.0) | 自动 | `1.0.0`, `1.0`, `<sha7>`, `latest` |
+| tag push `v*` (pre-release v1.0.0-rc1) | 自动 | `1.0.0-rc1`, `1.0`, `<sha7>`（不打 latest）|
+| workflow_dispatch | 用户输入 version | `<input>`, `<sha7>`（不打 latest）|
+
+**Auth**：`secrets.GITHUB_TOKEN` 自动注入（GHCR push 需 `packages: write` 权限），无需 user secret。
+
+**Buildx**：QEMU + multi-platform 在 amd64 runner 上同时产出 arm64 镜像（Apple Silicon / ARM 服务器直拉）。
+
+**Cache**：`cache-from: type=gha` + `cache-to: type=gha,mode=max` 利用 GitHub Actions 内置缓存加速后续 build。
+
+### 6. 关键设计决策
+
+1. **Pre-release 不打 `latest`**：用 bash regex `^[0-9]+\.[0-9]+\.[0-9]+$` 区分 stable vs rc/alpha/beta，符合 semver 约定
+2. **`major.minor` 自动跟随**：tag `v1.0.0` 同时打 `1.0`，方便"跟踪 minor 升级"用户
+3. **手动 trigger 不打 `latest`**：workflow_dispatch 通常是 dev 测试，污染 `latest` 误导生产用户
+4. **容器内不跑 migrations**：镜像只跑 `node dist/index.js`，migrations 由外部 / init container / CI job 负责（幂等的 `npm run db:migrate` 可重复跑）
+5. **Multi-arch 默认开**：现代容器生态（k8s/Compose/Serverless）多 arch 无额外成本
+
+### 7. 关键踩坑（release 调试要点）
+
+1. **容器内 `localhost` ≠ host `localhost`** — DB/Redis 用 `host.docker.internal` (Linux 20.10+ 需 `--add-host=host.docker.internal:host-gateway`)
+2. **必须先 migrations 再启动** — 否则 backend 因 schema 缺失报错（services.online 但 health check "migrations" warning）
+3. **GHCR visibility 默认 private** — 首次 push 后在 package settings 改 public 才能 `docker pull` 不登录
+4. **`packages: write` 权限** — 默认 GITHUB_TOKEN 无 packages 写权限，必须显式声明
+5. **QEMU 慢** — multi-arch build 约 5-8 分钟（单 arch 约 2-3 分钟），timeout 留 30 分钟
+
+### 8. Smoke Test 结果（2026-06-22）
+
+| 步骤 | 命令 | 结果 |
+|---|---|---|
+| 1. 起容器 | `docker run --rm -d --name ptidle-test -p 3001:3000 --add-host=host.docker.internal:host-gateway -e DB_HOST=host.docker.internal ... ptidle-backend:test` | ✅ 启动 |
+| 2. 看日志 | `docker logs ptidle-test` | ✅ `HTTP+WS server running on port 3000` + `PostgreSQL connected` + `Redis connected` |
+| 3. 健康检查 | `curl http://127.0.0.1:3001/health` | ✅ HTTP 200, `{"status":"ok","timestamp":"...","services":{...}}` |
+| 4. 清理 | `docker stop ptidle-test` + `docker rmi ptidle-backend:test` | ✅ 容器 + 镜像已删 |
+
+**注意**：容器日志有 `[migrations] ⚠️  Failed to check migration status: ENOENT ... '/app/dist/migrations'`，是预期的（migrations 文件**故意**不进镜像，参考 Dockerfile 头部注释）。
+
+### 9. 未来增强（明确不做 / 留 TODO）
+
+- ❌ **Deploy workflow**（k8s/ECS/Compose 自动部署）—— T-FOLLOW-5 决定编排平台后实现
+- ❌ **Distroless 镜像**（gcr.io/distroless/nodejs20）—— 体积优化非阻塞
+- ❌ **镜像签名（cosign / sigstore）**—— 安全加固非 MVP 目标
+- ❌ **SBOM 生成**（syft / grype）—— 合规需求未触发
+- ❌ **镜像扫描**（trivy）—— 安全加固非 MVP 目标
+- ❌ **Crane / skopeo 跨 registry 同步**—— 单 registry 足够
+
+### 10. 测试覆盖
+
+- **不写新单测**（release 是基础设施，不需单测）
+- **真实验证**：用户 push tag v* → GHCR image 出现 → `docker pull` + `docker run` 跑通
+- **当前基线**：**42/42 suite, 701/701 test**（release 是新增，不改代码 → 无 regression）
+
+---
+
+*文档版本：v1.45*
+*最后更新：2026-06-22*

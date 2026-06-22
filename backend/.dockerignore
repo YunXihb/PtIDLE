@@ -1,0 +1,53 @@
+# 排除 Docker 不需要的文件, 加速 build context 上传 + 减少 image 层
+# 文档: https://docs.docker.com/engine/reference/builder/#dockerignore-file
+
+# 1. 本地依赖 (容器内重装)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# 2. 构建产物 (容器内 tsc 重生成)
+dist/
+coverage/
+*.tsbuildinfo
+
+# 3. 测试文件 (production image 不需要)
+**/*.test.ts
+**/*.test.js
+**/*.spec.ts
+**/*.spec.js
+__tests__/
+
+# 4. 环境与配置 (绝不能进 image)
+.env
+.env.local
+.env.*.local
+
+# 5. 版本控制
+.git/
+.gitignore
+.gitattributes
+
+# 6. IDE / 编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# 7. 文档 (README 在仓库根, 镜像里不需)
+docs/
+*.md
+
+# 8. CI / Docker 自身
+.github/
+Dockerfile
+.dockerignore
+docker-compose*.yml
+
+# 9. CI 产物
+.nyc_output/
+.eslintcache
+coverage-report/

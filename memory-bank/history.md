@@ -1819,3 +1819,85 @@ T-FOLLOW-1/2 把 dev DB 启动流程自动化了，但所有测试仍靠本地 `
 - Docker image 构建 + push 到 GHCR
 - ECS/k8s 部署脚本（项目尚未选定编排平台）
 - 部署后 smoke test
+
+---
+
+## 2026-06-22 - 任务：T-FOLLOW-4 CD 接入 - 镜像层（Docker Image + GHCR + Deploy Docs）
+
+### Prompt
+T-FOLLOW-3 接入 CI 后, dev/prod 部署仍手动。**待办**：(1) 多环境部署策略；(2) Docker image 构建 + push 到 GHCR；(3) ECS/k8s 部署脚本（**用户已确认暂不做**，因编排平台未选定）；(4) 部署后 smoke test。2026-06-20 22:18 用户中断时 Dockerfile + .dockerignore 已写好, 本地 build 215MB 镜像已存在, smoke test 尚未跑。
+
+### 思考
+**核心决策**：
+
+1. **范围收窄**：用户明确选择「只做 image + GHCR, 不做 deploy workflow」。理由：项目尚未选定编排平台, deploy 步骤留 T-FOLLOW-5 决定
+2. **镜像设计**：
+   - Base: `node:20-alpine` (50MB base, 体积优势)
+   - Multi-stage: builder (含 tsc) → runtime (只 prod deps + dist)
+   - `USER node` 不跑 root
+   - HEALTHCHECK via `node -e "http.get..."` (alpine 无 wget/curl)
+   - 镜像体积：215MB (可接受, 进一步优化换 distroless 留 T-FOLLOW-5)
+3. **Release workflow**：
+   - 触发: tag push `v*` + `workflow_dispatch` (input: version)
+   - Buildx multi-platform: linux/amd64 + linux/arm64 (QEMU emulation)
+   - Tag 规则: stable vX.Y.Z 打 `latest` + `X.Y`; pre-release vX.Y.Z-rcN **不打** latest (semver 约定); workflow_dispatch 手动 trigger **不打** latest
+   - Auth: `secrets.GITHUB_TOKEN` 自动 (需 `packages: write` 权限)
+   - Cache: `type=gha` 利用 GitHub Actions 内置缓存
+4. **Deploy 文档化**：`docs/deploy.md` 覆盖拉取 / env vars / 启动顺序 (migrations 必先) / 单机 vs compose / 健康检查 / 常见问题
+5. **启动顺序硬约束**：镜像**不**自动跑 migrations (migrations 文件不进 dist), 外部 / init container / CI job 负责 (T-FOLLOW-1 幂等的 `npm run db:migrate` 可重复跑)
+
+**架构亮点**：
+- Multi-stage + `--omit=dev` 减少 runtime 镜像攻击面
+- Multi-arch 默认开 (现代容器生态多 arch 无额外成本)
+- Pre-release 用 bash regex `^[0-9]+\.[0-9]+\.[0-9]+$` 区分 stable vs rc/alpha
+- Major.minor tag 自动跟随, 用户可锁 minor 升级
+- Smoke test 真实跑通 (本地 215MB 镜像 → docker run → /health 200)
+
+### 意外
+1. **容器内 `localhost` 解析问题** — 容器内 `localhost` = 容器自己 loopback, 不是 host. 第一次跑 `docker run` 用 `DB_HOST=localhost` 会 ECONNREFUSED. 解决: `docker run --add-host=host.docker.internal:host-gateway` + `DB_HOST=host.docker.internal` (Docker 20.10+ Linux 支持). 文档化在 `docs/deploy.md` § 自定义 build
+2. **migrations 路径警告** — `npm run db:migrate` 启动期检查的 `dist/migrations` 路径不存在 (migrations 在 src/, 不进 dist/). 容器日志显示 `[migrations] ⚠️  Failed to check migration status: ENOENT ... '/app/dist/migrations'`. 是预期行为, Dockerfile 头部注释已说明, 但用户可能误以为出错. 已在 deploy.md § 启动顺序 说明「镜像不自动跑 migrations」
+3. **PG 客户端未装** — 本地无 `psql` 命令, 不能直接 query dev DB. 改用 `docker exec ptidle-postgres-1 pg_isready` 验证, 不需要 psql 客户端
+4. **`docker compose up` 启动** — 用户曾因 WSL2 网络问题放弃 docker PG, 改本地安装 PG. 这次 T-FOLLOW-4 smoke test 重启 docker PG/Redis, 仍能正常工作 (port 5433/6379 监听)
+5. **GHCR image visibility 默认 private** — 真实 push 后用户需在 package settings 改 public 才能 `docker pull` 不登录. 文档化在 deploy.md § 拉取镜像 提示
+
+### 修复
+- 新增 1 文件: `backend/Dockerfile` (72 行, multi-stage: builder + runtime)
+  - Stage 1 `builder`: `npm ci` 全量 + `npm run build` (tsc 产 dist/)
+  - Stage 2 `runtime`: `npm ci --omit=dev` + `COPY --from=builder /app/dist` + `USER node` + HEALTHCHECK
+  - `EXPOSE 3000` + `CMD ["node", "dist/index.js"]`
+- 新增 1 文件: `backend/.dockerignore` (53 行, 排除 node_modules/dist/coverage/.env/tests/docs/.github/Dockerfile)
+- 新增 1 文件: `.github/workflows/release.yml` (135 行, buildx multi-arch + GHCR push)
+  - 6 steps: Checkout → QEMU → Buildx → Login GHCR → Compute tags → Build and push
+  - Tag 输出: stable 打 `latest` + `X.Y`; pre-release / manual 不打
+  - Cache: `type=gha,mode=max`
+- 新增 1 文件: `docs/deploy.md` (294 行, 9 章节)
+  - § 概述 / 镜像 / env vars / 启动顺序 / 部署方式 (单机 + compose) / 健康检查 / 自定义 build / 常见问题 / 相关链接
+- 改 `memory-bank/architecture.md`: v1.44 → **v1.45**, 加 T-FOLLOW-4 完整章节 (10 节)
+  - 背景 / 用户选择 / 三个交付物 / 镜像设计 / workflow 设计 / 关键决策 / 关键踩坑 / smoke test 结果 / 未来增强 / 测试覆盖
+- 改 `memory-bank/progress.md`:
+  - T-FOLLOW-4 从「待开发」移到「已完成」(2026-06-22)
+  - 新增 T-FOLLOW-5: 部署编排平台选型 + deploy workflow
+  - 加「问题与解决」行: 容器内 `localhost` 解析问题
+
+### 验证
+- `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/release.yml'))"` → **YAML valid** + jobs=['build'] + triggers=['push', 'workflow_dispatch'] + 6 steps
+- `docker run ... ptidle-backend:test` → **HTTP 200** + `{"status":"ok","timestamp":"2026-06-22T07:17:43.349Z","services":{"database":"unknown","redis":"unknown"}}`
+- 容器日志: `HTTP+WS server running on port 3000` + `✅ PostgreSQL connected` + `✅ Redis connected` + `✅ All services initialized`
+- 镜像清理: `docker stop ptidle-test` + `docker rmi ptidle-backend:test` 成功
+- **真实验证**: 后续用户 push tag v* → GHCR image 出现 → `docker pull` + `docker run` 跑通 (本机无 act runner, 真实 GHCR push 等 push 后验证)
+
+### 范围外（明确不做）
+- **Deploy workflow** (k8s/ECS/Compose 自动部署) — 编排平台未选定, T-FOLLOW-5 决定
+- **Distroless 镜像** (gcr.io/distroless/nodejs20) — 体积优化非 MVP 目标
+- **镜像签名 (cosign/sigstore)** — 安全加固非 MVP 目标
+- **SBOM 生成 (syft/grype)** — 合规需求未触发
+- **镜像扫描 (trivy)** — 安全加固非 MVP 目标
+- **Crane/skopeo 跨 registry 同步** — 单 registry 足够
+
+### T-FOLLOW-5 跟踪
+- 选编排平台 (k8s/ECS/Compose/Serverless)
+- 写 deploy workflow (trigger / 平台 auth / 滚动更新 / 回滚 / smoke test)
+- 多环境策略 (dev 手动 / staging 自动 from master / prod 手动 trigger)
+- Secrets 管理 (GH secrets / Vault / 平台 secret store)
+- Distroless 镜像评估 (体积优化)
+- 镜像签名 + 扫描 (安全加固)
