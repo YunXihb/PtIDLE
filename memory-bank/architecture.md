@@ -2884,7 +2884,7 @@ T-FOLLOW-4 完成镜像 + GHCR 发布，但生产部署仍手动。T-FOLLOW-5 �
 1. **VPS 一次性配置**: 非 root 用户 + docker group, `/opt/ptidle` 目录权限
 2. **GitHub Secrets**: `VPS_SSH_KEY` 是专用 key (不与个人 key 混用), `secrets.GITHUB_TOKEN` 自动给 release.yml 用
 3. **image 默认 private**: 部署前需在 GHCR package settings 改 public, 否则 `docker compose pull` 401
-4. **MIGRATIONS_DIR 必须显式设**: prod image baked-in 是 `/app/migrations`, 不设 env 会落到 `__dirname/../migrations = dist/migrations` (空目录, 跑报错)
+4. **MIGRATIONS_DIR 推荐显式设 (defense-in-depth)**: prod image baked-in 是 `/app/migrations`, `migrate.js` 默认 `resolve(__dirname, '../migrations')` 在 image 里也解析到 `/app/migrations` (因 `dist/scripts/migrate.js` 的 `../migrations` = `/app/migrations`). docker-compose 里显式设 env 是清晰度 + 防御性, 不是必须
 5. **`docker compose exec -T`**: 交互式 TTY 在 SSH + workflow_run 场景会卡, 用 `-T` 禁用
 6. **workflow_run 的 `conclusion`**: 在 if guard 里要明确 `conclusion == 'success'`, 否则 cancelled/failed release 也会触发 deploy
 7. **`tsc` 不编译 `.js`**: `migrate.js` 不会被 tsc 输出到 `dist/scripts/`, 需 Dockerfile 显式 `COPY src/scripts/migrate.js /app/dist/scripts/migrate.js`
