@@ -84,6 +84,7 @@
 | T-FOLLOW-3 | CI/CD 接入（GitHub Actions ci.yml + PG 16 / Redis 7 service containers + 42/701 jest 全量 + coverage artifact + README badge） | 2026-06-20 |
 | 测试基线 | T-FOLLOW-3 收尾：CI workflow 文件就绪，待 push 后首次跑通验证（本地 42/701 仍全绿） | 2026-06-20 |
 | CI 首次跑通 | T-FOLLOW-4 commit 5582977 推送后, GitHub Actions CI 首次跑通 (run #27936624591): 2 min 17 sec, 14/14 steps success, jest 42/701 + db:migrate + coverage artifact 全过 | 2026-06-22 |
+| v0.1.0 Release | T-FOLLOW-4 release workflow 首次跑通: 推送 tag v0.1.0 (commit 634e2ee) → run #27937392708, 3 min 19 sec, 6/6 steps success → GHCR 4 tag 上传 (latest / 0.1 / 0.1.0 / 634e2ee)。Multi-arch (linux/amd64+arm64) build 无失败但需 make public 后 docker manifest 验证。**默认 private** — 需用户手动在 package settings 改 public | 2026-06-22 |
 | T-FOLLOW-4 | CD 接入 - 镜像层（Dockerfile multi-stage + .dockerignore + release.yml multi-arch GHCR + docs/deploy.md + 本地 smoke test 通过 /health 200） | 2026-06-22 |
 
 ---

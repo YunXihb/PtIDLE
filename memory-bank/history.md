@@ -1929,3 +1929,33 @@ T-FOLLOW-4 commit 5582977 推送后, 自动触发的 CI 是项目首次在 GitHu
 ### 后续
 - 继续 trigger release workflow (git tag v0.1.0) 验证 GHCR push 链路
 - T-FOLLOW-5 选编排平台后写 deploy workflow
+
+---
+
+## 2026-06-22 - 任务：v0.1.0 首次发布（trigger release workflow）
+
+### Prompt
+T-FOLLOW-3 (CI) + T-FOLLOW-4 (CD/image) 已就绪, 但 release workflow 真实 GHCR push 链路尚未验证。**待办**: 创建 annotated tag v0.1.0 → push 触发 release.yml → 验证 4 tag 全部上传 (latest / 0.1 / 0.1.0 / <sha7>) → 多架构 build 成功。
+
+### 验证
+- Tag: `v0.1.0` (annotated, 3 行 release note)
+- Run ID: 27937392708
+- 耗时: 3 min 19 sec (07:44:13Z → 07:47:32Z) — 比预期 4-8 min 快
+- 6 steps: Checkout / QEMU / Buildx / Login GHCR / Compute tags / Build and push 全部 success
+- GHCR 4 tag 可见: `latest`, `0.1`, `0.1.0`, `634e2ee` (short SHA)
+- Multi-arch (linux/amd64 + linux/arm64) build 无失败 — 实测需 make public 后 `docker manifest inspect`
+
+### 意外
+1. **GHCR 默认 private** — 推送成功, 但 anonymous `curl https://ghcr.io/v2/.../manifests/v0.1.0` 返回 401. 用户需在 package settings 手动改 public 才能 `docker pull` 不登录
+2. **build 比预期快** — multi-arch 实际 3:19, 不是 4-8 min 估算. QEMU emulation 在 GH Actions runner 性能 OK
+3. **GitHub web UI 不显示 OS/Arch** — package 页面只能看 tag + digest, 验证 multi-arch 必须 manifest inspect, 又依赖 package public. 形成 chicken-and-egg
+
+### 修复
+- 改 `memory-bank/progress.md`: 加「v0.1.0 Release」行
+- 改 `memory-bank/history.md`: 追加本次条目
+
+### 范围外
+- **Make package public** — 需用户登录 GitHub 在 package settings 改 (one-click, 无代码改动)
+- **Multi-arch 实测** — 待 public 后 `docker manifest inspect ghcr.io/yunxihb/ptidle-backend:v0.1.0` 验证两个平台
+- **Trigger workflow_dispatch** — 手动触发留后续测试 (e.g. 跑一个 dev tag)
+- **后续 tag** — 0.1.1 / 0.2.0 / 1.0.0 等, 按需打
