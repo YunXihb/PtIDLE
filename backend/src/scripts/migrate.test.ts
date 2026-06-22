@@ -110,6 +110,34 @@ describe('listMigrations', () => {
 });
 
 // ========================================
+// 1b. MIGRATIONS_DIR env var (T-FOLLOW-5)
+// prod image 用 MIGRATIONS_DIR=/app/migrations 覆盖默认路径
+// ========================================
+
+describe('listMigrations - MIGRATIONS_DIR env var', () => {
+  beforeEach(() => {
+    jest.resetModules();
+  });
+
+  afterEach(() => {
+    delete process.env.MIGRATIONS_DIR;
+  });
+
+  it('uses MIGRATIONS_DIR env var when set', () => {
+    const customDir = '/custom/migrations/path';
+    process.env.MIGRATIONS_DIR = customDir;
+    mockReaddirSync.mockReturnValue(['999_test.sql']);
+
+    // 重新 import (因为 env var 在 module load 时被读取)
+    const { listMigrations: listMigrationsFresh } = require('./migrate');
+    const result = listMigrationsFresh();
+
+    expect(mockReaddirSync).toHaveBeenCalledWith(customDir);
+    expect(result[0].filepath).toBe(`${customDir}/999_test.sql`);
+  });
+});
+
+// ========================================
 // 2. runMigrations
 // ========================================
 

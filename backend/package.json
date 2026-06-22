@@ -12,8 +12,8 @@
     "test:coverage": "jest --coverage",
     "lint": "eslint src --ext .ts",
     "lint:fix": "eslint src --ext .ts --fix",
-    "db:migrate": "ts-node src/scripts/migrate.ts",
-    "db:status": "ts-node src/scripts/migrate.ts --status"
+    "db:migrate": "node src/scripts/migrate.js",
+    "db:status": "node src/scripts/migrate.js --status"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

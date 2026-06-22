@@ -1,41 +1,34 @@
 /**
- * T-FOLLOW-1 + T-FOLLOW-2: Migrations Runner
+ * T-FOLLOW-1 + T-FOLLOW-2 + T-FOLLOW-5: Migrations Runner
  *
- * 自动应用 `src/migrations/*.sql`（按文件名数字升序），通过 `schema_migrations`
+ * 自动应用 migrations dir 下的 *.sql 文件（按文件名数字升序），通过 schema_migrations
  * 表追踪已应用版本，实现幂等（重复运行安全）。
  *
  * 用法:
- *   npx ts-node src/scripts/migrate.ts            # 应用所有未运行的迁移
- *   npx ts-node src/scripts/migrate.ts --status   # 仅打印当前状态，不应用
+ *   node src/scripts/migrate.js            # 应用所有未运行的迁移
+ *   node src/scripts/migrate.js --status   # 仅打印当前状态，不应用
  *
- * 程序化 API（供 src/index.ts 启动时检测用）:
- *   import { checkMigrationsStatus } from './scripts/migrate';
- *   const status = await checkMigrationsStatus();
- *   if (status.hasPending) console.warn(`Missing: ${status.missing.join(', ')}`);
+ * 环境变量:
+ *   MIGRATIONS_DIR  覆盖 migrations 目录路径 (prod image 用 /app/migrations)
  *
- * 设计决策:
- *   - 使用 PostgreSQL `schema_migrations` 表（filename UNIQUE + applied_at）
- *   - 每个迁移文件独立事务 (BEGIN/COMMIT)，失败 ROLLBACK 并 abort 整个流程
- *   - 排序按文件名（"001_" "002_" 等），确保依赖顺序
- *   - Bootstrap 自身：第一次运行自动创建 schema_migrations 表
- *   - checkMigrationsStatus 走 fail-open（DB 错误返回 ok=false，不抛错）
- *
- * 范围外:
- *   - 不支持 down/rollback（项目尚无对应 .down.sql 文件）
- *   - 不支持 non-SQL migrations（未来加 JS/TS migrations 需扩展此 runner）
+ * 程序化 API (供 src/index.ts 启动期检测):
+ *   const { checkMigrationsStatus } = require('./scripts/migrate');
  */
 
-import { readFileSync, readdirSync } from 'fs';
-import { join, resolve } from 'path';
-import { pool, query } from '../config/database';
+'use strict';
+
+const { readFileSync, readdirSync } = require('fs');
+const { join, resolve } = require('path');
+const { pool, query } = require('../config/database');
 
 // ========================================
 // 配置
 // ========================================
 
-/** migrations 目录（相对 backend/） */
-// 注意：此文件位于 src/scripts/，需回退两级到 backend/，再进入 src/migrations/
-const MIGRATIONS_DIR = resolve(__dirname, '../migrations');
+/** migrations 目录 — env var 优先，默认相对 __dirname 解析 */
+const MIGRATIONS_DIR = process.env.MIGRATIONS_DIR
+  ? resolve(process.env.MIGRATIONS_DIR)
+  : resolve(__dirname, '../migrations');
 
 /** 追踪表名 */
 const MIGRATIONS_TABLE = 'schema_migrations';
@@ -44,7 +37,7 @@ const MIGRATIONS_TABLE = 'schema_migrations';
 // Bootstrap
 // ========================================
 
-async function ensureMigrationsTable(): Promise<void> {
+async function ensureMigrationsTable() {
   await query(`
     CREATE TABLE IF NOT EXISTS ${MIGRATIONS_TABLE} (
       id SERIAL PRIMARY KEY,
@@ -58,18 +51,14 @@ async function ensureMigrationsTable(): Promise<void> {
 // 核心逻辑
 // ========================================
 
-interface MigrationFile {
-  filename: string;
-  filepath: string;
-}
-
 /**
- * 列出 migrations 目录所有 .sql 文件，按文件名（数字前缀）升序排序
+ * 列出 migrations 目录所有 .sql 文件，按文件名升序排序
+ * @returns {{filename: string, filepath: string}[]}
  */
-export function listMigrations(): MigrationFile[] {
+function listMigrations() {
   const files = readdirSync(MIGRATIONS_DIR)
     .filter((f) => f.endsWith('.sql'))
-    .sort(); // 字符串排序：001_ < 002_ < ... < 010_
+    .sort();
   return files.map((filename) => ({
     filename,
     filepath: join(MIGRATIONS_DIR, filename),
@@ -77,20 +66,20 @@ export function listMigrations(): MigrationFile[] {
 }
 
 /**
- * 查询已应用的迁移（返回 Set<filename>）
+ * 查询已应用的迁移
+ * @returns {Promise<Set<string>>}
  */
-async function getAppliedMigrations(): Promise<Set<string>> {
-  const rows = await query<{ filename: string }>(
+async function getAppliedMigrations() {
+  const rows = await query(
     `SELECT filename FROM ${MIGRATIONS_TABLE} ORDER BY filename`
   );
   return new Set(rows.map((r) => r.filename));
 }
 
 /**
- * 应用单个迁移：执行 SQL + 记录到 schema_migrations
- * 失败抛错（事务回滚），由调用方决定是否继续
+ * 应用单个迁移
  */
-async function applyMigration(file: MigrationFile): Promise<void> {
+async function applyMigration(file) {
   const sql = readFileSync(file.filepath, 'utf8');
 
   const client = await pool.connect();
@@ -119,7 +108,7 @@ async function applyMigration(file: MigrationFile): Promise<void> {
 /**
  * 打印当前状态
  */
-export async function printStatus(): Promise<void> {
+async function printStatus() {
   await ensureMigrationsTable();
   const all = listMigrations();
   const applied = await getAppliedMigrations();
@@ -137,39 +126,11 @@ export async function printStatus(): Promise<void> {
   console.log('');
 }
 
-// ========================================
-// T-FOLLOW-2: 启动期状态查询（程序化）
-// ========================================
-
 /**
- * migrations 状态（用于 src/index.ts 启动时检测）
- * - ok: false → DB 错误，不应阻塞启动（fail-open）
- * - hasPending: true → 有未应用的迁移，调用方可 console.warn
+ * migrations 状态（程序化 API, fail-open）
+ * @returns {Promise<{total: number, applied: number, pending: number, missing: string[], hasPending: boolean, ok: boolean, error?: string}>}
  */
-export interface MigrationStatus {
-  total: number;
-  applied: number;
-  pending: number;
-  /** 未应用的文件名列表（已按文件名升序） */
-  missing: string[];
-  /** pending > 0 的便捷布尔 */
-  hasPending: boolean;
-  /** 查询是否成功（false = DB 错误） */
-  ok: boolean;
-  /** 错误信息（仅 ok=false 时存在） */
-  error?: string;
-}
-
-/**
- * 只读检查当前 migrations 状态，不修改 DB。
- * 用于 src/index.ts 启动时检测缺失 migrations 并 console.warn。
- *
- * 设计决策:
- *   - **Fail-open**: DB 错误 → 返回 ok=false + error，不抛错（避免阻塞 server 启动）
- *   - 不调 listMigrations 之外的 IO（pure read + ensureMigrationsTable 自我修复）
- *   - missing 数组保留顺序，方便日志逐行展示
- */
-export async function checkMigrationsStatus(): Promise<MigrationStatus> {
+async function checkMigrationsStatus() {
   try {
     await ensureMigrationsTable();
     const all = listMigrations();
@@ -197,11 +158,7 @@ export async function checkMigrationsStatus(): Promise<MigrationStatus> {
   }
 }
 
-// ========================================
-// 主入口
-// ========================================
-
-export async function runMigrations(): Promise<void> {
+async function runMigrations() {
   await ensureMigrationsTable();
 
   const all = listMigrations();
@@ -234,7 +191,7 @@ export async function runMigrations(): Promise<void> {
       console.error(`\n❌ Migration aborted. Database is in a clean state (transaction rolled back).`);
       console.error(`   Fix the error above and re-run. Already-applied migrations will be skipped.\n`);
       failureCount++;
-      break; // 终止后续迁移
+      break;
     }
   }
 
@@ -252,7 +209,7 @@ export async function runMigrations(): Promise<void> {
 // CLI
 // ========================================
 
-async function main(): Promise<void> {
+async function main() {
   const args = process.argv.slice(2);
 
   try {
@@ -269,8 +226,18 @@ async function main(): Promise<void> {
   }
 }
 
-// 仅在直接执行此文件时运行 main()（require.main === module 模式）
-// 这样单元测试可以 import 内部函数而不触发 CLI
 if (require.main === module) {
   main();
 }
+
+// ========================================
+// Exports
+// ========================================
+
+module.exports = {
+  listMigrations,
+  printStatus,
+  checkMigrationsStatus,
+  runMigrations,
+  MIGRATIONS_DIR,
+};
