@@ -279,6 +279,91 @@ docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
 
 ---
 
+### 5.3 单 VPS CI 自动部署（T-FOLLOW-5）
+
+适用：已经有一台 Linux VPS，想用 GitHub Actions 在 push tag v* 时**自动**部署。
+
+#### 一次性 VPS 配置
+
+```bash
+# 1. 创建非 root 用户
+sudo useradd -m -s /bin/bash ptidle
+sudo usermod -aG docker ptidle
+# ptidle 重新登录生效
+
+# 2. 建项目目录
+sudo mkdir -p /opt/ptidle && sudo chown ptidle:ptidle /opt/ptidle
+cd /opt/ptidle
+
+# 3. 从仓库复制 docker-compose.yml + .env.example
+curl -fsSL -o docker-compose.yml https://raw.githubusercontent.com/YunXihb/PtIDLE/master/docker-compose.yml
+curl -fsSL -o .env.example https://raw.githubusercontent.com/YunXihb/PtIDLE/master/.env.example
+cp .env.example .env
+vim .env   # 填 DB_PASSWORD + JWT_SECRET
+
+# 4. 首次拉 + 启
+docker compose pull
+docker compose run --rm migrate
+docker compose up -d
+
+# 5. 验证
+curl http://127.0.0.1:3000/health
+# 预期: {"status":"ok",...}
+```
+
+#### GitHub Secrets 配置
+
+| Secret | 例子 | 用途 |
+|---|---|---|
+| `VPS_SSH_KEY` | `-----BEGIN OPENSSH PRIVATE KEY-----\n...` | GitHub Actions SSH 私钥 (ed25519) |
+| `VPS_HOST` | `203.0.113.42` | VPS IP 或域名 |
+| `VPS_USER` | `ptidle` | VPS 上 SSH 用户 (非 root) |
+
+**生成专用 key** (不要复用个人 key):
+
+```bash
+# 本地
+ssh-keygen -t ed25519 -C "github-actions-deploy" -f ~/.ssh/ptidle_deploy
+ssh-copy-id -i ~/.ssh/ptidle_deploy.pub ptidle@vps
+# 私钥 → GitHub repo settings → Secrets → VPS_SSH_KEY
+```
+
+#### 自动部署流程
+
+```
+1. Dev: git tag v0.2.0 && git push origin v0.2.0
+2. release.yml 触发 → 3-5 min build + push GHCR (4 tags)
+3. release.yml success event → 触发 deploy.yml
+4. deploy.yml SSH 到 VPS → 跑 scripts/deploy.sh
+5. VPS: pull → migrate → restart → 30s health check
+6. deploy.yml 报告 success/failure 到 GH Actions UI
+```
+
+#### 手动重跑 deploy（不发布新版本）
+
+```bash
+# GitHub UI: Actions → Deploy → Run workflow
+# 或 gh CLI:
+gh workflow run deploy.yml
+```
+
+#### 错误排查
+
+```bash
+# SSH 到 VPS 看完整日志
+ssh ptidle@vps "cd /opt/ptidle && docker compose logs --tail=100 backend"
+
+# 手动回滚到上一个 tag
+ssh ptidle@vps "cd /opt/ptidle && docker compose pull backend:v0.1.0 && docker compose up -d --force-recreate backend"
+
+# 重跑 migrations
+ssh ptidle@vps "cd /opt/ptidle && docker compose run --rm migrate"
+```
+
+**注意**: GHCR package 默认是 **private**。首次 deploy 前需到 `https://github.com/YunXihb/PtIDLE/packages` 把 package 设为 public（或在 docker-compose.yml 中改用 auth token 私有拉取）。
+
+---
+
 ## 六、健康检查
 
 容器内置 HEALTHCHECK（基于 Docker HEALTHCHECK 协议）：
