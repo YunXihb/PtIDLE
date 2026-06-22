@@ -17,8 +17,8 @@
 #     -e JWT_SECRET=... \
 #     ghcr.io/yunxihb/ptidle-backend:latest
 #
-# 注意: 容器内**不**自动跑 npm run db:migrate, 需在外部先应用迁移
-#       (或 init container / 一次性手动跑)
+# 注意: 容器内**不**自动跑 db:migrate, 需在外部/docker-compose migrate service
+#       /一次性手动跑. SQL 文件在 /app/migrations/ (env MIGRATIONS_DIR 可覆盖)
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -60,13 +60,19 @@ RUN npm ci --omit=dev --no-audit --no-fund && \
 # 2. copy 编译产物 (来自 builder stage)
 COPY --from=builder /app/dist ./dist
 
-# 3. 健康检查 — 调 GET /health, 30s 间隔, 启动 30s 宽限, 失败 3 次标记 unhealthy
+# 3. copy migrations SQL (T-FOLLOW-5: prod image 跑 migrate 需要)
+COPY src/migrations /app/migrations
+
+# 4. copy migrate.js (纯 JS, tsc 不编译 .js, 需手动 copy, T-FOLLOW-5)
+COPY src/scripts/migrate.js /app/dist/scripts/migrate.js
+
+# 5. 健康检查 — 调 GET /health, 30s 间隔, 启动 30s 宽限, 失败 3 次标记 unhealthy
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD node -e "require('http').get('http://127.0.0.1:'+process.env.PORT+'/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
 
-# 4. 端口 + 用户 (不跑 root, 减少攻击面)
+# 6. 端口 + 用户 (不跑 root, 减少攻击面)
 EXPOSE 3000
 USER node
 
-# 5. 启动命令 (从 package.json "main": "dist/index.js")
+# 7. 启动命令 (从 package.json "main": "dist/index.js")
 CMD ["node", "dist/index.js"]
