@@ -27,6 +27,13 @@ jobs:
       github.event.workflow_run.conclusion == 'success'
 
     steps:
+      # workflow_run 触发时不会自动 checkout 仓库, 需显式 checkout 才能
+      # 找到 scripts/deploy.sh. 用 head_sha (release run 的 commit)
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
       - name: Setup deploy env vars
         run: |
           echo "DEPLOY_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_ENV
