@@ -83,6 +83,7 @@
 | T-FOLLOW-2 | Migrations 启动期集成 + README 文档（`checkMigrationsStatus` 只读检测 + `index.ts` 启动 warn + 根 + backend 双 README） | 2026-06-20 |
 | T-FOLLOW-3 | CI/CD 接入（GitHub Actions ci.yml + PG 16 / Redis 7 service containers + 42/701 jest 全量 + coverage artifact + README badge） | 2026-06-20 |
 | 测试基线 | T-FOLLOW-3 收尾：CI workflow 文件就绪，待 push 后首次跑通验证（本地 42/701 仍全绿） | 2026-06-20 |
+| CI 首次跑通 | T-FOLLOW-4 commit 5582977 推送后, GitHub Actions CI 首次跑通 (run #27936624591): 2 min 17 sec, 14/14 steps success, jest 42/701 + db:migrate + coverage artifact 全过 | 2026-06-22 |
 | T-FOLLOW-4 | CD 接入 - 镜像层（Dockerfile multi-stage + .dockerignore + release.yml multi-arch GHCR + docs/deploy.md + 本地 smoke test 通过 /health 200） | 2026-06-22 |
 
 ---

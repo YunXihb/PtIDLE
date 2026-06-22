@@ -1901,3 +1901,31 @@ T-FOLLOW-3 接入 CI 后, dev/prod 部署仍手动。**待办**：(1) 多环境�
 - Secrets 管理 (GH secrets / Vault / 平台 secret store)
 - Distroless 镜像评估 (体积优化)
 - 镜像签名 + 扫描 (安全加固)
+
+---
+
+## 2026-06-22 - 任务：CI 首次跑通验证（T-FOLLOW-4 commit push 触发）
+
+### Prompt
+T-FOLLOW-4 commit 5582977 推送后, 自动触发的 CI 是项目首次在 GitHub Actions 真实跑通（T-FOLLOW-3 workflow 文件就绪, 但「真实验证」要等首次 push）。结果作为 T-FOLLOW-3 / T-FOLLOW-4 闭环证据。
+
+### 验证
+- Run ID: 27936624591
+- Head SHA: 5582977a (T-FOLLOW-4)
+- Workflow: `.github/workflows/ci.yml` (CI)
+- Trigger: push to master by YunXihb
+- 耗时: 2 min 17 sec (07:27:41Z → 07:29:58Z)
+- Job: Test (Node 20 + PG 16 + Redis 7) × 1
+- 14 steps: 全部 success
+- 关键 steps: npm ci → db:migrate → jest --forceExit (42/701) → coverage → upload-artifact
+- 对比前次 (T-FOLLOW-3 commit 8ea94478): 也 success, 同样跑通完整链路
+
+### 意义
+- T-FOLLOW-3 (CI) + T-FOLLOW-4 (CD/image) 完整闭环
+- T055 「dev DB 缺 8 migrations」类问题现在自动拦截（db:migrate 在 test 之前, 失败时 jest 不会跑）
+- Status badge 即将从 "no status" 变绿
+- Coverage artifact 30 天保留可 review
+
+### 后续
+- 继续 trigger release workflow (git tag v0.1.0) 验证 GHCR push 链路
+- T-FOLLOW-5 选编排平台后写 deploy workflow
