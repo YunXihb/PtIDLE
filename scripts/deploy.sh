@@ -20,8 +20,8 @@ docker compose pull backend
 echo "==> [2/4] Run database migrations"
 docker compose run --rm migrate
 
-echo "==> [3/4] Restart backend"
-docker compose up -d backend
+echo "==> [3/4] Restart backend (--force-recreate ensures new image is loaded)"
+docker compose up -d --force-recreate backend
 
 echo "==> [4/4] Wait for /health (max 30s)"
 for i in $(seq 1 30); do
