@@ -1,0 +1,11 @@
+# =============================================================================
+# PtIDLE HTTPS reverse proxy (T-FOLLOW-6)
+# =============================================================================
+# Caddy 启动时自动检测: 没 cert → ACME HTTP-01; 有 cert → 60d 后续期
+# HTTP 自动 301 → HTTPS; WebSocket 透明转发 (Socket.IO /socket.io/)
+# env DOMAIN 由 docker-compose 注入, 默认 Caddyfile 占位语法 {$DOMAIN}
+# =============================================================================
+
+{$DOMAIN} {
+    reverse_proxy backend:3000
+}
