@@ -306,9 +306,36 @@ docker compose pull
 docker compose run --rm migrate
 docker compose up -d
 
-# 5. 验证
+# 5. 验证 (内部, 不走 Caddy)
 curl http://127.0.0.1:3000/health
 # 预期: {"status":"ok",...}
+
+# === T-FOLLOW-6: HTTPS / DNS 配置 ===
+
+# 6. DNS 指向 VPS (一次性, 5 min)
+# 在 DNS provider (Cloudflare / Porkbun / Namecheap / Aliyun / Route 53 / 其他)
+# 加一条 A 记录:
+#   Host: $DOMAIN (e.g. `ptidle` 如果用根域 `example.com`, 填 `@`)
+#   Type: A
+#   Value: VPS 公网 IP
+#   TTL: Auto 或 300
+# 等待 DNS 传播 (5-30 min), 验证:
+dig +short $DOMAIN
+# 预期: 你的 VPS IP
+
+# 7. 更新 .env (加 DOMAIN + ACME_EMAIL)
+cd /opt/ptidle
+vim .env
+# 把 .env.example 里的 CHANGE_ME 占位符都替换:
+#   DOMAIN=ptidle.example.com
+#   ACME_EMAIL=your-real-email@example.com
+#   DB_PASSWORD=<openssl rand -base64 32>
+#   JWT_SECRET=<openssl rand -base64 48>
+
+# 8. 重启 caddy (让新 DOMAIN env 生效)
+docker compose up -d caddy
+docker compose logs caddy | tail -20
+# 找: "certificate obtained successfully" 或 "acme: ... error" (后者看 § 错误排查)
 ```
 
 #### GitHub Secrets 配置
@@ -358,6 +385,28 @@ ssh ptidle@vps "cd /opt/ptidle && docker compose pull backend:v0.1.0 && docker c
 
 # 重跑 migrations
 ssh ptidle@vps "cd /opt/ptidle && docker compose run --rm migrate"
+
+# === T-FOLLOW-6: HTTPS 相关 ===
+
+# 验证 HTTPS endpoint (应 200)
+ssh ptidle@vps "curl -vI https://$DOMAIN/health"
+# 预期: HTTP/2 200, server: Caddy, 含 alt-svc / strict-transport-security header
+
+# 验证 HTTP → HTTPS 重定向 (应 301)
+ssh ptidle@vps "curl -vI http://$DOMAIN/health"
+# 预期: 301 → https://$DOMAIN/health
+
+# cert 申请失败 (Caddy log)
+ssh ptidle@vps "cd /opt/ptidle && docker compose logs caddy | grep -iE 'acme|certificate|error'"
+# 常见错:
+#   - "no such host"     → DNS A 记录没指 / 没传播, 等或检查 DNS dashboard
+#   - "acme: 403"        → 80 端口被防火墙挡
+#   - "acme: rate limit" → 短时间重复申请, 等几小时
+
+# 80 端口被防火墙挡 (Hetzner / DO / Aliyun)
+# Hetzner: cloud console firewall 加 80 + 443
+# DO:      ufw allow 80/tcp && ufw allow 443/tcp
+# Aliyun:  安全组规则添加入方向 80 + 443
 ```
 
 **注意**: GHCR package 默认是 **private**。首次 deploy 前需到 `https://github.com/YunXihb/PtIDLE/packages` 把 package 设为 public（或在 docker-compose.yml 中改用 auth token 私有拉取）。
