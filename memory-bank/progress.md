@@ -90,7 +90,7 @@
 | T-FOLLOW-4 | CD 接入 - 镜像层（Dockerfile multi-stage + .dockerignore + release.yml multi-arch GHCR + docs/deploy.md + 本地 smoke test 通过 /health 200） | 2026-06-22 |
 | T-FOLLOW-5 | 单 VPS 部署编排（migrate.js 重写 + Dockerfile baked migrations + docker-compose 4 services + deploy.yml workflow_run trigger + scripts/deploy.sh + docs/deploy.md § 5.3 + memory-bank 同步） | 2026-06-22 |
 | T-FOLLOW-6 | HTTPS / TLS / domain（Caddy 2-alpine 第 5 service + Let's Encrypt HTTP-01 + caddy_data 持久化 + 删 backend host port + .env 加 DOMAIN/ACME_EMAIL + docs/deploy.md § 5.3 DNS 步骤） | 2026-06-22 |
-| T-FOLLOW-6 bug fix | CI Run #28099535056 失败修复 - migrate.js 内联 pg.Pool 移除 .ts 依赖（CI 不 build；npm run db:migrate 直接 require .ts 抛 MODULE_NOT_FOUND） | 2026-06-25 |
+| T-FOLLOW-6 bug fix | CI Run #28099535056 失败修复 - migrate.js 内联 pg.Pool 移除 .ts 依赖（CI 不 build；npm run db:migrate 直接 require .ts 抛 MODULE_NOT_FOUND）。**CI 验证**: commit 34a1625 推送后 Run #28113095056 全 13 步 success (2m17s) | 2026-06-25 |
 
 ---
 
