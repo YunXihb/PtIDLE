@@ -2066,3 +2066,48 @@ T-FOLLOW-5 完成单 VPS CI 自动部署, 但生产级仍缺 HTTPS。规划 T-FO
 - HA / multi-instance (T-FOLLOW-12+, 仅在用户量到时考虑)
 - Wildcard cert / DNS-01 (T-FOLLOW-13+, 仅在多 sub-domain 时考虑)
 - HSTS preload (T-FOLLOW-14+)
+
+---
+
+## 2026-06-25 - 任务：T-FOLLOW-6 bug fix - CI 失败修复（migrate.js 内联 pg.Pool）
+
+### Prompt
+用户 github 提示 CI: All jobs have failed, 要求分析原因。3 选 1 修复方案 (A: CI 加 build step, B: migrate.js 内联 pg.Pool, C: revert 回 migrate.ts), 用户选 B 实施。
+
+### 思考
+**Phase 1 根因**:
+- Run #28099535056 failed: "Apply database migrations" exit 1
+- 错误 trace: `Error: Cannot find module '../config/database'` at migrate.js:1
+- 时间线: T-FOLLOW-5 commit 4f924e6 把 migrate.ts 重写为 migrate.js, 但**没改 require path**（.js require .ts）; CI workflow 从 T-FOLLOW-3 写好就只 `npm ci`, 没 `npm run build`
+- 历史遗漏: T-FOLLOW-3 push 后 run #27936624591 "通过"是因为当时 migrate.ts 还存在, T-FOLLOW-5 push 后才破。run #27963154884 也失败但被漏看
+
+**Phase 2 模式对比**:
+- prod Dockerfile: build + 显式 `COPY src/scripts/migrate.js dist/scripts/migrate.js` → 双保险
+- CI: 只 npm ci → migrate.js require .ts 必败
+
+**Phase 3 假说**: 选 B（最简方案）：
+- migrate.js 改为内联 `const { Pool } = require('pg')` + dotenv.config() + 手写 query() helper
+- 不依赖任何 .ts 编译产物, 在 src/ 和 dist/ 双上下文自洽
+- 副作用: jest.mock 从 '../config/database' 改为 'pg', mockClientQuery 同时处理 bootstrap/SELECT/business SQL/INSERT
+
+**Phase 4 实施**:
+- 改 2 文件 (commit 0079eb2):
+  - `backend/src/scripts/migrate.js`: 内联 pool + query helper, dotenv 加载 env
+  - `backend/src/scripts/migrate.test.ts`: 改 jest.mock 'pg', bootstrap 走 pool.connect, 更新各 case 计数 (4/10/2)
+- 测试: 14/14 migrate test + 全量 suite 39/42 (3 个 integration suite 因本地无 PG/Redis 服务 fail, 与本 fix 无关, CI service container 提供)
+- 验证: `node -e "require('./src/scripts/migrate.js')"` 不再抛 MODULE_NOT_FOUND ✓
+
+### 意外
+1. **CI 实际自 T-FOLLOW-5 推送起就一直失败**: 用户最初 WebFetch 看 5 个 run 都 success, 实则 run #27963154884 (e10b9da) 也 failed。教训: CI 状态聚合视图可能漏看个别 failed run, 推送后必须点进具体 run 确认每一步
+2. **T-FOLLOW-5 spec 写"9 cases"实测 14 cases**: spec/impl 偏差. 此处 case 2/4/5/7/8 因 bootstrap 走 pool.connect 计数都 +2, case 12/13 mock 对象从 mockQuery 换成 mockClientQuery
+3. **本地 jest baseline 42/42 / 702/702 需 docker compose up -d**: 关 docker 后跑 jest 会 ECONNREFUSED 127.0.0.1:5433, 误判为代码 regression。下次测前先 docker compose ps 确认
+
+### 修复
+- 改 2 文件: `migrate.js` (+40/-?), `migrate.test.ts` (+50/-40)
+- 测试: `npx jest src/scripts/migrate.test.ts` → 14/14 pass; 全量 `npx jest` → 39/42 suite (3 integration fail 是本地无服务, 非代码问题)
+- **真实验证**: 用户 push commit 0079eb2 后 GitHub Actions CI 跑通 (待验证)
+
+### 范围外
+- T-FOLLOW-7 自动回滚 (next)
+- T-FOLLOW-8 备份策略
+- T-FOLLOW-9 监控

@@ -90,6 +90,7 @@
 | T-FOLLOW-4 | CD 接入 - 镜像层（Dockerfile multi-stage + .dockerignore + release.yml multi-arch GHCR + docs/deploy.md + 本地 smoke test 通过 /health 200） | 2026-06-22 |
 | T-FOLLOW-5 | 单 VPS 部署编排（migrate.js 重写 + Dockerfile baked migrations + docker-compose 4 services + deploy.yml workflow_run trigger + scripts/deploy.sh + docs/deploy.md § 5.3 + memory-bank 同步） | 2026-06-22 |
 | T-FOLLOW-6 | HTTPS / TLS / domain（Caddy 2-alpine 第 5 service + Let's Encrypt HTTP-01 + caddy_data 持久化 + 删 backend host port + .env 加 DOMAIN/ACME_EMAIL + docs/deploy.md § 5.3 DNS 步骤） | 2026-06-22 |
+| T-FOLLOW-6 bug fix | CI Run #28099535056 失败修复 - migrate.js 内联 pg.Pool 移除 .ts 依赖（CI 不 build；npm run db:migrate 直接 require .ts 抛 MODULE_NOT_FOUND） | 2026-06-25 |
 
 ---
 
@@ -109,6 +110,7 @@
 | 2026-06-22 | T-FOLLOW-5 Task 2 spec 偏差: `tsc` 不编译 `.js` 文件, `dist/scripts/migrate.js` 不会自动生成 | Dockerfile 显式加 `COPY src/scripts/migrate.js /app/dist/scripts/migrate.js` |
 | 2026-06-22 | T-FOLLOW-5 Task 4 code review 发现 bug: `docker compose up -d backend` 不加 `--force-recreate` 时, pull 新镜像不会被实际加载, 旧容器继续跑 | 改为 `docker compose up -d --force-recreate backend` (commit 52c625e) |
 | 2026-06-22 | T-FOLLOW-5 Task 5 code review 发现 bug: `workflow_run` 触发时**不**自动 checkout, `script_path: scripts/deploy.sh` 找不到文件 | 加 `actions/checkout@v4` step, ref 用 `head_sha || github.sha` (commit eee5c29) |
+| 2026-06-25 | T-FOLLOW-6 推送后 CI Run #28099535056 failed: "Apply database migrations" exit 1。根因：migrate.js (T-FOLLOW-5 commit 4f924e6 引入) 第一行 `require('../config/database')` 是 .ts 源文件，但 CI workflow 只 `npm ci` 不 `npm run build`，dist/ 没生成 → MODULE_NOT_FOUND。CI 自 T-FOLLOW-5 推送起就一直是失败状态，前 2 次 push 推送者未察觉 | 选 Option B：migrate.js 内联 pg.Pool + dotenv，让 .js 文件不依赖 .ts 编译产物；改 jest.mock 'pg' 替换 '../config/database'，bootstrap 走 pool.connect 调高各 case 计数（4/10/2）。修复后 14/14 migrate test 全绿，dist 不再需要 migrate.js 的 .ts 编译路径。Commit 0079eb2 (本地，待 push 验证 CI) |
 
 ---
 
