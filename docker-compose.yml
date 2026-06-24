@@ -1,8 +1,8 @@
 # =============================================================================
 # PtIDLE Production Docker Compose (单 VPS 部署)
 # =============================================================================
-# T-FOLLOW-5: 单台 VPS 部署模板
-# 4 services: postgres / redis / backend / migrate (one-shot)
+# T-FOLLOW-6: 单台 VPS 部署模板 + HTTPS 反向代理
+# 5 services: postgres / redis / backend / caddy / migrate (one-shot)
 #
 # 使用:
 #   cd /opt/ptidle
@@ -12,7 +12,7 @@
 #
 # 注意:
 #   - postgres / redis 用本地 image, backend 用 GHCR
-#   - 首次配置: cp .env.example .env, 填 DB_PASSWORD + JWT_SECRET
+#   - 首次配置: cp .env.example .env, 填 DB_PASSWORD + JWT_SECRET + DOMAIN + ACME_EMAIL
 #   - .env 不进 git, 也不进 image
 # =============================================================================
 
@@ -70,8 +70,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    ports:
-      - "${BACKEND_PORT:-3000}:3000"
+    # T-FOLLOW-6: 不再 expose host port, 只通过 Caddy 暴露 (减少攻击面)
     environment:
       MIGRATIONS_DIR: /app/migrations
       DB_HOST: postgres
@@ -91,6 +90,29 @@ services:
       start_period: 30s
       retries: 3
 
+  # T-FOLLOW-6: HTTPS reverse proxy
+  # - 80/443 暴露到 host (Let's Encrypt HTTP-01 需 80 可达)
+  # - caddy_data volume 持久化 cert, 容器重建不丢
+  # - env DOMAIN 由 .env 注入, {$DOMAIN} 占位符在 Caddyfile 展开
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data      # Let's Encrypt certs 持久化
+      - caddy_config:/config  # Caddy 内部状态
+    environment:
+      DOMAIN: ${DOMAIN:?DOMAIN must be set}
+    depends_on:
+      backend:
+        condition: service_healthy
+    # Caddy 自己没 healthcheck — 启动成功 = 在监听 80/443, 失败会 exit
+
 volumes:
   pgdata:
   redisdata:
+  caddy_data:
+  caddy_config:
