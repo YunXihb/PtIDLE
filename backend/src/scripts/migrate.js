@@ -19,7 +19,45 @@
 
 const { readFileSync, readdirSync } = require('fs');
 const { join, resolve } = require('path');
-const { pool, query } = require('../config/database');
+const { Pool } = require('pg');
+require('dotenv').config();
+
+// ========================================
+// Database pool (self-contained, no .ts deps)
+// T-FOLLOW-6 bug fix: 原 require('../config/database') 在没 tsc 编译的上下文
+// (CI 跑 npm ci 但不 build) 会 throw MODULE_NOT_FOUND. 改为内联 pool + query,
+// 让 migrate.js 在 src/ 和 dist/ 两种上下文都能独立跑.
+// ========================================
+
+const pool = new Pool({
+  host: process.env.DB_HOST || 'localhost',
+  port: parseInt(process.env.DB_PORT || '5432', 10),
+  database: process.env.DB_NAME || 'ptidle',
+  user: process.env.DB_USER || 'postgres',
+  password: process.env.DB_PASSWORD || '',
+  max: 20,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 2000,
+  ssl: false,
+});
+
+pool.on('error', (err) => {
+  console.error('Unexpected error on idle client', err);
+});
+
+/**
+ * 轻量 query 助手 — pool.connect + client.query + release.
+ * 等价于原 database.ts 的 query(), 但不依赖 .ts 编译产物.
+ */
+async function query(text, params) {
+  const client = await pool.connect();
+  try {
+    const result = await client.query(text, params);
+    return result.rows;
+  } finally {
+    client.release();
+  }
+}
 
 // ========================================
 // 配置

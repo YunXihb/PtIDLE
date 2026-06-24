@@ -5,7 +5,6 @@
 // ============== Mocks ==============
 // 注意：jest.mock + const mockXxx 必须先于 import（ts-jest TDZ pitfall）
 
-const mockQuery = jest.fn();
 const mockPoolConnect = jest.fn();
 const mockPoolEnd = jest.fn();
 const mockClientQuery = jest.fn();
@@ -15,12 +14,14 @@ const mockReaddirSync = jest.fn();
 const mockConsoleLog = jest.spyOn(console, 'log').mockImplementation(() => {});
 const mockConsoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
 
-jest.mock('../config/database', () => ({
-  pool: {
+// T-FOLLOW-6 bug fix: migrate.js 不再 require('../config/database'), 改为内联 pg.Pool.
+// 测试 mock 'pg' module, Pool 构造返回 mock 实例 (connect/end/on).
+jest.mock('pg', () => ({
+  Pool: jest.fn().mockImplementation(() => ({
     connect: mockPoolConnect,
     end: mockPoolEnd,
-  },
-  query: mockQuery,
+    on: jest.fn(),
+  })),
 }));
 
 jest.mock('fs', () => ({
@@ -29,10 +30,10 @@ jest.mock('fs', () => ({
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-const _refs = { mockQuery, mockPoolConnect, mockPoolEnd, mockClientQuery, mockReadFileSync, mockReaddirSync };
+const _refs = { mockPoolConnect, mockPoolEnd, mockClientQuery, mockReadFileSync, mockReaddirSync };
 
 // Imports must come AFTER all jest.mock calls
-// 注意：migrate.ts 在 main() 自动跑，需要用 jest.isolateModules 隔离
+// 注意：migrate.js 在 main() 自动跑，需要用 jest.isolateModules 隔离
 import { runMigrations, printStatus, listMigrations, checkMigrationsStatus } from './migrate';
 
 // ============== Helpers ==============
@@ -41,7 +42,7 @@ import { runMigrations, printStatus, listMigrations, checkMigrationsStatus } fro
  * 准备一个干净的 mock 环境：
  *   - readdirSync 返回指定文件列表
  *   - readFileSync 返回对应 SQL 内容
- *   - query() 处理 schema_migrations 表 bootstrap + 查询 applied
+ *   - client.query() 处理 schema_migrations bootstrap + 查询 applied + 业务 SQL + INSERT
  *   - pool.connect() 返回 mock client
  */
 function setupMocks(opts: {
@@ -63,25 +64,26 @@ function setupMocks(opts: {
     return `-- SQL for ${filename}`;
   });
 
-  // query() — based on first arg
-  mockQuery.mockImplementation(async (sql: string) => {
-    if (sql.includes('CREATE TABLE IF NOT EXISTS schema_migrations')) {
-      return [];
-    }
-    if (sql.includes('SELECT filename FROM schema_migrations')) {
-      return Array.from(applied).map((f) => ({ filename: f }));
-    }
-    return [];
-  });
-
   // pool.connect() → returns client with query method
+  // 单一 client.query mock 同时处理 bootstrap (CREATE TABLE) + 查询 applied (SELECT) +
+  // 业务 SQL (BEGIN/file.sql/INSERT/COMMIT) — 因为 migrate.js 内联 query() 也走 client.query
   const mockClient = {
     query: mockClientQuery.mockImplementation(async (sql: string) => {
+      // bootstrap: CREATE TABLE schema_migrations
+      if (sql.includes('CREATE TABLE IF NOT EXISTS schema_migrations')) {
+        return { rows: [] };
+      }
+      // getAppliedMigrations: SELECT filename
+      if (sql.includes('SELECT filename FROM schema_migrations')) {
+        return { rows: Array.from(applied).map((f) => ({ filename: f })) };
+      }
+      // 业务 migration SQL
       if (failOn && sql.includes(`SQL for ${failOn}`)) {
         throw new Error('Simulated migration failure');
       }
+      // INSERT INTO schema_migrations — track applied
       if (sql.startsWith('INSERT INTO schema_migrations')) {
-        applied.add(failOn ?? 'unknown'); // track applied
+        applied.add(failOn ?? 'unknown');
       }
       return { rows: [] };
     }),
@@ -146,19 +148,23 @@ describe('runMigrations', () => {
     setupMocks({ files: ['001_a.sql', '002_b.sql'], applied: [] });
     await runMigrations();
 
-    // 3 query calls: 1) bootstrap, 2) get applied, 3) per-migration insert (via client.query)
-    // 2 pool.connect calls (1 per migration)
-    expect(mockPoolConnect).toHaveBeenCalledTimes(2);
+    // pool.connect: ensureTable (1) + getApplied (1) + applyMigration×2 (2) = 4
+    expect(mockPoolConnect).toHaveBeenCalledTimes(4);
 
-    // client.query: BEGIN, SQL, INSERT, COMMIT per migration × 2 = 8 calls
-    expect(mockClientQuery).toHaveBeenCalledTimes(8);
+    // client.query: ensureTable (1) + getApplied (1) + (BEGIN+SQL+INSERT+COMMIT)×2 = 10
+    expect(mockClientQuery).toHaveBeenCalledTimes(10);
   });
 
-  it('case 3: 已全部应用 → 不调 pool.connect，提示已最新', async () => {
+  it('case 3: 已全部应用 → 仅 bootstrap（不跑 migration），提示已最新', async () => {
     setupMocks({ files: ['001_a.sql', '002_b.sql'], applied: ['001_a.sql', '002_b.sql'] });
     await runMigrations();
 
-    expect(mockPoolConnect).not.toHaveBeenCalled();
+    // bootstrap (ensureTable + getApplied) 仍走 pool.connect，但 applyMigration 不跑
+    expect(mockPoolConnect).toHaveBeenCalledTimes(2);
+    // 没有 BEGIN/COMMIT 表明没有 migration 被应用
+    const callSqls = mockClientQuery.mock.calls.map((c) => String(c[0]).trim().split(' ')[0]);
+    expect(callSqls).not.toContain('BEGIN');
+    expect(callSqls).not.toContain('COMMIT');
     // 应打印 "Already applied" / "Nothing to do"
     const allLogs = mockConsoleLog.mock.calls.map((c) => String(c[0])).join('\n');
     expect(allLogs).toMatch(/All migrations already applied|Nothing to do/);
@@ -168,8 +174,8 @@ describe('runMigrations', () => {
     setupMocks({ files: ['001_a.sql', '002_b.sql', '003_c.sql'], applied: ['001_a.sql'] });
     await runMigrations();
 
-    // 只有 002, 003 需要跑
-    expect(mockPoolConnect).toHaveBeenCalledTimes(2);
+    // ensureTable (1) + getApplied (1) + applyMigration×2 (002+003) = 4
+    expect(mockPoolConnect).toHaveBeenCalledTimes(4);
   });
 
   it('case 5: 失败 → abort，剩余不跑 + process.exit(1)', async () => {
@@ -182,8 +188,9 @@ describe('runMigrations', () => {
 
     await runMigrations();
 
-    // 001 成功 (connect #1) → 002 失败 (connect #2) → 不跑 003 (connect #3 没发生)
-    expect(mockPoolConnect).toHaveBeenCalledTimes(2);
+    // ensureTable (1) + getApplied (1) + applyMigration×2 (001成功+002失败) = 4
+    // 003 因 abort 不跑
+    expect(mockPoolConnect).toHaveBeenCalledTimes(4);
     expect(exitSpy).toHaveBeenCalledWith(1);
     exitSpy.mockRestore();
   });
@@ -217,8 +224,9 @@ describe('printStatus', () => {
     setupMocks({ files: ['001_a.sql', '002_b.sql'], applied: ['001_a.sql'] });
     await printStatus();
 
-    // 至少调用 query 2 次 (bootstrap + SELECT applied)
-    expect(mockQuery).toHaveBeenCalledTimes(2);
+    // bootstrap (ensureTable) + getApplied → 2 pool.connect + 2 client.query
+    expect(mockPoolConnect).toHaveBeenCalledTimes(2);
+    expect(mockClientQuery).toHaveBeenCalledTimes(2);
 
     // 应打印 status 标题 + applied/pending summary
     const allLogs = mockConsoleLog.mock.calls.map((c) => String(c[0])).join('\n');
@@ -236,17 +244,18 @@ describe('printStatus', () => {
 // ========================================
 
 describe('idempotency behavior', () => {
-  it('case 8: 第二次运行 → 全部已 applied → 0 connect 调用', async () => {
+  it('case 8: 第二次运行 → 全部已 applied → 仅 bootstrap，无 migration 应用', async () => {
     // 模拟第一次已跑完（applied 集合有所有文件）
     setupMocks({ files: ['001_a.sql', '002_b.sql'], applied: ['001_a.sql', '002_b.sql'] });
     await runMigrations();
-    expect(mockPoolConnect).not.toHaveBeenCalled();
+    // bootstrap (ensureTable + getApplied) 走 pool.connect，applyMigration 不跑
+    expect(mockPoolConnect).toHaveBeenCalledTimes(2);
 
     // 模拟再次运行（仍然全部 applied）
     jest.clearAllMocks();
     setupMocks({ files: ['001_a.sql', '002_b.sql'], applied: ['001_a.sql', '002_b.sql'] });
     await runMigrations();
-    expect(mockPoolConnect).not.toHaveBeenCalled();
+    expect(mockPoolConnect).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -295,8 +304,8 @@ describe('checkMigrationsStatus', () => {
 
   it('case 12: DB 错误 → fail-open 返回 ok=false + error，不抛错', async () => {
     setupMocks({ files: ['001_a.sql'], applied: [] });
-    // 强制 mockQuery bootstrap 失败
-    mockQuery.mockRejectedValueOnce(new Error('relation "schema_migrations" does not exist'));
+    // 强制 mockClientQuery bootstrap 失败（第一次 query 是 CREATE TABLE）
+    mockClientQuery.mockRejectedValueOnce(new Error('relation "schema_migrations" does not exist'));
 
     const status = await checkMigrationsStatus();
 
@@ -309,8 +318,8 @@ describe('checkMigrationsStatus', () => {
 
   it('case 13: bootstrap 之前 query 抛错（极端 DB 离线）→ ok=false，total=0', async () => {
     setupMocks({ files: ['001_a.sql'], applied: [] });
-    // 第一次 mockQuery（bootstrap）抛错
-    mockQuery.mockImplementation(async () => {
+    // mockClientQuery 所有调用都抛错（DB 离线模拟）
+    mockClientQuery.mockImplementation(async () => {
       throw new Error('DB connection refused');
     });
 
