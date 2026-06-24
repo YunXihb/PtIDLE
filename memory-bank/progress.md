@@ -9,7 +9,9 @@
 
 | 任务ID | 名称 | 备注 |
 |--------|------|------|
-| T-FOLLOW-6 | HTTPS / TLS / domain + 自动回滚 + 备份 + 监控 | T-FOLLOW-5 完成单 VPS CI 自动部署, 但生产级仍缺 4 件事。**待办**：(1) HTTPS (Caddy / nginx + Let's Encrypt) + domain 配置；(2) 自动回滚（记录 .last-good tag + health check fail 时 restore）；(3) 备份策略（daily pg_dump → Backblaze B2 / S3）；(4) 监控 (UptimeRobot free tier + GH Actions scheduled health check) |
+| T-FOLLOW-7 | 自动回滚（记录 .last-good tag + health check fail 时 restore） | T-FOLLOW-6 完成后, 下一步生产加固 |
+| T-FOLLOW-8 | 备份策略（daily pg_dump → Backblaze B2 / S3） | T-FOLLOW-6 完成后 |
+| T-FOLLOW-9 | 监控 (UptimeRobot free tier + GH Actions scheduled health check) | T-FOLLOW-6 完成后, 需要 https endpoint 外部 ping |
 
 ---
 
@@ -87,6 +89,7 @@
 | v0.1.0 Release | T-FOLLOW-4 release workflow 首次跑通: 推送 tag v0.1.0 (commit 634e2ee) → run #27937392708, 3 min 19 sec, 6/6 steps success → GHCR 4 tag 上传 (latest / 0.1 / 0.1.0 / 634e2ee)。Multi-arch (linux/amd64+arm64) build 无失败但需 make public 后 docker manifest 验证。**默认 private** — 需用户手动在 package settings 改 public | 2026-06-22 |
 | T-FOLLOW-4 | CD 接入 - 镜像层（Dockerfile multi-stage + .dockerignore + release.yml multi-arch GHCR + docs/deploy.md + 本地 smoke test 通过 /health 200） | 2026-06-22 |
 | T-FOLLOW-5 | 单 VPS 部署编排（migrate.js 重写 + Dockerfile baked migrations + docker-compose 4 services + deploy.yml workflow_run trigger + scripts/deploy.sh + docs/deploy.md § 5.3 + memory-bank 同步） | 2026-06-22 |
+| T-FOLLOW-6 | HTTPS / TLS / domain（Caddy 2-alpine 第 5 service + Let's Encrypt HTTP-01 + caddy_data 持久化 + 删 backend host port + .env 加 DOMAIN/ACME_EMAIL + docs/deploy.md § 5.3 DNS 步骤） | 2026-06-22 |
 
 ---
 

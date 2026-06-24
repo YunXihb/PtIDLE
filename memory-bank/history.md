@@ -2024,3 +2024,45 @@ T-FOLLOW-4 完成镜像 + GHCR + deploy docs, 但生产部署仍手动。**待�
 - 镜像签名 / 扫描 (T-FOLLOW-10+)
 - Distroless 镜像 (T-FOLLOW-11+)
 - HA / multi-instance (T-FOLLOW-12+, 仅在用户量到时考虑)
+
+---
+
+## 2026-06-22 - 任务：T-FOLLOW-6 HTTPS / TLS / domain
+
+### Prompt
+T-FOLLOW-5 完成单 VPS CI 自动部署, 但生产级仍缺 HTTPS。规划 T-FOLLOW-6: 加 Caddy 反向代理 + Let's Encrypt 自动 cert + domain 访问。
+
+### 思考
+- 选 Caddy 不选 nginx: auto-HTTPS 零配置, 内置 ACME, WebSocket 默认支持, 4 行 Caddyfile 完成需求
+- HTTP-01 不选 DNS-01: 不需 DNS API token, 任何 provider 都行, 只需 80 端口可达
+- Caddy 放 docker-compose 不放 host native: 跟现有 4-service 模式一致, 升级统一
+- 删 backend 直连 host port: 减少攻击面, 玩家只能走 Caddy
+- caddy_data named volume 持久化 cert: 容器重建不丢 cert, 避免触发 Let's Encrypt 限速
+
+### 意外
+1. **Caddyfile `{$DOMAIN}` 占位符在 caddy validate --adapter caddyfile 模式下不展开**: 验证有 WARN, 真实运行时由 caddy 二进制展开. 不影响功能
+2. **原 T-FOLLOW-6 描述包含 4 个子系统 (HTTPS + rollback + backup + monitoring)**: spec 时拆为 T-FOLLOW-6 (HTTPS) / 7 (rollback) / 8 (backup) / 9 (monitoring), 单一 spec 单一 plan 单一实现更可控
+
+### 修复
+- 新增 1 文件: `Caddyfile` (4 行)
+- 改 4 文件: `docker-compose.yml` (96 → 118 行), `.env.example` (20 → 25 行), `docs/deploy.md` (§ 5.3 加 ~50 行), `memory-bank/{architecture,progress,history}.md`
+- 测试: Caddyfile caddy validate + docker compose config 5 services + 全量 42/42 suite / 702/702 test pass (无 regression)
+- **真实验证**: 用户 push v* tag 触发完整 deploy 链路 + DNS A 记录 + curl https://$DOMAIN/health (待 push 后验证)
+
+### 验证
+- `caddy validate --config Caddyfile --adapter caddyfile` → syntax OK
+- `docker compose config` (with DOMAIN/ACME_EMAIL/DB_PASSWORD/JWT_SECRET) → 5 services + 4 volumes, valid YAML
+- `grep -E '^(DOMAIN|ACME_EMAIL)=' .env.example` → 2 行 OK
+- `! grep -q '^BACKEND_PORT=' .env.example` → OK removed
+- 全量 jest → **42/42 suite, 702/702 test 全绿** (无 regression)
+- **真实验证**: 用户在 VPS 上配 DNS + .env + docker compose up → https://$DOMAIN/health 200 (待 user 手动验证)
+
+### 范围外（明确不做 / T-FOLLOW-7+）
+- 自动回滚 (T-FOLLOW-7+)
+- 备份策略 (T-FOLLOW-8+)
+- 监控 (T-FOLLOW-9+)
+- 镜像签名 / 扫描 (T-FOLLOW-10+)
+- Distroless 镜像 (T-FOLLOW-11+)
+- HA / multi-instance (T-FOLLOW-12+, 仅在用户量到时考虑)
+- Wildcard cert / DNS-01 (T-FOLLOW-13+, 仅在多 sub-domain 时考虑)
+- HSTS preload (T-FOLLOW-14+)

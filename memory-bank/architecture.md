@@ -2918,5 +2918,60 @@ T-FOLLOW-4 完成镜像 + GHCR 发布，但生产部署仍手动。T-FOLLOW-5 �
 
 ---
 
-*文档版本：v1.46*
+## T-FOLLOW-6: HTTPS / TLS / Domain
+
+**日期**: 2026-06-22
+**前置**: T-FOLLOW-5 (commit e10b9da)
+**目的**: 让玩家通过 https://$DOMAIN 访问后端, Let's Encrypt 自动 cert + 续期
+
+### 1. 关键设计决策
+
+1. **Caddy 作为 docker-compose 第 5 service**: 跟 T-FOLLOW-5 4-service 模式一致, `docker compose up -d` 管所有服务, 升级统一, 不需 host native caddy
+2. **HTTP-01 challenge (不是 DNS-01)**: 不需 DNS provider API token, 任何 DNS provider 都行, 只需 80 端口可达
+3. **删 backend 直连 port 3000**: 玩家只能走 Caddy, 减少攻击面 (只有 Caddy 暴露到 host)
+4. **caddy_data volume 持久化 cert**: 容器重建不丢 cert, 避免重复申请触发 Let's Encrypt 限速
+5. **Caddyfile `{$DOMAIN}` 占位符**: env 注入, 同 Caddyfile 模板可换 domain (e.g. staging 用 test.example.com)
+6. **WebSocket 透明转发**: Caddy 默认支持 upgrade 协议, Socket.IO /socket.io/ 不需额外配置
+
+### 2. 文件改动
+
+| 文件 | 改动 |
+|---|---|
+| `Caddyfile` | 新建 (4 行) |
+| `docker-compose.yml` | 加 caddy service + 删 backend ports + 加 caddy_data/caddy_config volumes |
+| `.env.example` | 加 DOMAIN + ACME_EMAIL, 删 BACKEND_PORT |
+| `docs/deploy.md` § 5.3 | 加 DNS 步骤 + https 验证 + 错误排查 |
+| `memory-bank/*` | 本次同步 |
+
+### 3. 验证路径
+
+- 本地: `caddy validate --config Caddyfile --adapter caddyfile` (语法)
+- 本地: `docker compose config` (YAML + env var 引用)
+- VPS: `dig +short $DOMAIN` → 应返回 VPS IP
+- VPS: `curl -vI https://$DOMAIN/health` → HTTP/2 200, server: Caddy
+- VPS: `curl -vI http://$DOMAIN/health` → 301 → https://$DOMAIN/health
+- VPS: `wscat -c wss://$DOMAIN/socket.io/?EIO=4&transport=websocket` → 101 Switching Protocols
+
+### 4. 关键踩坑
+
+1. **80 端口 firewall**: Hetzner / DO / Aliyun 等 cloud firewall 默认挡 80, 需显式开. Caddy log "acme: 403" 是这个症状
+2. **DNS 传播延迟**: A 记录改后 5-30 分钟才全球生效, Caddy 启动期连不上 ACME server 会 retry (默认 5 次)
+3. **Caddyfile `{$DOMAIN}` 占位符**: caddy validate --adapter caddyfile 模式下不展开, 会有 WARN (可忽略), 真实运行时由 caddy 二进制展开
+
+### 5. 未来增强（明确不做 / 留 TODO）
+
+- ❌ **Wildcard cert (DNS-01)**: T-FOLLOW-13+ (多 sub-domain 时考虑)
+- ❌ **HSTS preload**: T-FOLLOW-14+
+- ❌ **Rate limiting / DDoS 防护**: 内部娱乐游戏量小, 不做
+- ❌ **多 domain / SAN cert**: 单域名单 cert 够
+
+### 6. 测试覆盖
+
+- **语法验证**: Caddyfile caddy validate + docker compose config 5 services/4 volumes (本地跑)
+- **单测**: 不改 backend 代码, 全量 42/42 suite / 702/702 test pass (无 regression)
+- **真实验证**: 用户在 VPS 上配 DNS A 记录 + 改 .env + `docker compose up -d` → curl https://$DOMAIN/health 200
+
+---
+
+*文档版本：v1.47*
 *最后更新：2026-06-22*
