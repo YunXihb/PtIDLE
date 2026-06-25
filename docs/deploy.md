@@ -366,6 +366,55 @@ ssh-copy-id -i ~/.ssh/ptidle_deploy.pub ptidle@vps
 6. deploy.yml 报告 success/failure 到 GH Actions UI
 ```
 
+#### 自动回滚 (T-FOLLOW-7)
+
+T-FOLLOW-7 起, `scripts/deploy.sh` 会在 health check 失败时**自动回滚**:
+
+- **触发条件**: deploy 后 30s 内 `/health` 没返回 200 (migrate 失败 / 拉镜像失败 不触发)
+- **回滚目标**: `/opt/ptidle/.last_good` 里记录的上次成功 deploy 的 image digest
+- **行为**: 拉旧 image → 用 `BACKEND_IMAGE=$prev_good docker compose up -d` 重启 → 15s 健康检查
+  - **回滚成功** → deploy.yml 显示 green (旧版本恢复服务, 玩家无感)
+  - **回滚失败** → deploy.yml 显示 red + dump backend logs, 用户 SSH 介入
+- **首次 deploy 不会触发回滚** (无 `.last_good`)
+
+**关键假设**: migrations 是 forward-only 且 additive (见 § Q4). 回滚代码到 N-1 时, DB schema 仍是 N 的状态; 旧代码不引用新列, 可正常运行.
+
+#### 查看/手动覆盖 .last_good
+
+```bash
+# SSH 到 VPS
+ssh ptidle@vps
+
+# 查看当前 .last_good
+cat /opt/ptidle/.last_good
+# 例: ghcr.io/yunxihb/ptidle-backend@sha256:a1b2c3d4...
+
+# 比对当前 running
+docker inspect --format='{{.Image}}' ptidle-backend
+# 不一致 = 正在跑非 .last_good (deploy 中或回滚中)
+
+# 强制回滚到指定 image (极端情况, e.g. .last_good 也坏)
+echo 'ghcr.io/yunxihb/ptidle-backend:v0.1.0' > /opt/ptidle/.last_good
+cd /opt/ptidle
+BACKEND_IMAGE=$(cat .last_good) docker compose up -d --force-recreate backend
+```
+
+#### 回滚失败排查 (deploy.yml 红色 + 回滚 health check 也 fail)
+
+```bash
+# 1. SSH 看完整日志
+ssh ptidle@vps "cd /opt/ptidle && docker compose logs --tail=200 backend"
+
+# 2. 检查 .last_good 指向的 image 是否仍可拉
+ssh ptidle@vps "docker pull \$(cat /opt/ptidle/.last_good)"
+# 失败: image 被 GC / registry 不可达 → 改 .last_good 指向其他 good tag
+
+# 3. 手动指定更早的 tag 回滚 (e.g. 上上个版本)
+ssh ptidle@vps "cd /opt/ptidle && \
+  BACKEND_IMAGE=ghcr.io/yunxihb/ptidle-backend:v0.0.5 \
+  docker compose up -d --force-recreate backend"
+```
+
 #### 手动重跑 deploy（不发布新版本）
 
 ```bash
@@ -510,6 +559,9 @@ git push origin v1.0.0
 
 ### Q4: 如何回滚到旧版本？
 
+**单 VPS 部署**: 自动回滚已由 T-FOLLOW-7 处理 (见 § 5.3 「自动回滚」). 手动覆盖见 § 5.3 「查看/手动覆盖 .last_good」.
+
+**单机部署 (`docker run`)**: 手动回滚:
 ```bash
 # 拉旧版（commit SHA 来自 git log）
 docker pull ghcr.io/yunxihb/ptidle-backend:abc1234
