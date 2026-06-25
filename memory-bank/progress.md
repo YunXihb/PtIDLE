@@ -91,6 +91,7 @@
 | T-FOLLOW-6 | HTTPS / TLS / domain（Caddy 2-alpine 第 5 service + Let's Encrypt HTTP-01 + caddy_data 持久化 + 删 backend host port + .env 加 DOMAIN/ACME_EMAIL + docs/deploy.md § 5.3 DNS 步骤） | 2026-06-22 |
 | T-FOLLOW-6 bug fix | CI Run #28099535056 失败修复 - migrate.js 内联 pg.Pool 移除 .ts 依赖（CI 不 build；npm run db:migrate 直接 require .ts 抛 MODULE_NOT_FOUND）。**CI 验证**: commit 34a1625 推送后 Run #28113095056 全 13 步 success (2m17s) | 2026-06-25 |
 | T-FOLLOW-7 | 自动回滚（deploy.sh 加 .last_good + health check fail 时 restore 旧 image + docker-compose ${BACKEND_IMAGE} env var 模式） | 2026-06-25 |
+| T-FOLLOW-7 v0.1.1 部署 | tag v0.1.1 推送 → Release #2 (run #28175386357) image build success → Deploy #1 (run #28175599367) 失败: job 8s exit 1, "Process completed with exit code 1"。根因待 SSH 调试 (`bash -x scripts/deploy.sh 2>&1 | tee /tmp/deploy-debug.log`)。生产 backend 仍是 v0.1.0 image | 2026-06-26 |
 
 ---
 
@@ -111,6 +112,7 @@
 | 2026-06-22 | T-FOLLOW-5 Task 4 code review 发现 bug: `docker compose up -d backend` 不加 `--force-recreate` 时, pull 新镜像不会被实际加载, 旧容器继续跑 | 改为 `docker compose up -d --force-recreate backend` (commit 52c625e) |
 | 2026-06-22 | T-FOLLOW-5 Task 5 code review 发现 bug: `workflow_run` 触发时**不**自动 checkout, `script_path: scripts/deploy.sh` 找不到文件 | 加 `actions/checkout@v4` step, ref 用 `head_sha || github.sha` (commit eee5c29) |
 | 2026-06-25 | T-FOLLOW-6 推送后 CI Run #28099535056 failed: "Apply database migrations" exit 1。根因：migrate.js (T-FOLLOW-5 commit 4f924e6 引入) 第一行 `require('../config/database')` 是 .ts 源文件，但 CI workflow 只 `npm ci` 不 `npm run build`，dist/ 没生成 → MODULE_NOT_FOUND。CI 自 T-FOLLOW-5 推送起就一直是失败状态，前 2 次 push 推送者未察觉 | 选 Option B：migrate.js 内联 pg.Pool + dotenv，让 .js 文件不依赖 .ts 编译产物；改 jest.mock 'pg' 替换 '../config/database'，bootstrap 走 pool.connect 调高各 case 计数（4/10/2）。修复后 14/14 migrate test 全绿，dist 不再需要 migrate.js 的 .ts 编译路径。Commit 0079eb2 (本地，待 push 验证 CI) |
+| 2026-06-26 | T-FOLLOW-7 首次部署失败：v0.1.1 tag 推送后 Deploy workflow run #28175599367 失败，job 8s 内 exit 1（太短，跳过 health check 30s 窗口，失败必在 [1/6]~[3/6]）。`set -euo pipefail` 模式下任一前置命令失败即终止，错误信息仅 "Process completed with exit code 1"，无 step-level 输出（WebFetch 拿不到详细 log，需登录 GH UI）。最可能根因：(a) `docker compose pull backend` 拉不到 `:latest`（网络/认证问题，v0.1.0 部署时正常，可能 VPS 状态变化）；(b) `docker compose run --rm migrate` 启动后 migrate.js 报错；(c) `docker compose up -d --force-recreate backend` 容器启动失败。生产 backend 仍跑 v0.1.0，`.last_good` 仍未写入 | 临时：SSH 到 VPS 跑 `bash -x scripts/deploy.sh 2>&1 | tee /tmp/deploy-debug.log` 拿具体失败行；定位后修复并重 push tag (v0.1.2 或 amend v0.1.1)。长期改进：deploy.sh 在 `set -e` 模式下失败时打印 "FAIL at line N" 上下文；考虑分步 `|| true` 包裹非关键检查 (`.last_good` 读写) 让 deploy 状态可分 |
 
 ---
 

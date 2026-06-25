@@ -2125,3 +2125,31 @@ T-FOLLOW-5 完成单 VPS CI 自动部署, 但生产级仍缺 HTTPS。规划 T-FO
 ### 意外
 - .last_good 写失败 / docker inspect 失败: 不应让 deploy 变 red (deploy 实际成功), 改为仅 warning, deploy 仍 exit 0. 步号改为 [0/6] 到 [5/6] + [ROLLBACK] 共 6+1 步.
 
+---
+
+## 2026-06-26 - 任务：T-FOLLOW-7 v0.1.1 部署 + 部署失败诊断
+
+### Prompt
+用户 push v0.1.1 tag 后查看 deploy 是否跑成功, 发现 Deploy #1 (run #28175599367) failed, 要求保存进度下次继续.
+
+### 思考
+- **8s exit 1 是关键信号**: deploy.sh health check 窗口 30s, 8s 必是 [1/6]~[3/6] 阶段失败 (pull / migrate / up). 错误信息仅 "Process completed with exit code 1", WebFetch 看不到 step-level log (GH UI 需登录)
+- **优先怀疑顺序** (按可能性):
+  1. `docker compose pull backend` 拉 `:latest` 失败 — 网络/认证问题, v0.1.0 时正常, 期间 VPS 状态可能变化
+  2. `docker compose run --rm migrate` 启动后 migrate.js 报错 — T-FOLLOW-6 fix 改过 migrate.js 内联 pg.Pool, 但只是 .ts/.js 互操作问题, 跟运行时 PG 连接关系不大
+  3. `docker compose up -d --force-recreate backend` 启动失败 — 新加 `${BACKEND_IMAGE:-...}` env var 解析问题
+- **deploy.sh 本身正确**: 跟 git HEAD 比对过, 6+1 步流程跟 spec 完全一致, `set -euo pipefail` 配置正确
+- **根因诊断阻塞**: 唯一可靠途径是 SSH 到 VPS 跑 `bash -x scripts/deploy.sh 2>&1 | tee /tmp/deploy-debug.log`, 等用户反馈 log
+
+### 意外
+- **WebFetch 看不到 GH Actions step-level log**: github.com/YunXihb/PtIDLE/actions/runs/<id> 页面只显示汇总, 详细 log 要登录. 这点下次 debugging 要先知道
+- **deploy.sh 的 `set -e` + 单行失败 = 信息黑洞**: 出错时只 exit 1 + GH 报 "Process completed with exit code 1", 没有失败命令名. 长期改进: 加 trap 'echo "FAIL at line $LINENO: $BASH_COMMAND"' ERR 让 deploy red 时能看到具体行号
+- **当前生产状态**: backend container 仍跑 v0.1.0 image (v0.1.1 deploy 没起来), `.last_good` 文件未写入, 站点应仍可用. 用户应确认线上是否正常
+
+### 下次继续
+1. **最优先**: 拿到 `/tmp/deploy-debug.log`, 定位 [1/6]~[3/6] 哪行失败
+2. 根据失败类型 fix: 若是网络/GHCR auth → 在 deploy.sh 头部加 `docker login ghcr.io` 或换 image pull 策略; 若是 migrate.js → 检查 PG 连通性 + 修迁移; 若是 compose up → 检查 BACKEND_IMAGE env var 解析
+3. fix 后 amend v0.1.1 tag 或 push v0.1.2 重试 deploy
+4. **可选改进**: deploy.sh 加 ERR trap + 行号; `set -e` 改为 `set -euo pipefail` + 关键命令用 `||` 兜底, 让 deploy 状态可分
+5. 部署成功后, deploy 成功路径会写 .last_good, 后续 deploy 才有回滚目标
+
