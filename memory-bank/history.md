@@ -2111,3 +2111,17 @@ T-FOLLOW-5 完成单 VPS CI 自动部署, 但生产级仍缺 HTTPS。规划 T-FO
 - T-FOLLOW-7 自动回滚 (next)
 - T-FOLLOW-8 备份策略
 - T-FOLLOW-9 监控
+
+---
+
+## 2026-06-25 - 任务：T-FOLLOW-7 自动回滚
+
+### Prompt
+在 T-FOLLOW-5/6 (deploy workflow + HTTPS) 之上加自动回滚安全网 — 新版本 health check 失败时 deploy.sh 自动拉回 .last_good 记录的旧 image 并重启.
+
+### 思考
+关键决策: 触发条件 (仅 health check 失败, 不动 migrate/pull) + 回滚目标 (.last_good 文件) + 更新时机 (仅成功后) 三者由用户确认简单方案. 零新依赖, 纯 shell + 1 文件 + 1 env var. 回滚失败不循环检测, loud exit + 用户介入. Migrations forward-only 假设沿用 T-FOLLOW-6 Q4.
+
+### 意外
+- .last_good 写失败 / docker inspect 失败: 不应让 deploy 变 red (deploy 实际成功), 改为仅 warning, deploy 仍 exit 0. 步号改为 [0/6] 到 [5/6] + [ROLLBACK] 共 6+1 步.
+

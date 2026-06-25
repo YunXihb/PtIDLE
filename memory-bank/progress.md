@@ -9,7 +9,6 @@
 
 | 任务ID | 名称 | 备注 |
 |--------|------|------|
-| T-FOLLOW-7 | 自动回滚（记录 .last-good tag + health check fail 时 restore） | T-FOLLOW-6 完成后, 下一步生产加固 |
 | T-FOLLOW-8 | 备份策略（daily pg_dump → Backblaze B2 / S3） | T-FOLLOW-6 完成后 |
 | T-FOLLOW-9 | 监控 (UptimeRobot free tier + GH Actions scheduled health check) | T-FOLLOW-6 完成后, 需要 https endpoint 外部 ping |
 
@@ -91,6 +90,7 @@
 | T-FOLLOW-5 | 单 VPS 部署编排（migrate.js 重写 + Dockerfile baked migrations + docker-compose 4 services + deploy.yml workflow_run trigger + scripts/deploy.sh + docs/deploy.md § 5.3 + memory-bank 同步） | 2026-06-22 |
 | T-FOLLOW-6 | HTTPS / TLS / domain（Caddy 2-alpine 第 5 service + Let's Encrypt HTTP-01 + caddy_data 持久化 + 删 backend host port + .env 加 DOMAIN/ACME_EMAIL + docs/deploy.md § 5.3 DNS 步骤） | 2026-06-22 |
 | T-FOLLOW-6 bug fix | CI Run #28099535056 失败修复 - migrate.js 内联 pg.Pool 移除 .ts 依赖（CI 不 build；npm run db:migrate 直接 require .ts 抛 MODULE_NOT_FOUND）。**CI 验证**: commit 34a1625 推送后 Run #28113095056 全 13 步 success (2m17s) | 2026-06-25 |
+| T-FOLLOW-7 | 自动回滚（deploy.sh 加 .last_good + health check fail 时 restore 旧 image + docker-compose ${BACKEND_IMAGE} env var 模式） | 2026-06-25 |
 
 ---
 

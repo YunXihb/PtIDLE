@@ -2971,7 +2971,47 @@ T-FOLLOW-4 完成镜像 + GHCR 发布，但生产部署仍手动。T-FOLLOW-5 �
 - **单测**: 不改 backend 代码, 全量 42/42 suite / 702/702 test pass (无 regression)
 - **真实验证**: 用户在 VPS 上配 DNS A 记录 + 改 .env + `docker compose up -d` → curl https://$DOMAIN/health 200
 
+## T-FOLLOW-7 自动回滚 (2026-06-25)
+
+### 目标
+deploy.sh 加自动回滚 — health check 失败时自动切回上一个 known-good image.
+
+### 关键组件
+1. **`scripts/deploy.sh`** — 6 步 + 1 回滚分支
+   - `[0/6]` 读 `/opt/ptidle/.last_good` → `PREV_GOOD`
+   - `[1-4/6]` 原 4 步 (pull / migrate / restart / health check 30s)
+   - `[5/6]` success → `docker inspect` 拿新 digest → 写入 `.last_good`
+   - `[ROLLBACK]` health fail → 拉 PREV_GOOD + restart + 15s health check
+2. **`/opt/ptidle/.last_good`** — VPS 上单行 text 文件, 存上次成功 deploy 的 image ref (digest)
+3. **`docker-compose.yml` backend image** — 改 `${BACKEND_IMAGE:-...}` 模式, 回滚时通过 env var 覆盖
+
+### 触发条件
+- **仅 health check 30s 失败** → 进入回滚分支
+- **migrate 失败 / 拉镜像失败** → 不回滚, exit 1, 用户判断
+
+### 更新时机
+- **仅 deploy 成功后**写 `.last_good`
+- 避免「连续 deploy 都坏」时 `.last_good` 被覆盖成坏状态
+
+### 关键假设
+- **Migrations forward-only 且 additive** (T-FOLLOW-6 Q4 已明确)
+- 回滚代码到 N-1 时, DB schema 仍是 N 的状态; 旧代码不引用新列, 可正常运行
+- 违反此假设的 migration → 自动回滚救不回来, 用户需手动介入
+
+### 数据流
+- 首次 deploy: 无 `.last_good` → 失败 → exit 1 loud (无回滚目标)
+- Happy path: deploy 成功 → `.last_good` 覆盖为新 digest → exit 0
+- 回滚成功: 拉 PREV_GOOD → restart → 15s health pass → exit 0 (deploy.yml green)
+- 回滚失败: 拉失败 / compose 失败 / health fail → exit 1 + dump logs (deploy.yml red, 用户 SSH 介入)
+
+### 不做 (YAGNI)
+- ❌ 深 health check (DB/Redis ping / 5xx 率) — T-FOLLOW-9 监控
+- ❌ 蓝绿/金丝雀 — 单 VPS 不需要
+- ❌ 自动重试 / 循环检测 — 回滚失败 → 用户介入
+- ❌ multi-image `.last_good` (保留 N 个 good tag) — 单 deploy 失败概率极低
+- ❌ 改 GH Actions deploy.yml — deploy.sh 行为已变, yml 不动
+
 ---
 
-*文档版本：v1.47*
-*最后更新：2026-06-22*
+*文档版本：v1.48*
+*最后更新：2026-06-25*
