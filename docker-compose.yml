@@ -63,7 +63,10 @@ services:
     restart: 'no'
 
   backend:
-    image: ghcr.io/yunxihb/ptidle-backend:latest
+    # T-FOLLOW-7: env var override 模式
+    # 正常 deploy: BACKEND_IMAGE 默认 :latest, docker compose pull 会拉新
+    # 回滚时:     BACKEND_IMAGE=$prev_good 传进去, 用指定 digest
+    image: ${BACKEND_IMAGE:-ghcr.io/yunxihb/ptidle-backend:latest}
     restart: unless-stopped
     depends_on:
       postgres:
