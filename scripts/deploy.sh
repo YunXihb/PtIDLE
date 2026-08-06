@@ -19,8 +19,23 @@
 # 失败: 退出码 1, GH Actions 显示红色
 # =============================================================================
 
-set -euo pipefail
+set -Eeuo pipefail
 
+# T-FOLLOW-7 诊断: 任一命令失败 (set -e) 时打印失败行号 + 定位提示,
+# 便于直接从 GH Actions 日志定位失败步骤, 无需 SSH 到 VPS 跑 bash -x.
+# 注意: if/while 条件里的失败不触发 ERR trap (POSIX 语义), 仅裸命令失败触发
+#       -> cd / pull / migrate / up 失败会被捕获; health-check 循环与回滚分支不会.
+on_error() {
+  local rc=$?
+  local line="${BASH_LINENO[0]:-$LINENO}"
+  echo ""
+  echo "❌❌ [deploy.sh] FAILED at line $line (exit code $rc)"
+  echo "    定位: 上方最后一条 '==> [N/6]' 标记 = 失败步骤; 上方 stderr = 失败命令输出"
+  echo "❌❌ deploy aborted (rc=$rc)"
+}
+trap on_error ERR
+
+echo "==> [init] cd /opt/ptidle"
 cd /opt/ptidle
 
 # T-FOLLOW-7 [0/6]: 启动时读 .last_good (用作回滚目标)

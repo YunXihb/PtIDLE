@@ -3004,6 +3004,13 @@ deploy.sh 加自动回滚 — health check 失败时自动切回上一个 known-
 - 回滚成功: 拉 PREV_GOOD → restart → 15s health pass → exit 0 (deploy.yml green)
 - 回滚失败: 拉失败 / compose 失败 / health fail → exit 1 + dump logs (deploy.yml red, 用户 SSH 介入)
 
+### 失败诊断可观测性 (2026-08-06)
+- `deploy.sh` 加 `set -E` + `trap on_error ERR`: 裸命令失败 (cd/pull/migrate/up) 时打印失败行号 + 定位提示 (`BASH_LINENO[0]`)
+- **背景**: v0.1.1 首次 deploy (run #28175599367) 8s exit 1 但无 step-level 输出, 无法定位根因 (静态分析最可能: /opt/ptidle 未就绪 `cd` 秒失败, 或 GHCR 包 private + VPS 未 `docker login` -> pull 401 秒失败)
+- **语义**: ERR trap 仅裸命令失败触发 (POSIX); `if`/`while` 条件里的失败不触发 -> health-check 循环与回滚分支 (手动 `if !` 处理) 不受影响
+- **`set -u` 未定义变量**: bash stderr 自带行号 (`line N: VAR: unbound variable`), trap 不触发也能定位
+- **局限**: 仍需 VPS 访问才能真修; trap 只改善"定位" (从 GH Actions 日志直接看行号), 不改部署逻辑
+
 ### 不做 (YAGNI)
 - ❌ 深 health check (DB/Redis ping / 5xx 率) — T-FOLLOW-9 监控
 - ❌ 蓝绿/金丝雀 — 单 VPS 不需要

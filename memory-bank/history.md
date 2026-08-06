@@ -2219,3 +2219,32 @@ T-FOLLOW-5 完成单 VPS CI 自动部署, 但生产级仍缺 HTTPS。规划 T-FO
 - migrate.test.ts 的 Windows 路径断言修复（CI Linux 无需）
 - T-FOLLOW-7 v0.1.1 部署失败仍待 SSH 调试（需用户 VPS 访问）
 - 剩余 P2：REST 风格统一（动词化 URL vs 资源化）、角色名/用户名长度校验、authService 注册事务化、响应包裹格式统一
+
+---
+
+## 2026-08-06 - 任务：T-FOLLOW-7 失败诊断可观测性（deploy.sh 加 ERR trap）
+
+### Prompt
+继续处理遗留项：T-FOLLOW-7 v0.1.1 部署失败（run #28175599367，8s exit 1）无法定位根因，改进 deploy.sh 可观测性。
+
+### 思考
+真正修复需 VPS 访问（用户暂无），但硬约束是 job 仅 8s exit 1：docker compose pull（拉 GHCR 镜像）正常要几十秒，8s 不够完成 pull，失败必在极早期。静态分析排除 SSH 连接（会报 SSH 错误而非 exit 1）、.env 缺失（只在 [2/6] migrate 触发，时间不够）。最可能两根因（都在 [1/6]）：(A) /opt/ptidle 未就绪（首次 deploy，cd 或 pull 秒失败）；(B) GHCR 包仍 private + VPS 未 docker login -> pull 401 秒失败。
+
+改进方向：给 deploy.sh 加 ERR trap，任一裸命令失败时打印失败行号 + 定位提示，下次失败从 GH Actions 日志直接看行号 + 上方 stderr，无需 SSH 到 VPS 跑 bash -x。
+
+### 意外
+1. bash ERR trap 在 set -u（未定义变量）错误时不触发（POSIX/bash 版本相关），但 bash stderr 自带行号（line N: VAR: unbound variable），仍可定位
+2. architecture.md 原文用 Unicode 箭头 →（U+2192）非 ASCII ->，导致首次 Edit 多行匹配失败；改用单行锚点 `### 不做 (YAGNI)`（唯一）插入成功
+3. history.md 2026-08-06 两条 T-FIX 条目此前被 PowerShell Set-Content 破坏成 GBK 乱码，本轮先用 iconv -f GBK -t UTF-8 恢复（commit e619caf）后再追加本条目
+
+### 修复
+- scripts/deploy.sh: 加 set -E + trap on_error ERR + on_error 函数（打印 BASH_LINENO[0] 行号 + 定位提示）+ cd 前加 echo "==> [init] cd /opt/ptidle" 标记
+- memory-bank/architecture.md: T-FOLLOW-7 段加"失败诊断可观测性"小节
+- memory-bank/progress.md: 加"T-FOLLOW-7 失败诊断"完成行
+- 本地验证: bash -n 语法 OK；独立模拟脚本验证裸命令失败触发 trap 打印正确行号、if 里的失败不触发、set -u stderr 自带行号
+- 测试基线不变（未碰 backend 代码）
+
+### 范围外
+- 真正修复 v0.1.1 部署：需 VPS 访问（SSH 跑 bash -x scripts/deploy.sh 或看 GH UI run 日志确认假设 A/B）
+- 提示用户：GH UI run #28175599367 "Deploy via SSH" step 日志已含 deploy.sh stdout，可直接看最后一个 ==> [N/6] 定位
+- T-FOLLOW-8 备份 / T-FOLLOW-9 监控 / 剩余 P2（待用户选下一步）

@@ -94,6 +94,7 @@
 | T-FOLLOW-7 v0.1.1 部署 | tag v0.1.1 推送 → Release #2 (run #28175386357) image build success → Deploy #1 (run #28175599367) 失败: job 8s exit 1, "Process completed with exit code 1"。根因待 SSH 调试 (`bash -x scripts/deploy.sh 2>&1 | tee /tmp/deploy-debug.log`)。生产 backend 仍是 v0.1.0 image | 2026-06-26 |
 | T-FIX 质量修复批次 | 修复已完成代码的 P0 级 bug（详见 history 2026-08-06 条目）：双状态源、手牌类型冲突、回合轮转、阵营判定、据点坐标、skip_play 归属、AOE currentRound、撮合 SQL 优先级、制造扣料顺序、采集/离线/加工幂等、IDOR、JWT 密钥、health 探测、deploy.sh 回滚 | 2026-08-06 |
 | T-FIX 批次 2 (P1/P2) | 并发/资产安全 + 代码整洁：moveCharacter Lua 原子、settleBattle 行锁幂等、consumePlayerCard 归属复核、全局错误中间件、CORS 收敛 + auth 限流、共享缓存工具、Redis key 常量集中、错误码统一、迁移 004 + 唯一约束 | 2026-08-06 |
+| T-FOLLOW-7 失败诊断 | deploy.sh 加 ERR trap (`set -E` + `trap on_error ERR`) 打印失败行号 + 定位提示，改善 v0.1.1 部署失败 (8s exit 1) 无 step-level 输出问题。裸命令失败 (cd/pull/migrate/up) 触发，`if`/`while` 不触发。本地 bash 模拟验证 trap 行为；仍需 VPS 访问真正修复部署 | 2026-08-06 |
 
 ---
 
