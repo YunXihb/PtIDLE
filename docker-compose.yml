@@ -114,6 +114,32 @@ services:
         condition: service_healthy
     # Caddy 自己没 healthcheck — 启动成功 = 在监听 80/443, 失败会 exit
 
+  # T-FOLLOW-8: 一次性 backup/restore service (profiles 隔离, 不随 up 启动)
+  # 由 GH Actions scheduled workflow 或手动触发: docker compose run --rm backup
+  # image 用 postgres:16 (含 pg_dump/psql), 复用 docker 网络连 postgres service
+  # 恢复: docker compose run --rm -e CONFIRM_RESTORE=yes backup /rs.sh <YYYY-MM-DD|latest>
+  backup:
+    image: postgres:16
+    profiles: ["backup"]
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB:-ptidle}
+      DB_USER: ${POSTGRES_USER:-ptidle}
+      DB_PASSWORD: ${DB_PASSWORD}
+      BACKUP_DIR: /backups
+      BACKUP_STORAGE: ${BACKUP_STORAGE:-local}
+      RETENTION_DAILY: ${RETENTION_DAILY:-14}
+      RETENTION_WEEKLY: ${RETENTION_WEEKLY:-8}
+    volumes:
+      - ./backups:/backups
+      - ./scripts/backup.sh:/bk.sh:ro
+      - ./scripts/restore.sh:/rs.sh:ro
+    command: ["/bk.sh"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   pgdata:
   redisdata:

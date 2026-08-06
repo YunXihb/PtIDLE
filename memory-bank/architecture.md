@@ -3077,3 +3077,51 @@ deploy.sh 加自动回滚 — health check 失败时自动切回上一个 known-
 
 *文档版本：v1.50*
 *最后更新：2026-08-06*
+
+---
+
+## T-FOLLOW-8 备份策略 (2026-08-06)
+
+### 目标
+生产数据备份: daily pg_dump + 保留策略 + 恢复流程 + storage 抽象. 防止数据丢失 (误操作 / migration 失败 / 硬件故障).
+
+### 关键组件
+1. **`scripts/backup.sh`** - pg_dump (custom format, compress=9) + storage backend dispatch (local/b2/s3) + prune (daily14+weekly8) + 磁盘空间检查 (>=1GB) + trap 清理临时文件
+2. **`scripts/restore.sh`** - pg_restore --clean --if-exists --no-owner + `CONFIRM_RESTORE=yes` 守卫 (防误跑覆盖) + verify 关键表 count
+3. **`docker-compose.yml` backup service** - postgres:16 image (含 pg_dump/psql), `profiles:["backup"]` 隔离 (不随 up 启动), 挂载 ./backups + 脚本
+4. **`.github/workflows/backup.yml`** - `schedule: cron '17 3 * * *'` (daily 03:17 UTC) + `workflow_dispatch`, SSH 跑 `docker compose run --rm backup` (复用 VPS_SSH_KEY/HOST/USER secrets)
+5. **storage 抽象接口** - `upload_backup`/`list_backups`/`delete_backup` 函数 dispatch; `local` 实现, `b2`/`s3` TODO (打印明确错误 + return 1, 不静默成功)
+
+### 数据流
+- 备份: GH cron -> SSH -> `docker compose run --rm backup` -> backup.sh -> pg_dump -> `/backups/ptidle-DATE.dump` -> prune 旧备份 -> exit 0 (GH green)
+- 恢复: SSH -> `docker compose run --rm -e CONFIRM_RESTORE=yes backup /rs.sh <DATE|latest>` -> pg_restore --clean -> verify count
+
+### 关键决策
+| 维度 | 选择 | 理由 |
+|---|---|---|
+| 备份内容 | PG full dump (custom format) | 全量、可选择性恢复单表 |
+| 频率 | daily (GH Actions cron) | 复用 SSH 模式, 不依赖 VPS cron |
+| 保留 | daily 14 + weekly 8 (周一) | 约 22 个备份, 平衡成本与恢复点 |
+| 存储 | 本地 (VPS /opt/ptidle/backups/) + 抽象接口 | 用户选; 不依赖外部账号; 后续 B2/S3 易加 |
+| 调度 | GH Actions scheduled | 配置在 GH, 复用 SSH, 审计可见 |
+| 恢复 | restore.sh + CONFIRM_RESTORE 守卫 | 防误跑覆盖生产数据 |
+
+### 范围外
+- ❌ Redis 备份 (redisdata volume 持久化已够; battle session 丢失可接受, 玩家重连重建)
+- ❌ .env/配置备份 (含密钥需加密, 用户自管)
+- ❌ B2/S3 实际实现 (本轮 local + 接口; B2/S3 留 TODO 分支返回 1)
+- ❌ 增量备份 / WAL archiving / PITR (pg_dump 全量够 solo dev)
+- ❌ 备份加密 (本地不需; B2/S3 时再加 GPG)
+
+### 本地验证 (2026-08-06, dev PG ptidle-dev-pg)
+- backup: dump 48KB, `pg_restore -l` 128 TOC entries, custom+gzip format
+- prune: 31 假文件 (30 天 + 1 真) -> 删 15 -> 保留 16 (daily14 + weekly 额外 2: 07-20/07-13 周一)
+- storage 抽象: `BACKUP_STORAGE=b2` -> "TODO 未实现" + exit 1 (不静默)
+- restore: insert user (14->15) -> restore 08-06 -> 14 (回退, 测试 user 消失); `CONFIRM_RESTORE` 缺失 -> exit 1
+- `bash -n` 语法 OK (backup.sh + restore.sh)
+
+### 关联
+- T-FOLLOW-5 (部署编排): 复用 docker-compose + SSH 模式
+- T-FOLLOW-7 (自动回滚): backup service 独立于 deploy, 不受回滚影响
+- T-FOLLOW-9 (监控, 待开发): 未来加 backup workflow 成功率告警
+- migrate.js (T-FOLLOW-1): 恢复后 schema_migrations 被备份状态覆盖, 需重跑 migrate

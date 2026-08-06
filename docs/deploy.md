@@ -535,7 +535,92 @@ git push origin v1.0.0
 
 ---
 
-## 八、常见问题
+## 八、备份与恢复
+
+PtIDLE 提供 daily 自动备份（PG 全量 dump）+ 保留策略 + 恢复流程，防止数据丢失（误操作 / migration 失败 / 硬件故障）。
+
+### 8.1 频率与保留
+
+- **频率**：daily（GH Actions cron `17 3 * * *`，03:17 UTC，避开整点）
+- **保留**：最近 14 天 daily 备份 + 最近 8 周 weekly 备份（周一），约 22 个备份
+- **格式**：`pg_dump --format=custom --compress=9`（内置压缩，支持选择性恢复单表）
+
+### 8.2 备份存储
+
+- 默认 `BACKUP_STORAGE=local`：存 VPS `/opt/ptidle/backups/`，文件名 `ptidle-YYYY-MM-DD.dump`
+- storage 抽象成接口（`scripts/backup.sh` 内 `upload_backup`/`list_backups`/`delete_backup` 函数 dispatch），后续加 B2/S3 只需实现分支（见 `docs/superpowers/specs/2026-08-06-tfollow8-backup-design.md`）
+- **注意**：`local` 仅本地存储，VPS 挂了备份也没；异地备份见 § 8.7
+
+### 8.3 首次部署（更新 VPS 配置）
+
+backup service 是 T-FOLLOW-8 新增。deploy 流程只更新 backend image，不改 compose/scripts，所以 VPS 需一次性手动更新配置：
+
+```bash
+# SSH 到 VPS
+ssh user@vps
+cd /opt/ptidle
+
+# 1. 更新 docker-compose.yml (加 backup service) + scripts/backup.sh + scripts/restore.sh
+git pull          # 若 /opt/ptidle 是 git checkout; 否则手动 scp 这 3 个文件
+
+# 2. .env 加 BACKUP_* 配置
+cat >> .env <<'EOF'
+BACKUP_STORAGE=local
+RETENTION_DAILY=14
+RETENTION_WEEKLY=8
+EOF
+
+# 3. 创建备份目录
+mkdir -p backups
+
+# 4. 验证 backup service 可用 (跑一次手动备份)
+docker compose run --rm backup
+```
+
+### 8.4 手动触发备份
+
+- **GH Actions**：仓库 Actions 页 → Backup workflow → Run workflow（`workflow_dispatch`）
+- **VPS 直接**：`cd /opt/ptidle && docker compose run --rm backup`
+
+### 8.5 恢复流程
+
+> ⚠️ 恢复会**覆盖**现有数据。先确认必要，建议先备份当前状态。
+
+```bash
+cd /opt/ptidle
+
+# 列出可用备份
+ls backups/ptidle-*.dump
+
+# 恢复指定日期 (必须设 CONFIRM_RESTORE=yes 防误跑)
+docker compose run --rm -e CONFIRM_RESTORE=yes backup /rs.sh 2026-08-06
+
+# 或恢复最新
+docker compose run --rm -e CONFIRM_RESTORE=yes backup /rs.sh latest
+```
+
+恢复后 `schema_migrations` 被备份时状态覆盖；若备份后有新 migration，需重跑 `docker compose run --rm migrate`。
+
+### 8.6 排查
+
+| 问题 | 排查 |
+|---|---|
+| GH Actions Backup red | 看 "Run backup via SSH" step 日志；`appleboy` 输出 `backup.sh` stdout，最后一个 `==>` 标记指示失败步骤 |
+| `磁盘可用空间 < 1GB` | VPS 磁盘满，清理 `/opt/ptidle/backups/` 旧备份或扩容 |
+| `pg_dump` 失败 | 检查 postgres service 健康（`docker compose ps`）；`DB_PASSWORD` 是否正确 |
+| 备份未生成 | 确认 VPS `docker-compose.yml` 含 backup service（§ 8.3 首次部署） |
+
+### 8.7 未来：异地备份（B2/S3）
+
+当前 `BACKUP_STORAGE=local` 仅本地。未来加异地备份：
+1. 开 Backblaze B2 / AWS S3 bucket + 凭据
+2. 在 `scripts/backup.sh` 的 `upload_backup`/`list_backups`/`delete_backup` 实现 `b2`/`s3` 分支（用 rclone 或 aws-cli）
+3. VPS 装 rclone/aws-cli + 配置凭据
+4. `.env` 改 `BACKUP_STORAGE=b2`（或 s3）
+
+---
+
+## 九、常见问题
 
 ### Q1: 容器启动后立刻退出？
 
@@ -574,7 +659,7 @@ Migrations 是向前兼容的（不删除列），所以降级代码不需要回
 
 ---
 
-## 九、相关链接
+## 十、相关链接
 
 - 仓库：https://github.com/YunXihb/PtIDLE
 - 镜像：https://github.com/YunXihb/PtIDLE/pkgs/container/ptidle-backend

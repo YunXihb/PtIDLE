@@ -2248,3 +2248,33 @@ T-FOLLOW-5 完成单 VPS CI 自动部署, 但生产级仍缺 HTTPS。规划 T-FO
 - 真正修复 v0.1.1 部署：需 VPS 访问（SSH 跑 bash -x scripts/deploy.sh 或看 GH UI run 日志确认假设 A/B）
 - 提示用户：GH UI run #28175599367 "Deploy via SSH" step 日志已含 deploy.sh stdout，可直接看最后一个 ==> [N/6] 定位
 - T-FOLLOW-8 备份 / T-FOLLOW-9 监控 / 剩余 P2（待用户选下一步）
+
+---
+
+## 2026-08-06 - 任务：T-FOLLOW-8 备份策略（daily pg_dump + 保留 + 恢复 + storage 抽象）
+
+### Prompt
+继续推进遗留项。用户选 T-FOLLOW-8 备份，目标存储选"本地 + 抽象接口"（不依赖外部账号，能立即实现+验证，后续 B2/S3 易加）。
+
+### 思考
+当前环境无 superpowers skill，自按项目约定写 spec + plan。设计：bash backup.sh + postgres:16 image（含 pg_dump）+ GH Actions scheduled cron + storage 函数 dispatch 抽象（local 实现，b2/s3 TODO 返回 1 不静默）。保留策略 daily14 + weekly8（周一）。恢复 restore.sh 加 CONFIRM_RESTORE 守卫防误跑覆盖。Redis 不备份（redisdata volume 持久化已够，battle session 丢失可接受）。
+
+### 意外
+1. bash `local` 多变量陷阱：`local src="$1" name="$2" dest="${...}/${name}"` 中 dest 引用同语句 name，但 local 语句 RHS 用赋值前值 + set -u -> "name: unbound variable"。修复：拆成多行 local
+2. architecture.md / docker-compose.yml / deploy.md 多处用 Unicode 破折号和箭头，Edit 多行匹配反复失败；改用单行纯 ASCII 锚点插入成功
+3. prune 保留数验证：31 文件删 15 留 16（daily14 + weekly 额外 2）。手算 17 算错（误以为 07-06 在范围）
+4. Bash 测试用 `docker run ... | tail` 时 $? 是 tail 退出码非 docker；验证退出码须不 pipe
+
+### 修复
+- 新增 scripts/backup.sh（pg_dump custom + storage dispatch + prune daily14/weekly8 + 磁盘检查 + trap）+ scripts/restore.sh（pg_restore --clean --if-exists + CONFIRM_RESTORE 守卫 + verify count）
+- docker-compose.yml 加 backup service（postgres:16, profiles:["backup"], 挂载 backups + 脚本）
+- .github/workflows/backup.yml（cron '17 3 * * *' + workflow_dispatch, SSH 复用 VPS_SSH_*）
+- .env.example 加 BACKUP_STORAGE/RETENTION_DAILY/RETENTION_WEEKLY
+- docs/deploy.md 加 § 八 备份与恢复，原 § 八/九 顺延为 § 九/十
+- docs/superpowers/specs + plans 各一份
+- 本地验证全过：backup 48KB / pg_restore -l 128 TOC / prune 31->16 / b2 TODO exit 1 / restore 14->15->14 / CONFIRM_RESTORE 缺失 exit 1 / bash -n OK
+
+### 范围外
+- B2/S3 实际实现（留 TODO 分支，return 1 不静默）
+- 真实 VPS 部署验证（需用户 SSH 更新 VPS 配置：docker-compose.yml + scripts + .env BACKUP_*；GH secrets VPS_* 已配 deploy.yml 复用）
+- T-FOLLOW-9 监控 / 剩余 P2（待用户选下一步）

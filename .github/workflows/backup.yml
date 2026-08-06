@@ -1,0 +1,35 @@
+# =============================================================================
+# PtIDLE Backup Workflow (T-FOLLOW-8)
+# =============================================================================
+# 触发: schedule (daily cron) + workflow_dispatch (手动)
+# 行为: SSH 到 VPS 跑 docker compose run --rm backup (pg_dump + prune)
+# 依赖 secrets: VPS_SSH_KEY, VPS_HOST, VPS_USER (复用 deploy.yml)
+#
+# 前提: VPS /opt/ptidle 已有更新后的 docker-compose.yml (含 backup service)
+#       + scripts/backup.sh + .env (含 BACKUP_*). 见 docs/deploy.md 备份章节.
+# =============================================================================
+
+name: Backup
+
+on:
+  schedule:
+    - cron: '17 3 * * *'   # daily 03:17 UTC (避开整点, 减少 GH 调度拥塞)
+  workflow_dispatch:
+
+jobs:
+  backup:
+    name: Backup database
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Run backup via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            cd /opt/ptidle
+            docker compose run --rm backup
+          command_timeout: 8m
