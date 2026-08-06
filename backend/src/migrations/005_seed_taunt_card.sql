@@ -14,4 +14,4 @@ INSERT INTO card_templates (
   'warrior',
   8,
   5
-) ON CONFLICT DO NOTHING;
+) ON CONFLICT (name) DO NOTHING;

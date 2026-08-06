@@ -3013,5 +3013,60 @@ deploy.sh 加自动回滚 — health check 失败时自动切回上一个 known-
 
 ---
 
-*文档版本：v1.48*
-*最后更新：2026-06-25*
+## T-FIX 质量修复批次（2026-08-06）
+
+### 背景
+摸排发现"测试全绿但生产跑不通"：单测全部 mock DB/Redis，掩盖了 8 个致命 bug。核心是架构级脱节——战斗状态机写 Redis、编排器读 DB（双状态源）。
+
+### 关键修复
+
+| # | 修复 | 文件 |
+|---|------|------|
+| 1 | **统一状态源**：新增 `getSessionState`（读 Redis 完整状态含 activationOrder），`executeMove`/`executePlayCard`/`executeEndStep` 全部改用；DB 仅审计/恢复 | battleSessionService.ts / battleActionService.ts |
+| 2 | **手牌类型冲突**：手牌是 STRING(JSON)，改 lRem 为 `removeCardFromHand`（读-过滤-覆盖写） | handService.ts / battleActionService.ts |
+| 3 | **回合轮转**：`executePlayCard` 不再独立 completePlayPhase，统一交给 `executeEndStep`（其内部 move/play→end_step→endCurrentStep→round end）；`isLastStepInRound` 用 `activationOrder.length` 动态判定，替代硬编码 5 | battleActionService.ts |
+| 4 | **阵营判定**：`sideForPlayerId` 优先字面量 'p1'/'p2'，再按 battles 表 player1/2_id (UUID) 映射；`applyKillStars`/`applyBaseStars` 改用 | battleOutcomeService.ts |
+| 5 | **据点坐标**：positions HASH 是 `key="x,y"→value=charId`，新增 `getPositionByCharacterId` 反查 | battleOutcomeService.ts |
+| 6 | **skip_play 归属**：`executeEndStep(io, battleId, userId)` 加 actor 归属校验 | battleActionService.ts / battleRoom.ts |
+| 7 | **AOE currentRound**：`validateAOEAttack` 加第 5 参 currentRound，ranger 增伤/mage mark 不再 hardcode 0 | battleService.ts |
+| 8 | **撮合 SQL 优先级**：`((A AND B) OR (A' AND B')) AND status='pending'` 加括号 | matchmakingService.ts |
+| 9 | **制造顺序**：`executeCardCrafting` 用 withTransaction，先校验（模板/上限/sequence）后扣料+INSERT | craftingService.ts |
+| 10 | **经济幂等**：`completeGathering`/`claimOfflineEarnings`/加工路由全部 withTransaction + `SELECT ... FOR UPDATE` 行锁 | gatheringService.ts / playerService.ts / routes/processing.ts |
+| 11 | **IDOR**：`GET /characters/:id/deck` 加归属校验 | routes/characters.ts |
+| 12 | **JWT 密钥**：生产强制要求 JWT_SECRET（否则抛错）；verify 显式 `algorithms:['HS256']` | config/jwt.ts / middleware/auth.ts / socket/authMiddleware.ts |
+| 13 | **health 真实探测**：/health 实际 ping DB/Redis，异常返回 503 | index.ts |
+| 14 | **deploy.sh 回滚**：容器名 ptidle-backend-1 + 存 image ref（com.docker.compose.image label）替代不可 pull 的本地镜像 ID | scripts/deploy.sh |
+
+### 测试基线
+- 全量 jest：671/702 通过（4 suite 失败 = 本地无 PG/Redis 的 ECONNREFUSED，与基线一致；CI 环境应全绿）
+- 相关 28 suite 566 测试全绿；tsc --noEmit 零错误
+- 测试同步更新：battleActionService / battleOutcomeService / craftingService / gatheringService / player.integration / processing.integration / gathering.integration
+
+## T-FIX 批次 2（P1/P2，2026-08-06）
+
+### 并发/资产安全
+| # | 修复 | 文件 |
+|---|------|------|
+| 15 | **moveCharacter Lua 原子**：三段非原子（hGet+hDel+hSet）改 Lua 单线程原子执行，防并发抢占 | battleService.ts |
+| 16 | **settleBattle 行锁幂等**：事务内 `SELECT settled_at FOR UPDATE` 复核，防并发双倍累加战绩 | battleSettlementService.ts |
+| 17 | **consumePlayerCard 归属复核**：DELETE 带 character_id + 子查询复核 card 归属，防误删他人卡牌 | battleActionService.ts |
+| 18 | **全局错误中间件**：4 参 Express error handler，统一 JSON 错误格式，生产不泄露内部详情 | index.ts |
+| 19 | **CORS 收敛 + auth 限流**：CORS_ORIGIN env 收敛 REST+WS；register/login 加 Redis Lua 限流（每 IP 60s/20 次） | index.ts / middleware/rateLimit.ts / routes/auth.ts |
+
+### 代码整洁
+| # | 修复 | 文件 |
+|---|------|------|
+| 20 | **共享缓存工具**：`createCache` 消除 5 处手写 5 分钟缓存（crafting/processing/card/skill/profession） | utils/cache.ts |
+| 21 | **Redis key 常量**：`redisKey` 模块集中 key 模板，收敛 6 个 service 的手写重复 | utils/redisKeys.ts |
+| 22 | **错误码统一**：MatchmakingError/GatheringError 带 code 属性，controller 不再 `.includes('中文')` 匹配 | matchmakingService / gatheringService + controllers |
+| 23 | **迁移 004 + 唯一约束**：card_templates/gathering_skills/processing_recipes 加 name/template_no UNIQUE，修复种子 ON CONFLICT 失效 | migrations/004_*.sql |
+
+### 验证
+- 全量 jest：671/702（4 suite 失败 = Windows 路径 + 本地无 PG/Redis，与基线一致；CI 应全绿）
+- tsc --noEmit 零错误；改动生产文件零 lint error
+- 相关测试：battleService / battleSettlementService(+集成) / battleActionService / matchmaking / gathering / 5 缓存 service 全绿
+
+---
+
+*文档版本：v1.50*
+*最后更新：2026-08-06*

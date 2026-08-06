@@ -1,4 +1,5 @@
 import { query } from '../config/database';
+import { createCache } from '../utils/cache';
 
 export interface GatheringSkill {
   id: string;
@@ -8,49 +9,30 @@ export interface GatheringSkill {
   base_yield: number;
 }
 
-// 内存缓存（5分钟过期）
-let skillsCache: {
-  data: GatheringSkill[];
-  timestamp: number;
-} | null = null;
-
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+// 内存缓存（5分钟过期，共享工具）
+const skillsCache = createCache<GatheringSkill[]>(5 * 60 * 1000);
 
 /**
  * 从数据库获取所有采集技能（带缓存）
  */
 export async function getAllGatheringSkills(): Promise<GatheringSkill[]> {
-  const now = Date.now();
+  return skillsCache.getOrLoad(async () => {
+    const result = await query<{
+      id: string;
+      name: string;
+      type: string;
+      yields: Record<string, number>;
+      base_yield: number;
+    }>('SELECT id, name, type, yields, base_yield FROM gathering_skills ORDER BY type');
 
-  // 检查缓存
-  if (skillsCache && (now - skillsCache.timestamp) < CACHE_TTL) {
-    return skillsCache.data;
-  }
-
-  // 查询数据库
-  const result = await query<{
-    id: string;
-    name: string;
-    type: string;
-    yields: Record<string, number>;
-    base_yield: number;
-  }>('SELECT id, name, type, yields, base_yield FROM gathering_skills ORDER BY type');
-
-  const skills: GatheringSkill[] = result.map(row => ({
-    id: row.id,
-    name: row.name,
-    type: row.type as 'mining' | 'woodcutting' | 'herbalism',
-    yields: row.yields,
-    base_yield: row.base_yield,
-  }));
-
-  // 更新缓存
-  skillsCache = {
-    data: skills,
-    timestamp: now,
-  };
-
-  return skills;
+    return result.map(row => ({
+      id: row.id,
+      name: row.name,
+      type: row.type as 'mining' | 'woodcutting' | 'herbalism',
+      yields: row.yields,
+      base_yield: row.base_yield,
+    }));
+  });
 }
 
 /**
@@ -65,7 +47,7 @@ export async function getGatheringSkillByType(type: string): Promise<GatheringSk
  * 清除技能缓存（用于测试或配置更新时）
  */
 export function clearSkillsCache(): void {
-  skillsCache = null;
+  skillsCache.clear();
 }
 
 /**

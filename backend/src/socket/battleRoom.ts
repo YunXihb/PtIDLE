@@ -341,7 +341,7 @@ function validatePlayCardPayload(
  *   5. 成功 → 不 emit（依赖 broadcastSessionState + broadcastBoardState 推送）
  *   6. executeEndStep 抛错 → 向上抛（异常路径，由 socketServer 层兜底）
  *
- * 注意：handler 不做 actor 归属检查（依赖 phase machine 锁）。
+ * actor 归属校验在 executeEndStep 内完成（userId 参数）。
  */
 export async function handleBattleSkipPlay(
   io: IOServer,
@@ -368,8 +368,8 @@ export async function handleBattleSkipPlay(
     return;
   }
 
-  // 2. 调 service
-  const result = await executeEndStep(io, battleId);
+  // 2. 调 service（带 userId 做 actor 归属校验，防止对手替当前 actor 跳过）
+  const result = await executeEndStep(io, battleId, userId);
 
   // 3. 失败回执
   if (!result.success) {

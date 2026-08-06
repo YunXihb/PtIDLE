@@ -13,6 +13,7 @@ const mockRedisClient = {
   lRange: jest.fn(),
   rPush: jest.fn(),
   lRem: jest.fn(),
+  eval: jest.fn(),
 };
 
 const mockQuery = jest.fn();

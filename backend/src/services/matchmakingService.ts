@@ -10,6 +10,19 @@ import {
 } from './battleService';
 
 /**
+ * 带错误码的业务异常（T-FIX：controller 不再用 `.includes('中文')` 匹配错误）
+ */
+export class MatchmakingError extends Error {
+  constructor(
+    message: string,
+    public readonly code: string
+  ) {
+    super(message);
+    this.name = 'MatchmakingError';
+  }
+}
+
+/**
  * T042 + T043 范围：实现「加入匹配队列 + 查询队列状态 + 取消匹配」。
  * T044 扩展：实现「撮合两个等待者 + 创建 battles 行 + 通知双方跳战场」。
  *
@@ -205,7 +218,7 @@ export async function enqueueMatchmaking(userId: string): Promise<MatchQueueEntr
   });
 
   if (lockResult !== 'OK') {
-    throw new Error('已在匹配队列中');
+    throw new MatchmakingError('已在匹配队列中', 'ALREADY_IN_QUEUE');
   }
 
   // 2. 抢到锁后入队（score = 入队时间戳，便于 T044 取最久等待者）
@@ -299,7 +312,7 @@ export async function leaveMatchmaking(userId: string): Promise<MatchQueueEntry>
   }
 
   if (!targetEntry || targetEntryStr === null) {
-    throw new Error('不在匹配队列中');
+    throw new MatchmakingError('不在匹配队列中', 'NOT_IN_QUEUE');
   }
 
   // 2. ZREM 先、DEL lock 后（T042「lock first → zAdd」的天然反序）
@@ -476,10 +489,11 @@ export async function tryMatch(triggerUserId: string): Promise<TryMatchResult> {
     }
 
     // 4. 双层防 dup：DB 预查询
+    //    注意括号：OR 的两个分支都必须 AND status='pending'（否则可能命中已结束对战）
     const existingBattle = await queryOne<{ id: string }>(
       `SELECT id FROM battles
-       WHERE (player1_id = $1 AND player2_id = $2)
-          OR (player1_id = $2 AND player2_id = $1)
+       WHERE ((player1_id = $1 AND player2_id = $2)
+           OR (player1_id = $2 AND player2_id = $1))
          AND status = 'pending'
        LIMIT 1`,
       [selfPlayerId, pickedPlayerId]

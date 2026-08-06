@@ -11,9 +11,11 @@ app.use(express.json());
 app.use('/api/gathering', gatheringRoutes);
 
 // Mock the database module
+const mockWithTransaction = jest.fn();
 jest.mock('../config/database', () => ({
   query: jest.fn(),
-  execute: jest.fn()
+  execute: jest.fn(),
+  withTransaction: (...args: any[]) => mockWithTransaction(...args),
 }));
 
 // Mock the redis module (singleton client never gets .connect() in test process)
@@ -69,9 +71,25 @@ jest.mock('../services/skillService', () => ({
 const mockedQuery = query as jest.MockedFunction<typeof query>;
 const mockedExecute = execute as jest.MockedFunction<typeof execute>;
 
+// withTransaction 透传：fn 收到 fakeClient，query 走 mockedQuery（complete 路径用）
+function defaultWithTransaction() {
+  mockWithTransaction.mockImplementation(async (fn: any) => {
+    const fakeClient = {
+      query: async (text: string, params?: any[]) => {
+        const res: any = await mockedQuery(text, params);
+        if (res && res.rowCount !== undefined) return res;
+        return { rows: (res as any[]) ?? [], rowCount: ((res as any[]) ?? []).length };
+      },
+      release: jest.fn(),
+    };
+    return await fn(fakeClient);
+  });
+}
+
 describe('Gathering API Integration Tests', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    defaultWithTransaction();
   });
 
   describe('POST /api/gathering/start', () => {

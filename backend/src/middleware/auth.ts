@@ -25,7 +25,7 @@ export function authMiddleware(
   const token = authHeader.substring(7); // 移除 'Bearer ' 前缀
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET) as { userId: string; username: string };
+    const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] }) as { userId: string; username: string };
 
     // 将用户信息附加到请求对象
     req.user = {

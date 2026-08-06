@@ -136,11 +136,21 @@ export async function settleBattle(
   }
 
   // 3. 幂等检测（settled_at 非空 → 跳过写入）
+  //    并发竞态防护：读-改-写在事务内用 SELECT ... FOR UPDATE 行锁，
+  //    两个并发请求同时到达时第二个会等第一个 COMMIT，读到 settled_at 后跳过。
   const alreadySettled = battle.settledAt !== null;
 
-  // 4. 首次结算：withTransaction 内写双方 wins/losses/draws + 双 player_battle_history + battles.settled_at
+  // 4. 首次结算：withTransaction 内锁行检查 + 写双方 wins/losses/draws + 双 player_battle_history + battles.settled_at
   if (!alreadySettled) {
     await withTransaction(async (client: PoolClient) => {
+      // 行锁 + 幂等复核：防止并发两个请求同时通过 settled_at 检查
+      const lockRes = await client.query<{ settled_at: Date | null }>(
+        'SELECT settled_at FROM battles WHERE id = $1 FOR UPDATE',
+        [battleId]
+      );
+      if (lockRes.rows.length > 0 && lockRes.rows[0].settled_at !== null) {
+        return; // 已被并发请求结算，跳过写入
+      }
       await applySettlementInTransaction(client, battle);
     });
   }

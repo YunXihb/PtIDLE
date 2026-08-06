@@ -1,6 +1,7 @@
 import { redisClient } from '../config/redis';
 import { getCharacterDeckCards } from './characterService';
 import { drawFromPublicPool } from './publicPoolService';
+import { redisKey } from '../utils/redisKeys';
 
 // ========================================
 // 类型定义
@@ -60,28 +61,28 @@ export interface RetainHandResult {
 }
 
 // ========================================
-// Redis 键
+// Redis 键（复用共享常量模块，统一 key 命名）
 // ========================================
 
 /**
  * Redis 手牌存储 key（当前回合的手牌，STRING 类型，JSON array）
  */
 function getHandKey(battleId: string, characterId: string): string {
-  return `battle:${battleId}:hand:${characterId}`;
+  return redisKey.hand(battleId, characterId);
 }
 
 /**
  * Redis 跨回合保留牌 key（最多 1 张，STRING 类型，JSON single HandCard）
  */
 function getRetainedKey(battleId: string, characterId: string): string {
-  return `battle:${battleId}:retained:${characterId}`;
+  return redisKey.retained(battleId, characterId);
 }
 
 /**
  * Redis 弃牌堆 key（LIST 类型，每个元素为 JSON-stringified HandCard，RPUSH 追加）
  */
 function getDiscardKey(battleId: string, characterId: string): string {
-  return `battle:${battleId}:discard:${characterId}`;
+  return redisKey.discard(battleId, characterId);
 }
 
 // ========================================
@@ -290,6 +291,35 @@ export async function clearActorHand(
   characterId: string
 ): Promise<void> {
   await redisClient.del(getHandKey(battleId, characterId));
+}
+
+/**
+ * 3.5 从手牌中移除一张牌（T050 打牌后使用）
+ *
+ * 手牌以 STRING(JSON 数组) 存储，因此用「读 → 过滤 → 覆盖写」实现，
+ * 不能用 LIST 的 lRem（会 WRONGTYPE）。
+ *
+ * @param battleId battle id
+ * @param characterId 棋子 id
+ * @param deckId 要移除的牌 deck_id（唯一标识）
+ * @returns 移除后剩余手牌；牌不存在时返回 null（调用方按未命中处理）
+ */
+export async function removeCardFromHand(
+  battleId: string,
+  characterId: string,
+  deckId: string
+): Promise<HandCard[] | null> {
+  const hand = await getActorHand(battleId, characterId);
+  const remaining = hand.filter((c) => c.deck_id !== deckId);
+  if (remaining.length === hand.length) {
+    return null; // deckId 不在手牌中，无变化
+  }
+  if (remaining.length === 0) {
+    await redisClient.del(getHandKey(battleId, characterId));
+  } else {
+    await redisClient.set(getHandKey(battleId, characterId), JSON.stringify(remaining));
+  }
+  return remaining;
 }
 
 // ========================================

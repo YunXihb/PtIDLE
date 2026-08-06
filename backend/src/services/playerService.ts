@@ -1,4 +1,4 @@
-import { query, execute } from '../config/database';
+import { query, execute, withTransaction } from '../config/database';
 import { v4 as uuidv4 } from 'uuid';
 
 interface PlayerProfile {
@@ -158,6 +158,70 @@ export async function updateLastOffline(userId: string): Promise<void> {
     'UPDATE players SET last_offline = NOW(), updated_at = NOW() WHERE user_id = $1',
     [userId]
   );
+}
+
+/**
+ * 原子领取离线收益（单事务 + 行锁，防重复领取）
+ *
+ * 并发两个 offline-claim 请求时，第二个会等待第一个 COMMIT，
+ * 之后读到已更新的 last_offline → 离线时间为 0 → 不再重复发奖。
+ *
+ * @param userId 用户 ID
+ * @param calculate 收益计算函数（读 last_offline + resources，返回收益与上限应用结果）
+ * @returns 领取结果；玩家不存在返回 null
+ */
+export async function claimOfflineEarnings(
+  userId: string,
+  calculate: (base: {
+    last_offline: Date | null;
+    resources: Record<string, number>;
+    warehouse_limits: Record<string, number>;
+  }) => {
+    offlineTime: number;
+    earned: Record<string, number>;
+    stored: Record<string, number>;
+    overflowed: Record<string, number>;
+  }
+): Promise<{
+  offlineTime: number;
+  earned: Record<string, number>;
+  stored: Record<string, number>;
+  overflowed: Record<string, number>;
+} | null> {
+  return withTransaction(async (client) => {
+    // 1. 行锁读玩家当前状态
+    const result = await client.query<{
+      resources: Record<string, number>;
+      warehouse_limits: Record<string, number>;
+      last_offline: Date | null;
+    }>(
+      'SELECT resources, warehouse_limits, last_offline FROM players WHERE user_id = $1 FOR UPDATE',
+      [userId]
+    );
+    if (result.rows.length === 0) {
+      return null;
+    }
+    const base = result.rows[0];
+
+    // 2. 计算收益（基于行锁内最新的 last_offline）
+    const outcome = calculate({
+      last_offline: base.last_offline,
+      resources: base.resources || {},
+      warehouse_limits: base.warehouse_limits || {},
+    });
+
+    // 3. 合并资源 + 更新 last_offline（同事务）
+    const updatedResources: Record<string, number> = { ...(base.resources || {}) };
+    for (const [key, value] of Object.entries(outcome.stored)) {
+      updatedResources[key] = (updatedResources[key] || 0) + value;
+    }
+    await client.query(
+      'UPDATE players SET resources = $1, last_offline = NOW(), updated_at = NOW() WHERE user_id = $2',
+      [JSON.stringify(updatedResources), userId]
+    );
+
+    return outcome;
+  });
 }
 
 /**

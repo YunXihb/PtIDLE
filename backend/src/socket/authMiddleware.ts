@@ -20,7 +20,7 @@ export function verifyClientToken(
   }
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET) as { userId: string; username: string };
+    const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] }) as { userId: string; username: string };
 
     // 写入 socket.data 供后续 handler 使用（T046 房间管理直接读）
     socket.data.userId = decoded.userId;

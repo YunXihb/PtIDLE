@@ -1,5 +1,6 @@
-import { query, execute } from '../config/database';
+import { query, execute, withTransaction } from '../config/database';
 import { v4 as uuidv4 } from 'uuid';
+import { createCache } from '../utils/cache';
 
 export interface CraftingRecipe {
   id: string;
@@ -12,51 +13,32 @@ export interface CraftingRecipe {
   profession_required: string | null;
 }
 
-// 内存缓存（5分钟过期）
-let recipesCache: {
-  data: CraftingRecipe[];
-  timestamp: number;
-} | null = null;
-
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+// 内存缓存（5分钟过期，共享工具）
+const recipesCache = createCache<CraftingRecipe[]>(5 * 60 * 1000);
 
 /**
  * 从数据库获取所有制造配方（带缓存）
  */
 export async function getAllCraftingRecipes(): Promise<CraftingRecipe[]> {
-  const now = Date.now();
+  return recipesCache.getOrLoad(async () => {
+    const result = await query<{
+      id: string;
+      name: string;
+      category: string;
+      input: Record<string, number> | Record<string, number>[];
+      output: Record<string, number>;
+      profession_required: string | null;
+    }>('SELECT id, name, category, input, output, profession_required FROM crafting_recipes ORDER BY category');
 
-  // 检查缓存
-  if (recipesCache && (now - recipesCache.timestamp) < CACHE_TTL) {
-    return recipesCache.data;
-  }
-
-  // 查询数据库
-  const result = await query<{
-    id: string;
-    name: string;
-    category: string;
-    input: Record<string, number> | Record<string, number>[];
-    output: Record<string, number>;
-    profession_required: string | null;
-  }>('SELECT id, name, category, input, output, profession_required FROM crafting_recipes ORDER BY category');
-
-  const recipes: CraftingRecipe[] = result.map(row => ({
-    id: row.id,
-    name: row.name,
-    category: row.category as 'card' | 'gear' | 'consumable',
-    input: row.input,
-    output: row.output,
-    profession_required: row.profession_required,
-  }));
-
-  // 更新缓存
-  recipesCache = {
-    data: recipes,
-    timestamp: now,
-  };
-
-  return recipes;
+    return result.map(row => ({
+      id: row.id,
+      name: row.name,
+      category: row.category as 'card' | 'gear' | 'consumable',
+      input: row.input,
+      output: row.output,
+      profession_required: row.profession_required,
+    }));
+  });
 }
 
 /**
@@ -79,7 +61,7 @@ export async function getCraftingRecipeById(id: string): Promise<CraftingRecipe 
  * 清除配方缓存（用于测试或配置更新时）
  */
 export function clearRecipesCache(): void {
-  recipesCache = null;
+  recipesCache.clear();
 }
 
 export interface CardCraftingResult {
@@ -184,100 +166,140 @@ export async function executeCardCrafting(
     }
   }
 
-  // 7. 扣除材料
-  const updatedMaterials = { ...currentMaterials };
-  for (const [material, amount] of Object.entries(materialUsage)) {
-    updatedMaterials[material] = (updatedMaterials[material] || 0) - amount;
-  }
+  // 7-11. 校验 + 扣料 + 发卡，全部包进单事务
+  //   修复顺序 bug：原实现先扣料再校验（模板不存在/超上限时材料已被扣）。
+  //   现在先完成所有校验（模板存在、数量上限、sequence），全部通过后才扣料 + INSERT。
+  try {
+    const txn = await withTransaction<{ playerCardId: string }>(async (client) => {
+      // 7. 获取卡牌模板信息（校验前置）
+      const outputInfo = recipe.output as { name: string; quantity: number };
+      const cardName = outputInfo.name;
 
-  await execute(
-    'UPDATE players SET materials = $1, updated_at = NOW() WHERE user_id = $2',
-    [JSON.stringify(updatedMaterials), userId]
-  );
+      const templateResult = await client.query<{
+        id: string;
+        type: string;
+        cost: number;
+        effect: Record<string, any>;
+        max_quantity: number;
+      }>('SELECT id, type, cost, effect, max_quantity FROM card_templates WHERE name = $1', [cardName]);
 
-  // 8. 获取卡牌模板信息
-  const outputInfo = recipe.output as { name: string; quantity: number };
-  const cardName = outputInfo.name;
+      if (templateResult.rows.length === 0) {
+        const err = new Error('Card template not found') as Error & { code?: string };
+        err.code = 'CARD_TEMPLATE_NOT_FOUND';
+        throw err;
+      }
 
-  const templateResult = await query<{
-    id: string;
-    type: string;
-    cost: number;
-    effect: Record<string, any>;
-  }>('SELECT id, type, cost, effect FROM card_templates WHERE name = $1', [cardName]);
+      const template = templateResult.rows[0];
 
-  if (templateResult.length === 0) {
+      // 8. 检查卡牌数量上限（校验前置）
+      const maxQuantity = template.max_quantity ?? 5;
+
+      const existingCardsResult = await client.query<{ total_quantity: number }>(
+        `SELECT COALESCE(SUM(quantity), 0) as total_quantity
+         FROM player_cards
+         WHERE player_id = $1 AND card_template_id = $2`,
+        [player.id, template.id]
+      );
+      const currentQuantity = Number(existingCardsResult.rows[0]?.total_quantity || 0);
+
+      if (currentQuantity + quantity > maxQuantity) {
+        const err = new Error(
+          `Card quantity would exceed limit (${maxQuantity}). Current: ${currentQuantity}, Requested: ${quantity}.`
+        ) as Error & { code?: string };
+        err.code = 'CARD_QUANTITY_EXCEEDED';
+        throw err;
+      }
+
+      // 9. 获取该玩家已拥有的该种卡牌数量（用于生成 card_sequence）
+      const sequenceResult = await client.query<{ max_sequence: number }>(
+        `SELECT COALESCE(MAX(card_sequence), 0) as max_sequence
+         FROM player_cards
+         WHERE player_id = $1 AND card_template_id = $2`,
+        [player.id, template.id]
+      );
+      const nextSequence = Number(sequenceResult.rows[0]?.max_sequence || 0) + 1;
+
+      // 10. 全部校验通过 → 扣除材料
+      const updatedMaterials = { ...currentMaterials };
+      for (const [material, amount] of Object.entries(materialUsage)) {
+        updatedMaterials[material] = (updatedMaterials[material] || 0) - amount;
+      }
+
+      const materialsRes = await client.query(
+        'UPDATE players SET materials = $1, updated_at = NOW() WHERE user_id = $2',
+        [JSON.stringify(updatedMaterials), userId]
+      );
+      if ((materialsRes.rowCount ?? 0) === 0) {
+        const err = new Error('Player not found') as Error & { code?: string };
+        err.code = 'PLAYER_NOT_FOUND';
+        throw err;
+      }
+
+      // 11. 创建玩家卡牌
+      const playerCardId = uuidv4();
+      await client.query(
+        `INSERT INTO player_cards (id, player_id, card_template_id, name, type, cost, effect, quantity, card_sequence, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())`,
+        [
+          playerCardId,
+          player.id,
+          template.id,
+          cardName,
+          template.type,
+          template.cost,
+          JSON.stringify(template.effect),
+          quantity,
+          nextSequence,
+        ]
+      );
+
+      return { playerCardId };
+    });
+
     return {
-      success: false,
-      cardName,
+      success: true,
+      cardName: (recipe.output as { name: string }).name,
       quantity,
       materialsUsed: materialUsage,
-      error: 'Card template not found',
+      playerCardId: txn.playerCardId,
     };
-  }
-
-  const template = templateResult[0];
-
-  // 9. 检查卡牌数量上限
-  const maxQuantityResult = await query<{ max_quantity: number }>(
-    'SELECT max_quantity FROM card_templates WHERE id = $1',
-    [template.id]
-  );
-  const maxQuantity = maxQuantityResult[0]?.max_quantity || 5;
-
-  // 检查玩家已拥有的该种卡牌数量
-  const existingCardsResult = await query<{ total_quantity: number }>(
-    `SELECT COALESCE(SUM(quantity), 0) as total_quantity
-     FROM player_cards
-     WHERE player_id = $1 AND card_template_id = $2`,
-    [player.id, template.id]
-  );
-  const currentQuantity = Number(existingCardsResult[0]?.total_quantity || 0);
-
-  if (currentQuantity + quantity > maxQuantity) {
+  } catch (err) {
+    const e = err as Error & { code?: string };
+    if (e.code === 'CARD_TEMPLATE_NOT_FOUND') {
+      return {
+        success: false,
+        cardName: recipe.name,
+        quantity,
+        materialsUsed: materialUsage,
+        error: 'Card template not found',
+      };
+    }
+    if (e.code === 'CARD_QUANTITY_EXCEEDED') {
+      return {
+        success: false,
+        cardName: recipe.name,
+        quantity,
+        materialsUsed: materialUsage,
+        error: e.message,
+      };
+    }
+    if (e.code === 'PLAYER_NOT_FOUND') {
+      return {
+        success: false,
+        cardName: recipe.name,
+        quantity,
+        materialsUsed: {},
+        error: 'Player not found',
+      };
+    }
     return {
       success: false,
-      cardName,
+      cardName: recipe.name,
       quantity,
-      materialsUsed: materialUsage,
-      error: `Card quantity would exceed limit (${maxQuantity}). Current: ${currentQuantity}, Requested: ${quantity}. Overflow handling deferred to T1000.`,
+      materialsUsed: {},
+      error: e.message,
     };
   }
-
-  // 10. 获取该玩家已拥有的该种卡牌数量（用于生成 card_sequence）
-  const sequenceResult = await query<{ max_sequence: number }>(
-    `SELECT COALESCE(MAX(card_sequence), 0) as max_sequence
-     FROM player_cards
-     WHERE player_id = $1 AND card_template_id = $2`,
-    [player.id, template.id]
-  );
-  const nextSequence = Number(sequenceResult[0]?.max_sequence || 0) + 1;
-
-  // 11. 创建玩家卡牌
-  const playerCardId = uuidv4();
-  await execute(
-    `INSERT INTO player_cards (id, player_id, card_template_id, name, type, cost, effect, quantity, card_sequence, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())`,
-    [
-      playerCardId,
-      player.id,
-      template.id,
-      cardName,
-      template.type,
-      template.cost,
-      JSON.stringify(template.effect),
-      quantity,
-      nextSequence,
-    ]
-  );
-
-  return {
-    success: true,
-    cardName,
-    quantity,
-    materialsUsed: materialUsage,
-    playerCardId,
-  };
 }
 
 // Gear name to skill bonus key mapping

@@ -1,4 +1,5 @@
 import { query } from '../config/database';
+import { createCache } from '../utils/cache';
 
 export interface Profession {
   id: string;
@@ -9,51 +10,32 @@ export interface Profession {
   description: string | null;
 }
 
-// 内存缓存（5分钟过期）
-let professionsCache: {
-  data: Profession[];
-  timestamp: number;
-} | null = null;
-
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+// 内存缓存（5分钟过期，共享工具）
+const professionsCache = createCache<Profession[]>(5 * 60 * 1000);
 
 /**
  * 从数据库获取所有职业（带缓存）
  */
 export async function getAllProfessions(): Promise<Profession[]> {
-  const now = Date.now();
+  return professionsCache.getOrLoad(async () => {
+    const result = await query<{
+      id: string;
+      name: string;
+      base_health: number;
+      base_movement: number;
+      base_energy: number;
+      description: string | null;
+    }>('SELECT id, name, base_health, base_movement, base_energy, description FROM professions ORDER BY name');
 
-  // 检查缓存
-  if (professionsCache && (now - professionsCache.timestamp) < CACHE_TTL) {
-    return professionsCache.data;
-  }
-
-  // 查询数据库
-  const result = await query<{
-    id: string;
-    name: string;
-    base_health: number;
-    base_movement: number;
-    base_energy: number;
-    description: string | null;
-  }>('SELECT id, name, base_health, base_movement, base_energy, description FROM professions ORDER BY name');
-
-  const professions: Profession[] = result.map(row => ({
-    id: row.id,
-    name: row.name,
-    base_health: row.base_health,
-    base_movement: row.base_movement,
-    base_energy: row.base_energy,
-    description: row.description,
-  }));
-
-  // 更新缓存
-  professionsCache = {
-    data: professions,
-    timestamp: now,
-  };
-
-  return professions;
+    return result.map(row => ({
+      id: row.id,
+      name: row.name,
+      base_health: row.base_health,
+      base_movement: row.base_movement,
+      base_energy: row.base_energy,
+      description: row.description,
+    }));
+  });
 }
 
 /**
@@ -68,5 +50,5 @@ export async function getProfessionByName(name: string): Promise<Profession | nu
  * 清除职业缓存（用于测试或配置更新时）
  */
 export function clearProfessionsCache(): void {
-  professionsCache = null;
+  professionsCache.clear();
 }

@@ -1,4 +1,5 @@
 import { query } from '../config/database';
+import { createCache } from '../utils/cache';
 
 export interface ProcessingRecipe {
   id: string;
@@ -9,51 +10,32 @@ export interface ProcessingRecipe {
   efficiency: number;
 }
 
-// 内存缓存（5分钟过期）
-let recipesCache: {
-  data: ProcessingRecipe[];
-  timestamp: number;
-} | null = null;
-
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+// 内存缓存（5分钟过期，共享工具）
+const recipesCache = createCache<ProcessingRecipe[]>(5 * 60 * 1000);
 
 /**
  * 从数据库获取所有加工配方（带缓存）
  */
 export async function getAllProcessingRecipes(): Promise<ProcessingRecipe[]> {
-  const now = Date.now();
+  return recipesCache.getOrLoad(async () => {
+    const result = await query<{
+      id: string;
+      name: string;
+      type: string;
+      input: Record<string, number>;
+      output: Record<string, number>;
+      efficiency: number;
+    }>('SELECT id, name, type, input, output, efficiency FROM processing_recipes ORDER BY type');
 
-  // 检查缓存
-  if (recipesCache && (now - recipesCache.timestamp) < CACHE_TTL) {
-    return recipesCache.data;
-  }
-
-  // 查询数据库
-  const result = await query<{
-    id: string;
-    name: string;
-    type: string;
-    input: Record<string, number>;
-    output: Record<string, number>;
-    efficiency: number;
-  }>('SELECT id, name, type, input, output, efficiency FROM processing_recipes ORDER BY type');
-
-  const recipes: ProcessingRecipe[] = result.map(row => ({
-    id: row.id,
-    name: row.name,
-    type: row.type as 'smelting' | 'carpentry' | 'grinding',
-    input: row.input,
-    output: row.output,
-    efficiency: Number(row.efficiency),
-  }));
-
-  // 更新缓存
-  recipesCache = {
-    data: recipes,
-    timestamp: now,
-  };
-
-  return recipes;
+    return result.map(row => ({
+      id: row.id,
+      name: row.name,
+      type: row.type as 'smelting' | 'carpentry' | 'grinding',
+      input: row.input,
+      output: row.output,
+      efficiency: Number(row.efficiency),
+    }));
+  });
 }
 
 /**
@@ -76,5 +58,5 @@ export async function getProcessingRecipeById(id: string): Promise<ProcessingRec
  * 清除配方缓存（用于测试或配置更新时）
  */
 export function clearRecipesCache(): void {
-  recipesCache = null;
+  recipesCache.clear();
 }

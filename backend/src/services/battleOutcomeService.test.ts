@@ -35,6 +35,7 @@ jest.mock('../config/redis', () => ({
 
 jest.mock('../config/database', () => ({
   query: mockQuery,
+  queryOne: jest.fn().mockResolvedValue(null),
   execute: mockExecute,
 }));
 
@@ -222,14 +223,14 @@ describe('applyBaseStars', () => {
         };
       }
       if (key === 'battle:b1:positions') {
-        // 默认 c1-c6 都在远离据点的位置 (8,8)
+        // 真实格式: key="x,y" → value=charId（默认 c1-c6 都在远离据点的角落，0 delta）
         return {
-          c1: JSON.stringify({ x: 8, y: 8 }),
-          c2: JSON.stringify({ x: 8, y: 8 }),
-          c3: JSON.stringify({ x: 8, y: 8 }),
-          c4: JSON.stringify({ x: 8, y: 8 }),
-          c5: JSON.stringify({ x: 8, y: 8 }),
-          c6: JSON.stringify({ x: 8, y: 8 }),
+          '0,0': 'c1',
+          '0,1': 'c2',
+          '1,0': 'c3',
+          '0,8': 'c4',
+          '0,7': 'c5',
+          '1,8': 'c6',
         };
       }
       return {};
@@ -256,16 +257,17 @@ describe('applyBaseStars', () => {
         };
       }
       if (key === 'battle:b1:positions') {
+        // 真实格式: key="x,y" → value=charId
         // c1(3,3) 在 (3,3) 范围; c2(1,3) 在 (3,3) 范围但不在 (6,6) 范围;
         // c3(0,0) 不在任何据点范围; c4(4,3) 在 (3,3) 范围但不在 (6,6) 范围;
         // c6(8,0) 不在任何据点范围
         return {
-          c1: JSON.stringify({ x: 3, y: 3 }),
-          c2: JSON.stringify({ x: 1, y: 3 }),
-          c3: JSON.stringify({ x: 0, y: 0 }),
-          c4: JSON.stringify({ x: 4, y: 3 }),
-          c5: JSON.stringify({ x: 8, y: 8 }),
-          c6: JSON.stringify({ x: 8, y: 0 }),
+          '3,3': 'c1',
+          '1,3': 'c2',
+          '0,0': 'c3',
+          '4,3': 'c4',
+          '8,8': 'c5',
+          '8,0': 'c6',
         };
       }
       return {};
@@ -293,15 +295,16 @@ describe('applyBaseStars', () => {
         };
       }
       if (key === 'battle:b1:positions') {
+        // 真实格式: key="x,y" → value=charId
         // p1 三子在 (0,*) 角落，远离两个据点; p2 占据 (3,3)/(4,3) (在 (3,3) 范围)
         // 和 (5,5) (同时在 (3,3) 与 (6,6) 范围)
         return {
-          c1: JSON.stringify({ x: 0, y: 0 }),
-          c2: JSON.stringify({ x: 0, y: 1 }),
-          c3: JSON.stringify({ x: 0, y: 2 }),
-          c4: JSON.stringify({ x: 3, y: 3 }),
-          c5: JSON.stringify({ x: 4, y: 3 }),
-          c6: JSON.stringify({ x: 5, y: 5 }),
+          '0,0': 'c1',
+          '0,1': 'c2',
+          '0,2': 'c3',
+          '3,3': 'c4',
+          '4,3': 'c5',
+          '5,5': 'c6',
         };
       }
       return {};
@@ -329,17 +332,18 @@ describe('applyBaseStars', () => {
         };
       }
       if (key === 'battle:b1:positions') {
+        // 真实格式: key="x,y" → value=charId
         // c1(4,4) c2(5,5): p1 在 (3,3)∩(6,6) overlap
         // c3(6,6): p1 在 (6,6) 范围 only
         // c4(1,1) c5(2,2): p2 在 (3,3) 范围 only
         // c6(0,0): p2 远离两据点
         return {
-          c1: JSON.stringify({ x: 4, y: 4 }),
-          c2: JSON.stringify({ x: 5, y: 5 }),
-          c3: JSON.stringify({ x: 6, y: 6 }),
-          c4: JSON.stringify({ x: 1, y: 1 }),
-          c5: JSON.stringify({ x: 2, y: 2 }),
-          c6: JSON.stringify({ x: 0, y: 0 }),
+          '4,4': 'c1',
+          '5,5': 'c2',
+          '6,6': 'c3',
+          '1,1': 'c4',
+          '2,2': 'c5',
+          '0,0': 'c6',
         };
       }
       return {};
@@ -365,16 +369,17 @@ describe('applyBaseStars', () => {
         };
       }
       if (key === 'battle:b1:positions') {
+        // 真实格式: key="x,y" → value=charId
         // c1(3,3) 在 (3,3) 范围 only; c2(8,8) 在 (6,6) 范围 only;
         // c3(0,0) 远离两据点; c4(5,2) 在 (3,3) 范围 only;
         // c5(8,6) 在 (6,6) 范围 only; c6(0,8) 远离两据点
         return {
-          c1: JSON.stringify({ x: 3, y: 3 }),
-          c2: JSON.stringify({ x: 8, y: 8 }),
-          c3: JSON.stringify({ x: 0, y: 0 }),
-          c4: JSON.stringify({ x: 5, y: 2 }),
-          c5: JSON.stringify({ x: 8, y: 6 }),
-          c6: JSON.stringify({ x: 0, y: 8 }),
+          '3,3': 'c1',
+          '8,8': 'c2',
+          '0,0': 'c3',
+          '5,2': 'c4',
+          '8,6': 'c5',
+          '0,8': 'c6',
         };
       }
       return {};

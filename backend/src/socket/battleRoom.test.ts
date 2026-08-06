@@ -400,11 +400,11 @@ describe('handleBattleSkipPlay', () => {
     mockIo = {} as any;
   });
 
-  it('valid payload → executeEndStep 被调', async () => {
+  it('valid payload → executeEndStep 被调（带 userId 归属校验）', async () => {
     const { executeEndStep } = require('../services/battleActionService');
     (executeEndStep as jest.Mock).mockResolvedValue({ success: true, state: {} as any });
     await handleBattleSkipPlay(mockIo, mockSocket, { battleId: 'b1' });
-    expect(executeEndStep).toHaveBeenCalledWith(mockIo, 'b1');
+    expect(executeEndStep).toHaveBeenCalledWith(mockIo, 'b1', 'u1');
     expect(mockEmit).not.toHaveBeenCalled();
   });
 

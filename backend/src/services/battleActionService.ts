@@ -1,5 +1,5 @@
 import type { Server as IOServer } from 'socket.io';
-import { getDbSessionState, completeMovePhase, completePlayPhase, endCurrentStep, activateCurrentUnit, completeDrawPhase, endCurrentRound } from './battleSessionService';
+import { getSessionState, completeMovePhase, completePlayPhase, endCurrentStep, activateCurrentUnit, completeDrawPhase, endCurrentRound } from './battleSessionService';
 import type { BattleSessionState } from './battleSessionService';
 import {
   listCharactersInBattle,
@@ -14,13 +14,14 @@ import {
 } from './battleService';
 import type { AttackValidationResult } from './battleService';
 import type { HandCard } from './handService';
-import { getActorHand, addToDiscardPile, retainHandOnStepEnd, drawCards } from './handService';
+import { getActorHand, addToDiscardPile, retainHandOnStepEnd, drawCards, removeCardFromHand } from './handService';
 import { tickBurnDamageOnTarget } from './professionMechanicService';
 import { tickEffects } from './statusEffectService';
 import { broadcastBoardState, broadcastHandState, broadcastCharacterStatus, broadcastSessionState } from '../socket/battleStateBroadcaster';
 import { applyKillStars, applyBaseStars, checkWinCondition, recordVictory } from './battleOutcomeService';
 import { redisClient } from '../config/redis';
 import { withTransaction } from '../config/database';
+import { redisKey } from '../utils/redisKeys';
 
 /**
  * T049 移动操作同步
@@ -71,8 +72,8 @@ export async function executeMove(
   toY: number,
   userId: string
 ): Promise<MoveResult> {
-  // 1. 读 session
-  const session = await getDbSessionState(battleId);
+  // 1. 读 session（Redis 主存，含完整 activationOrder）
+  const session = await getSessionState(battleId);
   if (!session) {
     throw new Error(`executeMove: session not found: ${battleId}`);
   }
@@ -202,19 +203,24 @@ async function consumePlayerCard(
     return { consumed: false, reason: 'public_pool' };
   }
 
-  // 2. deck 卡：单事务双删
+  // 2. deck 卡：单事务双删（带归属复核，防客户端伪造他人 card_id/deck_id）
+  //    - character_deck.id = deck_id AND character_id = 当前 actor → 防删他人牌库
+  //    - player_cards.id = card_id AND 该 card 是 character_deck 引用 → 防删他人卡牌
   try {
     const result = await withTransaction(async (client) => {
       const deckRes = await client.query(
-        'DELETE FROM character_deck WHERE id = $1',
-        [handCard.deck_id]
+        `DELETE FROM character_deck
+         WHERE id = $1 AND character_id = $2`,
+        [handCard.deck_id, characterId]
       );
       const cardRes = await client.query(
-        'DELETE FROM player_cards WHERE id = $1',
-        [handCard.card_id]
+        `DELETE FROM player_cards
+         WHERE id = $1
+           AND id = (SELECT player_card_id FROM character_deck WHERE id = $2 AND character_id = $3)`,
+        [handCard.card_id, handCard.deck_id, characterId]
       );
 
-      // 幂等边界：双删任一返回 0 行（已被别的路径删了）
+      // 幂等边界：双删任一返回 0 行（已被别的路径删了 / 归属不匹配）
       // 抛 PartialDeleteError → withTransaction 自动 ROLLBACK
       if (deckRes.rowCount === 0 || cardRes.rowCount === 0) {
         throw new PartialDeleteError(
@@ -266,8 +272,8 @@ export async function executePlayCard(
   handCard: HandCard,
   userId: string
 ): Promise<PlayCardResult> {
-  // 1. 读 session
-  const session = await getDbSessionState(battleId);
+  // 1. 读 session（Redis 主存，含完整 activationOrder）
+  const session = await getSessionState(battleId);
   if (!session) {
     throw new Error(`executePlayCard: session not found: ${battleId}`);
   }
@@ -298,7 +304,13 @@ export async function executePlayCard(
   // 6. card.type dispatch
   let validation: AttackValidationResult;
   if (handCard.type === 'attack' && (handCard.effect as { aoe?: boolean })?.aoe) {
-    validation = await validateAOEAttack(battleId, characterId, handCard.card_id, handCard.source);
+    validation = await validateAOEAttack(
+      battleId,
+      characterId,
+      handCard.card_id,
+      handCard.source,
+      session.currentRound
+    );
   } else if (handCard.type === 'attack') {
     validation = await validateAttack(
       battleId,
@@ -334,7 +346,7 @@ export async function executePlayCard(
   // 7. 副作用：扣能量（读 pieces HASH → setCharacterEnergy）
   let currentEnergy = 0;
   try {
-    const pieceRaw = await redisClient.hGet(`battle:${battleId}:pieces`, characterId);
+    const pieceRaw = await redisClient.hGet(redisKey.pieces(battleId), characterId);
     if (pieceRaw) {
       currentEnergy = JSON.parse(pieceRaw).energy ?? 0;
     }
@@ -348,9 +360,12 @@ export async function executePlayCard(
     return { success: false, error: 'energy_deduct_failed', detail: (err as Error).message };
   }
 
-  // 8. 删手牌
+  // 8. 删手牌（STRING JSON 数组 → 读-过滤-覆盖写，不能 lRem）
   try {
-    await redisClient.lRem(`battle:${battleId}:hand:${characterId}`, 1, JSON.stringify(handCard));
+    const remaining = await removeCardFromHand(battleId, characterId, handCard.deck_id);
+    if (remaining === null) {
+      return { success: false, error: 'side_effect_failed', detail: 'card not in hand' };
+    }
   } catch (err) {
     return { success: false, error: 'side_effect_failed', detail: (err as Error).message };
   }
@@ -371,13 +386,10 @@ export async function executePlayCard(
   await broadcastHandState(io, battleId, userId, characterId);
   await broadcastCharacterStatus(io, battleId, characterId);
 
-  // 11. 阶段推进
-  await completePlayPhase(battleId);
-
-  // 12. T051 wire-up: completePlayPhase 后自动级联 executeEndStep
-  // 注：T050 spec §4.5 已规划但当时 T051 未实现。T051 Task 9 wire up。
-  // 失败由 socketServer 兜底（log + 不 emit，因为 T050 本无成功 emit）
-  // executeEndStep 内部已推 board, 此处不重复 broadcastBoardState
+  // 11-12. T051 wire-up: 阶段推进统一交给 executeEndStep
+  //   executeEndStep 内部负责 completePlayPhase(play→end_step) → retain → endCurrentStep → activate → draw
+  //   移除 executePlayCard 内独立 completePlayPhase，避免与 executeEndStep 双重推进 / phase 校验冲突
+  //   失败由 socketServer 兜底（log + 不 emit，因为 T050 本无成功 emit）
   await executeEndStep(io, battleId);
 
   return { success: true, validation };
@@ -416,14 +428,15 @@ export type StepEndResult =
 
 export async function executeEndStep(
   io: IOServer,
-  battleId: string
+  battleId: string,
+  userId?: string
 ): Promise<StepEndResult> {
   // 0. ★ T052: 捕获 preStepAliveMap（applyKillStars 步骤 12 比对用）
   //    必须在任何可能改变 is_alive 的副作用之前完成快照
   const characters = await listCharactersInBattle(battleId);
   const preStepAliveMap: Record<string, boolean> = {};
   if (characters.length > 0) {
-    const piecesRaw = await redisClient.hGetAll(`battle:${battleId}:pieces`);
+    const piecesRaw = await redisClient.hGetAll(redisKey.pieces(battleId));
     for (const c of characters) {
       const raw = piecesRaw[c.characterId];
       if (raw) {
@@ -432,8 +445,8 @@ export async function executeEndStep(
     }
   }
 
-  // 1. 读 session
-  const state = await getDbSessionState(battleId);
+  // 1. 读 session（Redis 主存，含完整 activationOrder）
+  const state = await getSessionState(battleId);
   if (!state) {
     throw new Error(`executeEndStep: session not found: ${battleId}`);
   }
@@ -443,7 +456,41 @@ export async function executeEndStep(
     return { success: false, error: 'not_in_play_or_move_phase' };
   }
 
-  // 3. retain 手牌（自动保留 hand LIST 第一张，如手牌为空传 null）
+  // 2.25 actor 归属校验（T-FIX: 防止对手替当前 actor 跳过回合）
+  //    仅当调用方传了 userId（skip_play 路径）时校验；executePlayCard 级联调用不传
+  if (userId) {
+    if (!state.currentActorId) {
+      return { success: false, error: 'not_current_actor' };
+    }
+    const chars = characters.find((c) => c.characterId === state.currentActorId);
+    if (!chars || chars.userId !== userId) {
+      return { success: false, error: 'not_current_actor' };
+    }
+  }
+
+  // 2.5 统一阶段：move/play → end_step
+  //    - 若当前在 move 阶段（skip 路径直接触发）：先 completeMovePhase → play
+  //    - 再 completePlayPhase → end_step（确保 endCurrentStep 的 assertPhase('end_step') 通过）
+  if (state.currentPhase === 'move') {
+    try {
+      const m = await completeMovePhase(battleId);
+      if (!m.success) {
+        return { success: false, error: 'complete_phase_failed', detail: m.error };
+      }
+    } catch (err) {
+      return { success: false, error: 'complete_phase_failed', detail: (err as Error).message };
+    }
+  }
+  try {
+    const p = await completePlayPhase(battleId);
+    if (!p.success) {
+      return { success: false, error: 'complete_phase_failed', detail: p.error };
+    }
+  } catch (err) {
+    return { success: false, error: 'complete_phase_failed', detail: (err as Error).message };
+  }
+
+  // 3. retain 手牌（自动保留 hand 第一张，如手牌为空传 null）
   try {
     const hand = await getActorHand(battleId, state.currentActorId!);
     const retainDeckId = hand[0]?.deck_id ?? null;
@@ -455,26 +502,40 @@ export async function executeEndStep(
     return { success: false, error: 'retain_failed', detail: (err as Error).message };
   }
 
-  // 4. (last step?) executeRoundEnd
-  if (state.currentStep === 5) {
-    try {
-      await executeRoundEnd(io, battleId, state as BattleSessionState);
-    } catch (err) {
-      return { success: false, error: 'round_end_failed', detail: (err as Error).message };
-    }
-  }
+  // 4. 判断是否本轮最后一步（动态取 activationOrder.length，替代硬编码 5）
+  const totalSteps = state.activationOrder?.length ?? 6;
+  const isLastStepInRound = state.currentStep >= totalSteps - 1;
 
-  // 5. endCurrentStep
+  // 5. endCurrentStep（end_step → 非最后一步 idle+actor 切换 / 最后一步 end_round）
+  let stepEndedRound = false;
   try {
     const r = await endCurrentStep(battleId);
     if (!r.success) {
       return { success: false, error: 'end_step_failed', detail: r.error };
     }
+    // endCurrentStep 命中最后一步时 phase → end_round
+    stepEndedRound = r.state?.currentPhase === 'end_round';
   } catch (err) {
     return { success: false, error: 'end_step_failed', detail: (err as Error).message };
   }
 
-  // 6. activateCurrentUnit
+  // 6. 若本轮结束 → executeRoundEnd（burn tick + endCurrentRound + 据点 star）
+  if (stepEndedRound || isLastStepInRound) {
+    try {
+      await executeRoundEnd(io, battleId, state as BattleSessionState);
+    } catch (err) {
+      return { success: false, error: 'round_end_failed', detail: (err as Error).message };
+    }
+    // executeRoundEnd 已广播新 round 的 session + board；此处直接返回
+    // （executeRoundEnd 内部做 endCurrentRound + 广播，无需再走 activate/draw）
+    const newState = await getSessionState(battleId);
+    if (!newState) {
+      throw new Error(`executeEndStep: post-round state read failed: ${battleId}`);
+    }
+    return { success: true, state: newState };
+  }
+
+  // 6.5 activateCurrentUnit（idle → draw）
   try {
     const r = await activateCurrentUnit(battleId);
     if (!r.success) {
@@ -485,7 +546,7 @@ export async function executeEndStep(
   }
 
   // 7. drawCards (新 actor)
-  const updatedState = await getDbSessionState(battleId);
+  const updatedState = await getSessionState(battleId);
   if (!updatedState || !updatedState.currentActorId) {
     return { success: false, error: 'draw_failed' };
   }
@@ -498,7 +559,7 @@ export async function executeEndStep(
     return { success: false, error: 'draw_failed', detail: (err as Error).message };
   }
 
-  // 8. completeDrawPhase
+  // 8. completeDrawPhase（draw → move）
   try {
     const r = await completeDrawPhase(battleId);
     if (!r.success) {
@@ -509,12 +570,10 @@ export async function executeEndStep(
   }
 
   // 9. 末尾重读 session
-  const finalStateRaw = await getDbSessionState(battleId);
-  if (!finalStateRaw) {
+  const finalState = await getSessionState(battleId);
+  if (!finalState) {
     throw new Error(`executeEndStep: final state read failed: ${battleId}`);
   }
-  // Cast to BattleSessionState (runtime guarantees full shape; mock tests may return partial)
-  const finalState = finalStateRaw as BattleSessionState;
 
   // 10-11. 广播
   await broadcastSessionState(io, battleId, finalState);
@@ -555,11 +614,11 @@ export async function executeRoundEnd(
   }
 
   // 4-5. 重读 + 广播
-  const newState = await getDbSessionState(battleId);
+  const newState = await getSessionState(battleId);
   if (!newState) {
     throw new Error(`executeRoundEnd: state read failed: ${battleId}`);
   }
-  await broadcastSessionState(io, battleId, newState as BattleSessionState);
+  await broadcastSessionState(io, battleId, newState);
   await broadcastBoardState(io, battleId);
 
   // 6. ★ T052 wire-up: applyBaseStars → checkWinCondition → recordVictory (win/draw)

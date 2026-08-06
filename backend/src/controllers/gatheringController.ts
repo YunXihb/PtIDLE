@@ -1,4 +1,4 @@
-import { Request, Response } from 'express';
+import { Response } from 'express';
 import { AuthRequest } from '../middleware/auth';
 import {
   startGathering,
@@ -55,9 +55,12 @@ export async function startGatheringHandler(
   } catch (error) {
     console.error('Error starting gathering:', error);
 
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    // 用错误码匹配（T-FIX：替代脆弱的 `.includes('中文')` 匹配）
+    const isAlreadyActive =
+      error instanceof Error &&
+      (error as Error & { code?: string }).code === 'GATHERING_ALREADY_ACTIVE';
 
-    if (errorMessage.includes('已有进行中的采集任务')) {
+    if (isAlreadyActive) {
       res.status(400).json({ error: 'Already has active gathering task' });
       return;
     }

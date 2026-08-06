@@ -21,6 +21,7 @@ jest.mock('../config/redis', () => ({
 }));
 
 jest.mock('./battleSessionService', () => ({
+  getSessionState: jest.fn(),
   getDbSessionState: jest.fn(),
   completeMovePhase: jest.fn(),
   completePlayPhase: jest.fn(),
@@ -55,6 +56,7 @@ jest.mock('./handService', () => ({
   addToDiscardPile: jest.fn(),
   retainHandOnStepEnd: jest.fn(),
   drawCards: jest.fn(),
+  removeCardFromHand: jest.fn(),
 }));
 
 jest.mock('./professionMechanicService', () => ({
@@ -82,7 +84,7 @@ jest.mock('../config/database', () => ({
   testConnection: jest.fn(),
 }));
 
-import { getDbSessionState, completeMovePhase, completePlayPhase, endCurrentStep, activateCurrentUnit, completeDrawPhase, endCurrentRound, finishSession } from './battleSessionService';
+import { getSessionState, getDbSessionState, completeMovePhase, completePlayPhase, endCurrentStep, activateCurrentUnit, completeDrawPhase, endCurrentRound, finishSession } from './battleSessionService';
 import {
   listCharactersInBattle,
   validateMovement,
@@ -95,7 +97,7 @@ import {
   setCharacterEnergy,
 } from './battleService';
 import { broadcastBoardState, broadcastHandState, broadcastCharacterStatus, broadcastSessionState } from '../socket/battleStateBroadcaster';
-import { getActorHand, addToDiscardPile, retainHandOnStepEnd, drawCards } from './handService';
+import { getActorHand, addToDiscardPile, retainHandOnStepEnd, drawCards, removeCardFromHand } from './handService';
 import { tickBurnDamageOnTarget } from './professionMechanicService';
 import { tickEffects } from './statusEffectService';
 import { applyKillStars, applyBaseStars, checkWinCondition, recordVictory } from './battleOutcomeService';
@@ -103,7 +105,7 @@ import { redisClient } from '../config/redis';
 import { withTransaction } from '../config/database';
 import type { Server as IOServer } from 'socket.io';
 
-const mockGetDbSessionState = getDbSessionState as jest.MockedFunction<typeof getDbSessionState>;
+const mockGetSessionState = getSessionState as jest.MockedFunction<any>;
 const mockCompleteMovePhase = completeMovePhase as jest.MockedFunction<typeof completeMovePhase>;
 const mockListCharactersInBattle = listCharactersInBattle as jest.MockedFunction<
   typeof listCharactersInBattle
@@ -118,6 +120,7 @@ const mockGetCharacterPosition = getCharacterPosition as jest.MockedFunction<
 >;
 const mockGetCharacterPiece = getCharacterPiece as jest.MockedFunction<typeof getCharacterPiece>;
 const mockGetActorHand = getActorHand as jest.MockedFunction<typeof getActorHand>;
+const mockRemoveCardFromHand = removeCardFromHand as jest.MockedFunction<typeof removeCardFromHand>;
 const mockAddToDiscardPile = addToDiscardPile as jest.MockedFunction<typeof addToDiscardPile>;
 const mockValidateAttack = validateAttack as jest.MockedFunction<typeof validateAttack>;
 const mockValidateAOEAttack = validateAOEAttack as jest.MockedFunction<typeof validateAOEAttack>;
@@ -153,11 +156,12 @@ function createMockIO(): IOServer {
 beforeEach(() => {
   jest.resetAllMocks();
   // 默认 happy path 桩：每个测试按需覆盖
-  mockGetDbSessionState.mockResolvedValue({
+  mockGetSessionState.mockResolvedValue({
     currentRound: 1,
     currentStep: 0,
     currentActorId: 'c1',
     currentPhase: 'move',
+    activationOrder: ['c1', 'c4', 'c2', 'c5', 'c3', 'c6'],
   });
   mockListCharactersInBattle.mockResolvedValue([
     { characterId: 'c1', playerId: 'p1', userId: 'u1', profession: 'warrior', name: 'A' },
@@ -208,6 +212,7 @@ beforeEach(() => {
   });
   (redisClient.lRem as jest.Mock).mockResolvedValue(1);
   (redisClient.hGet as jest.Mock).mockResolvedValue(JSON.stringify({ energy: 3 }));
+  mockRemoveCardFromHand.mockResolvedValue([]);
   // T051 默认 happy path 桩
   mockTickBurnDamageOnTarget.mockResolvedValue({ totalDamage: 0, newHp: -1, isDead: false });
   mockTickEffects.mockResolvedValue([]);
@@ -255,7 +260,7 @@ describe('executeMove — happy path', () => {
 
     expect(result).toEqual({ success: true });
     // 验证所有依赖被调一次
-    expect(mockGetDbSessionState).toHaveBeenCalledWith('b1');
+    expect(mockGetSessionState).toHaveBeenCalledWith('b1');
     expect(mockListCharactersInBattle).toHaveBeenCalledWith('b1');
     expect(mockValidateMovement).toHaveBeenCalledWith('b1', 'c1', 5, 3);
     expect(mockMoveCharacter).toHaveBeenCalledWith('b1', 'c1', expect.any(Number), expect.any(Number), 5, 3);
@@ -277,7 +282,7 @@ describe('executeMove — happy path', () => {
 
 describe('executeMove — error branches', () => {
   it('should return not_in_move_phase when currentPhase !== move', async () => {
-    mockGetDbSessionState.mockResolvedValue({
+    mockGetSessionState.mockResolvedValue({
       currentRound: 1,
       currentStep: 0,
       currentActorId: 'c1',
@@ -294,7 +299,7 @@ describe('executeMove — error branches', () => {
   });
 
   it('should return not_current_actor when characterId does not match currentActorId', async () => {
-    mockGetDbSessionState.mockResolvedValue({
+    mockGetSessionState.mockResolvedValue({
       currentRound: 1,
       currentStep: 0,
       currentActorId: 'c2', // 不是 c1
@@ -355,7 +360,7 @@ describe('executeMove — error branches', () => {
 describe('executePlayCard', () => {
   it('happy path: attack single — calls all 17 steps in order and returns success', async () => {
     // 覆盖 T049 默认（move phase） → T050 happy 路径需要 play phase
-    mockGetDbSessionState.mockResolvedValueOnce({
+    mockGetSessionState.mockResolvedValueOnce({
       currentRound: 1,
       currentStep: 0,
       currentActorId: 'c1',
@@ -389,7 +394,7 @@ describe('executePlayCard', () => {
 
     // 验证调用顺序：核心 10 个 mock 都被调用过
     const callOrder = [
-      mockGetDbSessionState,
+      mockGetSessionState,
       mockListCharactersInBattle,
       mockGetActorHand,
       mockValidateAttack,
@@ -411,7 +416,7 @@ describe('executePlayCard', () => {
   });
 
   it('happy path: attack AOE — dispatches to validateAOEAttack', async () => {
-    mockGetDbSessionState.mockResolvedValueOnce({
+    mockGetSessionState.mockResolvedValueOnce({
       currentRound: 1, currentStep: 0, currentActorId: 'c1', currentPhase: 'play',
     });
     mockListCharactersInBattle.mockResolvedValueOnce([
@@ -436,12 +441,12 @@ describe('executePlayCard', () => {
       success: true,
       validation: expect.objectContaining({ valid: true }),
     });
-    expect(mockValidateAOEAttack).toHaveBeenCalledWith('b1', 'c1', 'pc2', 'deck');
+    expect(mockValidateAOEAttack).toHaveBeenCalledWith('b1', 'c1', 'pc2', 'deck', 1);
     expect(mockValidateAttack).not.toHaveBeenCalled();
   });
 
   it('happy path: tactical taunt — dispatches to validateTauntCard', async () => {
-    mockGetDbSessionState.mockResolvedValueOnce({
+    mockGetSessionState.mockResolvedValueOnce({
       currentRound: 1, currentStep: 0, currentActorId: 'c1', currentPhase: 'play',
     });
     mockListCharactersInBattle.mockResolvedValueOnce([
@@ -473,7 +478,7 @@ describe('executePlayCard', () => {
   });
 
   it('happy path: public_pool card — does NOT call addToDiscardPile', async () => {
-    mockGetDbSessionState.mockResolvedValueOnce({
+    mockGetSessionState.mockResolvedValueOnce({
       currentRound: 1, currentStep: 0, currentActorId: 'c1', currentPhase: 'play',
     });
     mockListCharactersInBattle.mockResolvedValueOnce([
@@ -501,7 +506,7 @@ describe('executePlayCard', () => {
   });
 
   it('happy path: deck card — calls addToDiscardPile', async () => {
-    mockGetDbSessionState.mockResolvedValueOnce({
+    mockGetSessionState.mockResolvedValueOnce({
       currentRound: 1, currentStep: 0, currentActorId: 'c1', currentPhase: 'play',
     });
     mockListCharactersInBattle.mockResolvedValueOnce([
@@ -528,7 +533,7 @@ describe('executePlayCard', () => {
   });
 
   it('error: not_in_play_phase — returns error when phase !== "play"', async () => {
-    mockGetDbSessionState.mockResolvedValueOnce({
+    mockGetSessionState.mockResolvedValueOnce({
       currentRound: 1,
       currentStep: 0,
       currentActorId: 'c1',
@@ -553,7 +558,7 @@ describe('executePlayCard', () => {
   });
 
   it('error: not_current_actor — returns error when actor mismatch', async () => {
-    mockGetDbSessionState.mockResolvedValueOnce({
+    mockGetSessionState.mockResolvedValueOnce({
       currentRound: 1,
       currentStep: 0,
       currentActorId: 'c2',  // ← different
@@ -574,7 +579,7 @@ describe('executePlayCard', () => {
   });
 
   it('error: not_owner — returns error when userId mismatch', async () => {
-    mockGetDbSessionState.mockResolvedValueOnce({
+    mockGetSessionState.mockResolvedValueOnce({
       currentRound: 1, currentStep: 0, currentActorId: 'c1', currentPhase: 'play',
     });
     mockListCharactersInBattle.mockResolvedValueOnce([
@@ -595,7 +600,7 @@ describe('executePlayCard', () => {
   });
 
   it('error: card_not_in_hand — returns error when deck_id not in hand', async () => {
-    mockGetDbSessionState.mockResolvedValueOnce({
+    mockGetSessionState.mockResolvedValueOnce({
       currentRound: 1, currentStep: 0, currentActorId: 'c1', currentPhase: 'play',
     });
     mockListCharactersInBattle.mockResolvedValueOnce([
@@ -615,7 +620,7 @@ describe('executePlayCard', () => {
   });
 
   it('error: unsupported_card_type (defense) — returns error', async () => {
-    mockGetDbSessionState.mockResolvedValueOnce({
+    mockGetSessionState.mockResolvedValueOnce({
       currentRound: 1, currentStep: 0, currentActorId: 'c1', currentPhase: 'play',
     });
     mockListCharactersInBattle.mockResolvedValueOnce([
@@ -639,7 +644,7 @@ describe('executePlayCard', () => {
   });
 
   it('error: unsupported_card_type (tactical non-taunt) — returns error', async () => {
-    mockGetDbSessionState.mockResolvedValueOnce({
+    mockGetSessionState.mockResolvedValueOnce({
       currentRound: 1, currentStep: 0, currentActorId: 'c1', currentPhase: 'play',
     });
     mockListCharactersInBattle.mockResolvedValueOnce([
@@ -661,7 +666,7 @@ describe('executePlayCard', () => {
   });
 
   it('error: validation_failed (Card not found) — wraps validate error in detail', async () => {
-    mockGetDbSessionState.mockResolvedValueOnce({
+    mockGetSessionState.mockResolvedValueOnce({
       currentRound: 1, currentStep: 0, currentActorId: 'c1', currentPhase: 'play',
     });
     mockListCharactersInBattle.mockResolvedValueOnce([
@@ -680,7 +685,7 @@ describe('executePlayCard', () => {
   });
 
   it('error: validation_failed (Not enough energy) — wraps validate error', async () => {
-    mockGetDbSessionState.mockResolvedValueOnce({
+    mockGetSessionState.mockResolvedValueOnce({
       currentRound: 1, currentStep: 0, currentActorId: 'c1', currentPhase: 'play',
     });
     mockListCharactersInBattle.mockResolvedValueOnce([
@@ -706,7 +711,7 @@ describe('executePlayCard', () => {
   });
 
   it('error: validation_failed (Target out of range) — wraps validate error', async () => {
-    mockGetDbSessionState.mockResolvedValueOnce({
+    mockGetSessionState.mockResolvedValueOnce({
       currentRound: 1, currentStep: 0, currentActorId: 'c1', currentPhase: 'play',
     });
     mockListCharactersInBattle.mockResolvedValueOnce([
@@ -731,7 +736,7 @@ describe('executePlayCard', () => {
   });
 
   it('error: validation_failed (Cannot attack friendly) — wraps validate error', async () => {
-    mockGetDbSessionState.mockResolvedValueOnce({
+    mockGetSessionState.mockResolvedValueOnce({
       currentRound: 1, currentStep: 0, currentActorId: 'c1', currentPhase: 'play',
     });
     mockListCharactersInBattle.mockResolvedValueOnce([
@@ -749,7 +754,7 @@ describe('executePlayCard', () => {
   });
 
   it('error: validation_failed (taunt range error) — wraps validateTauntCard error', async () => {
-    mockGetDbSessionState.mockResolvedValueOnce({
+    mockGetSessionState.mockResolvedValueOnce({
       currentRound: 1, currentStep: 0, currentActorId: 'c3', currentPhase: 'play',
     });
     mockListCharactersInBattle.mockResolvedValueOnce([
@@ -770,7 +775,7 @@ describe('executePlayCard', () => {
   });
 
   it('error: energy_deduct_failed (setCharacterEnergy throws)', async () => {
-    mockGetDbSessionState.mockResolvedValueOnce({
+    mockGetSessionState.mockResolvedValueOnce({
       currentRound: 1, currentStep: 0, currentActorId: 'c1', currentPhase: 'play',
     });
     mockListCharactersInBattle.mockResolvedValueOnce([
@@ -793,15 +798,15 @@ describe('executePlayCard', () => {
     expect(mockBroadcastHandState).not.toHaveBeenCalled();
   });
 
-  it('error: side_effect_failed (lRem throws)', async () => {
-    mockGetDbSessionState.mockResolvedValueOnce({
+  it('error: side_effect_failed (removeCardFromHand throws)', async () => {
+    mockGetSessionState.mockResolvedValueOnce({
       currentRound: 1, currentStep: 0, currentActorId: 'c1', currentPhase: 'play',
     });
     mockListCharactersInBattle.mockResolvedValueOnce([
       { characterId: 'c1', playerId: 'p1', userId: 'u1', profession: 'warrior', name: 'A' },
     ]);
 
-    (redisClient.lRem as jest.Mock).mockRejectedValueOnce(new Error('lRem failed'));
+    mockRemoveCardFromHand.mockRejectedValueOnce(new Error('remove failed'));
 
     const { executePlayCard } = await import('./battleActionService');
     const io = createMockIO();
@@ -811,7 +816,7 @@ describe('executePlayCard', () => {
     expect(result).toEqual({
       success: false,
       error: 'side_effect_failed',
-      detail: 'lRem failed',
+      detail: 'remove failed',
     });
     expect(mockAddToDiscardPile).not.toHaveBeenCalled();
     expect(mockBroadcastHandState).not.toHaveBeenCalled();
@@ -835,7 +840,7 @@ describe('executePlayCard', () => {
       const fakeClient = { query: jest.fn().mockResolvedValue({ rowCount: 1, rows: [] }) };
       mockWithTransaction.mockImplementation(async (fn: any) => fn(fakeClient));
 
-      mockGetDbSessionState.mockResolvedValue({
+      mockGetSessionState.mockResolvedValue({
         battleId: 'b1',
         currentRound: 1,
         currentStep: 1,
@@ -872,7 +877,7 @@ describe('executePlayCard', () => {
     });
 
     it('T053-2: source=public_pool — does NOT call withTransaction, no DELETE', async () => {
-      mockGetDbSessionState.mockResolvedValue({
+      mockGetSessionState.mockResolvedValue({
         battleId: 'b1', currentRound: 1, currentStep: 1, currentActorId: 'c1', currentPhase: 'play',
       } as any);
       mockListCharactersInBattle.mockResolvedValue([
@@ -904,7 +909,7 @@ describe('executePlayCard', () => {
       const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
       mockWithTransaction.mockRejectedValue(new Error('DB connection lost'));
 
-      mockGetDbSessionState.mockResolvedValue({
+      mockGetSessionState.mockResolvedValue({
         battleId: 'b1', currentRound: 1, currentStep: 1, currentActorId: 'c1', currentPhase: 'play',
       } as any);
       mockListCharactersInBattle.mockResolvedValue([
@@ -953,7 +958,7 @@ describe('executePlayCard', () => {
         }
       });
 
-      mockGetDbSessionState.mockResolvedValue({
+      mockGetSessionState.mockResolvedValue({
         battleId: 'b1', currentRound: 1, currentStep: 1, currentActorId: 'c1', currentPhase: 'play',
       } as any);
       mockListCharactersInBattle.mockResolvedValue([
@@ -1005,7 +1010,7 @@ describe('executeEndStep', () => {
       updatedAt: '2026-01-01T00:00:00Z',
       ...overrides,
     });
-    mockGetDbSessionState
+    mockGetSessionState
       .mockResolvedValueOnce(fullState({ currentStep: 2, currentPhase: 'play', currentActorId: 'c1' }) as any)  // 步骤 1 读
       .mockResolvedValueOnce(fullState({ currentStep: 3, currentPhase: 'draw', currentActorId: 'c4' }) as any)  // 步骤 7 重读
       .mockResolvedValueOnce(fullState({ currentStep: 3, currentPhase: 'draw', currentActorId: 'c4' }) as any); // 步骤 9 末尾重读
@@ -1050,7 +1055,7 @@ describe('executeEndStep', () => {
   });
 
   it('last-step happy path (step 5/6) → executeRoundEnd 触发, endCurrentRound 1 次, currentRound 推进到 2', async () => {
-    mockGetDbSessionState
+    mockGetSessionState
       .mockResolvedValueOnce({  // 步骤 1 读 (last step)
         battleId: 'b1', currentRound: 1, currentStep: 5, currentPhase: 'play', currentActorId: 'c6',
       } as any)
@@ -1073,12 +1078,12 @@ describe('executeEndStep', () => {
     }
     expect(mockEndCurrentRound).toHaveBeenCalledTimes(1);
     expect(mockTickBurnDamageOnTarget).toHaveBeenCalledTimes(6);
-    // round-end 推送 2 次（executeRoundEnd 内 + executeEndStep 内）
-    expect(mockBroadcastSessionState).toHaveBeenCalledTimes(2);
+    // round-end 广播 1 次（executeRoundEnd 内完成 endCurrentRound + 广播，executeEndStep 不再重复推）
+    expect(mockBroadcastSessionState).toHaveBeenCalledTimes(1);
   });
 
-  it('executeRoundEnd 失败 → error: round_end_failed, end_step 未调', async () => {
-    mockGetDbSessionState.mockResolvedValueOnce({
+  it('executeRoundEnd 失败 → error: round_end_failed（endCurrentStep 已先执行）', async () => {
+    mockGetSessionState.mockResolvedValueOnce({
       battleId: 'b1', currentRound: 1, currentStep: 5, currentPhase: 'play', currentActorId: 'c6',
     } as any);
     mockGetActorHand.mockResolvedValue([]);
@@ -1086,11 +1091,12 @@ describe('executeEndStep', () => {
     const { executeEndStep } = await import('./battleActionService');
     const result = await executeEndStep(createMockIO(), 'b1');
     expect(result).toEqual({ success: false, error: 'round_end_failed', detail: 'round end fail' });
-    expect(mockEndCurrentStep).not.toHaveBeenCalled();
+    // 新流程：endCurrentStep 在 executeRoundEnd 之前执行（先把 phase 推到 end_round）
+    expect(mockEndCurrentStep).toHaveBeenCalledTimes(1);
   });
 
   it('executeRoundEnd 调 tickBurnDamageOnTarget 6 次（每个 char）', async () => {
-    mockGetDbSessionState
+    mockGetSessionState
       .mockResolvedValueOnce({
         battleId: 'b1', currentRound: 1, currentStep: 5, currentPhase: 'play', currentActorId: 'c6',
       } as any)
@@ -1112,15 +1118,15 @@ describe('executeEndStep', () => {
   });
 
   describe('executeEndStep error branches', () => {
-    const setupState = () => mockGetDbSessionState
+    const setupState = () => mockGetSessionState
       .mockResolvedValueOnce({
         battleId: 'b1', currentRound: 1, currentStep: 2, currentPhase: 'play', currentActorId: 'c1',
       } as any);
 
     it('currentPhase=idle → error: not_in_play_or_move_phase, retain 未调', async () => {
       setupState();
-      mockGetDbSessionState.mockReset();
-      mockGetDbSessionState.mockResolvedValueOnce({
+      mockGetSessionState.mockReset();
+      mockGetSessionState.mockResolvedValueOnce({
         battleId: 'b1', currentRound: 1, currentStep: 0, currentPhase: 'idle', currentActorId: null,
       } as any);
       const { executeEndStep } = await import('./battleActionService');
@@ -1139,7 +1145,7 @@ describe('executeEndStep', () => {
 
     it('drawCards 失败 → error: draw_failed', async () => {
       setupState();
-      mockGetDbSessionState
+      mockGetSessionState
         .mockReset()
         .mockResolvedValueOnce({  // 步骤 1
           battleId: 'b1', currentRound: 1, currentStep: 2, currentPhase: 'play', currentActorId: 'c1',
@@ -1155,7 +1161,7 @@ describe('executeEndStep', () => {
 
     it('completeDrawPhase 失败 → error: complete_phase_failed', async () => {
       setupState();
-      mockGetDbSessionState
+      mockGetSessionState
         .mockReset()
         .mockResolvedValueOnce({
           battleId: 'b1', currentRound: 1, currentStep: 2, currentPhase: 'play', currentActorId: 'c1',
@@ -1173,11 +1179,12 @@ describe('executeEndStep', () => {
 
 describe('executeEndStep - T052 wire-up', () => {
   it('should capture preStepAliveMap and call applyKillStars + checkWinCondition', async () => {
-    mockGetDbSessionState.mockResolvedValue({
+    mockGetSessionState.mockResolvedValue({
       currentRound: 1,
       currentStep: 0,
       currentActorId: 'c1',
       currentPhase: 'play',
+      activationOrder: ['c1', 'c4', 'c2', 'c5', 'c3', 'c6'],
     });
 
     const { executeEndStep } = await import('./battleActionService');
@@ -1204,6 +1211,13 @@ describe('executeEndStep - T052 wire-up', () => {
       winnerSide: 'p1',
       p1Stars: 6,
       p2Stars: 2,
+    });
+    mockGetSessionState.mockResolvedValue({
+      currentRound: 1,
+      currentStep: 0,
+      currentActorId: 'c1',
+      currentPhase: 'play',
+      activationOrder: ['c1', 'c4', 'c2', 'c5', 'c3', 'c6'],
     });
 
     const { executeEndStep } = await import('./battleActionService');

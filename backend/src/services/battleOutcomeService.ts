@@ -21,11 +21,12 @@
 //   - 伤害权威化: T056
 
 import type { Server as IOServer } from 'socket.io';
-import { query, execute } from '../config/database';
+import { query, queryOne, execute } from '../config/database';
 import { redisClient } from '../config/redis';
 import { listCharactersInBattle } from './battleService';
 import { finishSession } from './battleSessionService';
 import { broadcastBattleEnd } from '../socket/battleStateBroadcaster';
+import { redisKey } from '../utils/redisKeys';
 // 注：query/execute/redisClient/listCharactersInBattle/finishSession 将在 Task 3-6 实现中使用，
 //      骨架阶段先 import 占位，避免后续任务频繁改动 import 段。
 
@@ -94,23 +95,88 @@ export type RecordVictoryOutcome = Extract<WinCheckResult, { status: 'win' | 'dr
 // ========================================
 
 function starsKey(battleId: string, side: Side): string {
-  return `battle:${battleId}:stars:${side}`;
+  return redisKey.stars(battleId, side);
 }
 
 function aliveKey(battleId: string, side: Side): string {
-  return `battle:${battleId}:alive_${side}`;
+  return redisKey.alive(battleId, side);
 }
 
 function basesKey(battleId: string): string {
-  return `battle:${battleId}:bases`;
+  return redisKey.bases(battleId);
 }
 
 function piecesKey(battleId: string): string {
-  return `battle:${battleId}:pieces`;
+  return redisKey.pieces(battleId);
 }
 
 function positionsKey(battleId: string): string {
-  return `battle:${battleId}:positions`;
+  return redisKey.positions(battleId);
+}
+
+/**
+ * 加载 battle 双方 player_id，用于把「角色 player_id(UUID)」映射到 side(p1/p2)。
+ * 单次查询，applyKillStars / applyBaseStars 共用。
+ */
+async function loadBattleSides(battleId: string): Promise<{
+  p1PlayerId: string | null;
+  p2PlayerId: string | null;
+}> {
+  try {
+    const row = await queryOne<{ player1_id: string; player2_id: string }>(
+      `SELECT player1_id, player2_id FROM battles WHERE id = $1`,
+      [battleId]
+    );
+    if (!row) {
+      return { p1PlayerId: null, p2PlayerId: null };
+    }
+    return { p1PlayerId: row.player1_id, p2PlayerId: row.player2_id };
+  } catch (err) {
+    // 降级：无法读取 sides 时返回 null，sideForPlayerId 会回退到字面量判断
+    console.error(`[battleOutcome] loadBattleSides failed: battleId=${battleId}`, err);
+    return { p1PlayerId: null, p2PlayerId: null };
+  }
+}
+
+/**
+ * 把角色 playerId 判定为 p1/p2。
+ * - 先按字面量 'p1'/'p2' 匹配（兼容测试/简化数据）
+ * - 再按 DB 双方 player_id (UUID) 匹配（生产真实路径）
+ * - 都不命中 → null（异常数据）
+ */
+function sideForPlayerId(
+  playerId: string,
+  sides: { p1PlayerId: string | null; p2PlayerId: string | null }
+): Side | null {
+  if (playerId === 'p1' || playerId === 'p2') {
+    return playerId as Side;
+  }
+  if (sides.p1PlayerId !== null && playerId === sides.p1PlayerId) return 'p1';
+  if (sides.p2PlayerId !== null && playerId === sides.p2PlayerId) return 'p2';
+  return null;
+}
+
+/**
+ * 从 positions HASH 反查某角色坐标。
+ * positions HASH 结构：key = "x,y"（棋盘格），value = characterId。
+ * 因此按 characterId 找 key，需遍历 entries。
+ */
+async function getPositionByCharacterId(
+  battleId: string,
+  characterId: string
+): Promise<{ x: number; y: number } | null> {
+  const positionsRaw = await redisClient.hGetAll(positionsKey(battleId));
+  for (const [posKey, charId] of Object.entries(positionsRaw)) {
+    if (charId === characterId) {
+      const [xStr, yStr] = posKey.split(',');
+      const x = parseInt(xStr, 10);
+      const y = parseInt(yStr, 10);
+      if (Number.isInteger(x) && Number.isInteger(y)) {
+        return { x, y };
+      }
+    }
+  }
+  return null;
 }
 
 // ========================================
@@ -145,6 +211,9 @@ export async function applyKillStars(
     return { p1Delta: 0, p2Delta: 0, p1StarsAfter: 0, p2StarsAfter: 0 };
   }
 
+  // 1.5 加载双方 player_id → 用于 playerId(UUID) → side(p1/p2) 映射
+  const sides = await loadBattleSides(battleId);
+
   // 2. 读当前 pieces
   const piecesRaw = await redisClient.hGetAll(piecesKey(battleId));
 
@@ -158,8 +227,9 @@ export async function applyKillStars(
     const cur = JSON.parse(curRaw);
     const isAliveNow = cur.is_alive === true;
     if (wasAlive && !isAliveNow) {
-      if (c.playerId === 'p1') p1Killed++;
-      else p2Killed++;
+      const side = sideForPlayerId(c.playerId, sides);
+      if (side === 'p1') p1Killed++;
+      else if (side === 'p2') p2Killed++;
     }
   }
 
@@ -227,11 +297,11 @@ export async function applyBaseStars(battleId: string): Promise<BaseStarDelta> {
     };
   }
 
-  // 2. 读 pieces + positions
-  const [piecesRaw, positionsRaw] = await Promise.all([
-    redisClient.hGetAll(piecesKey(battleId)),
-    redisClient.hGetAll(positionsKey(battleId)),
-  ]);
+  // 1.5 加载双方 player_id → 用于 playerId(UUID) → side(p1/p2) 映射
+  const sides = await loadBattleSides(battleId);
+
+  // 2. 读 pieces（is_alive）
+  const piecesRaw = await redisClient.hGetAll(piecesKey(battleId));
 
   // 3. 判定每个据点
   const bases: BasesState = {};
@@ -243,16 +313,17 @@ export async function applyBaseStars(battleId: string): Promise<BaseStarDelta> {
     let p2InRange = 0;
     for (const c of characters) {
       const pieceRaw = piecesRaw[c.characterId];
-      const posRaw = positionsRaw[c.characterId];
-      if (!pieceRaw || !posRaw) continue;
+      if (!pieceRaw) continue;
       const piece = JSON.parse(pieceRaw);
-      const pos = JSON.parse(posRaw);
       if (piece.is_alive !== true) continue;
+      const pos = await getPositionByCharacterId(battleId, c.characterId);
+      if (!pos) continue;
       // Chebyshev 距离
       const cheb = Math.max(Math.abs(pos.x - base.x), Math.abs(pos.y - base.y));
       if (cheb > BASE_RADIUS) continue;
-      if (c.playerId === 'p1') p1InRange++;
-      else if (c.playerId === 'p2') p2InRange++;
+      const side = sideForPlayerId(c.playerId, sides);
+      if (side === 'p1') p1InRange++;
+      else if (side === 'p2') p2InRange++;
     }
     if (p1InRange > p2InRange) {
       bases[base.key] = 'p1';

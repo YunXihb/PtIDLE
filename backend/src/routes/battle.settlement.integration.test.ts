@@ -109,6 +109,8 @@ describe('POST /api/battle/result - Integration Tests', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       async (fn: (client: any) => Promise<any>) => fn(mockClient)
     );
+    // 行锁幂等复核查询：默认返回「未结算」,让事务内 SQL 继续执行
+    mockClientQuery.mockResolvedValue({ rows: [{ settled_at: null }], rowCount: 1 });
     // 抑制 battleSettlementService 内部 console.error 噪声(只在 describe 内,afterEach 还原)
     consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
   });
@@ -203,7 +205,7 @@ describe('POST /api/battle/result - Integration Tests', () => {
 
   it('200: p1 调用, p1 赢 → response 全字段断言', async () => {
     mockQuery.mockResolvedValueOnce([buildBattleRow()]);
-    mockClientQuery.mockResolvedValue({ rowCount: 1 }); // transaction SQL 全成功
+    mockClientQuery.mockResolvedValue({ rows: [{ settled_at: null }], rowCount: 1 }); // transaction SQL 全成功
     mockQueryOne
       .mockResolvedValueOnce({ wins: 1, losses: 0, draws: 0 })
       .mockResolvedValueOnce({ wins: 0, losses: 1, draws: 0 });
@@ -240,7 +242,7 @@ describe('POST /api/battle/result - Integration Tests', () => {
 
   it('200: p2 调用, p1 赢 → yourResult=loss', async () => {
     mockQuery.mockResolvedValueOnce([buildBattleRow()]);
-    mockClientQuery.mockResolvedValue({ rowCount: 1 });
+    mockClientQuery.mockResolvedValue({ rows: [{ settled_at: null }], rowCount: 1 });
     mockQueryOne
       .mockResolvedValueOnce({ wins: 0, losses: 1, draws: 0 }) // p2 stats
       .mockResolvedValueOnce({ wins: 1, losses: 0, draws: 0 }); // p1 stats
@@ -268,7 +270,7 @@ describe('POST /api/battle/result - Integration Tests', () => {
         victory_type: 'draw',
       }),
     ]);
-    mockClientQuery.mockResolvedValue({ rowCount: 1 });
+    mockClientQuery.mockResolvedValue({ rows: [{ settled_at: null }], rowCount: 1 });
     mockQueryOne
       .mockResolvedValueOnce({ wins: 0, losses: 0, draws: 1 })
       .mockResolvedValueOnce({ wins: 0, losses: 0, draws: 1 });

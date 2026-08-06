@@ -91,9 +91,12 @@ export async function joinMatchmakingHandler(
   } catch (error) {
     console.error('Error joining matchmaking queue:', error);
 
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    // 用错误码匹配（T-FIX：替代脆弱的 `.includes('中文')` 匹配）
+    const isAlreadyInQueue =
+      error instanceof Error &&
+      (error as Error & { code?: string }).code === 'ALREADY_IN_QUEUE';
 
-    if (errorMessage.includes('已在匹配队列中')) {
+    if (isAlreadyInQueue) {
       res.status(400).json({ error: 'Already in matchmaking queue' });
       return;
     }
@@ -197,9 +200,12 @@ export async function leaveMatchmakingHandler(
   } catch (error) {
     console.error('Error leaving matchmaking queue:', error);
 
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    // 用错误码匹配（T-FIX：替代脆弱的 `.includes('中文')` 匹配）
+    const isNotInQueue =
+      error instanceof Error &&
+      (error as Error & { code?: string }).code === 'NOT_IN_QUEUE';
 
-    if (errorMessage.includes('不在匹配队列中')) {
+    if (isNotInQueue) {
       // 不在队列 → 走 LOSER 兜底
       try {
         const userId = req.user?.userId;

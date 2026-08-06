@@ -2153,3 +2153,69 @@ T-FOLLOW-5 å®Œæˆå• VPS CI è‡ªåŠ¨éƒ¨ç½², ä½†ç”Ÿäº§çº§ä»ç¼º HTTPSã€‚è§„åˆ’ T-FO
 4. **å¯é€‰æ”¹è¿›**: deploy.sh åŠ  ERR trap + è¡Œå·; `set -e` æ”¹ä¸º `set -euo pipefail` + å…³é”®å‘½ä»¤ç”¨ `||` å…œåº•, è®© deploy çŠ¶æ€å¯åˆ†
 5. éƒ¨ç½²æˆåŠŸå, deploy æˆåŠŸè·¯å¾„ä¼šå†™ .last_good, åç»­ deploy æ‰æœ‰å›æ»šç›®æ ‡
 
+
+---
+
+## 2026-08-06 - ÈÎÎñ£ºT-FIX ÖÊÁ¿ĞŞ¸´Åú´Î£¨P0 ¼¶ bug ĞŞ¸´£©
+
+### Prompt
+°´ÎÄ¼şÄÚÈÎÎñÒªÇó¼ÌĞø¿ª·¢£¬ÏÈÃşÅÅÒÑÍê³ÉÏîÄ¿ÊÇ·ñĞèÒªĞŞ¸Ä£¬È»ºó½øĞĞĞŞ¸Ä¡£
+
+### Ë¼¿¼
+ÃşÅÅ·¢ÏÖ"²âÊÔÈ«ÂÌµ«Éú²úÅÜ²»Í¨"£ºµ¥Ôª²âÊÔÈ«²¿ mock µô DB/Redis£¬ÑÚ¸ÇÁË 8 ¸öÖÂÃü bug¡£ºËĞÄÊÇ¼Ü¹¹¼¶ÍÑ½Ú¡ª¡ªÕ½¶·×´Ì¬»úĞ´ Redis¡¢±àÅÅÆ÷¶Á DB£¨Ë«×´Ì¬Ô´£©£¬µ¼ÖÂÒÆ¶¯/´òÅÆ/»ØºÏÍÆ½øÔÚÉú²úÈ«²¿Ê§°Ü¡£ĞŞ¸´²ßÂÔ£º
+1. ĞÂÔö `getSessionState`£¨¶Á Redis ÍêÕû×´Ì¬º¬ activationOrder£©£¬Õ½¶·Á´Â·Í³Ò»ÓÃËü£»DB ½öÉó¼Æ
+2. `executePlayCard` ²»ÔÙ¶ÀÁ¢ completePlayPhase£¬Í³Ò»½»¸ø `executeEndStep`£¨ĞŞ¸´Ë«ÖØÍÆ½ø£©
+3. ÊÖÅÆ STRING ´æ´¢¸ÄÓÃ `removeCardFromHand`£¨¶Á-¹ıÂË-¸²¸ÇĞ´£©£¬Ìæ´ú´íÎóµÄ lRem
+4. ÕóÓªÅĞ¶¨ÓÃ battles ±í player1/2_id (UUID) Ó³Éä side£¬¾İµã×ø±ê°´ positions HASH ·´²é
+5. ¾­¼ÃÏµÍ³£¨ÖÆÔì/²É¼¯/ÀëÏß/¼Ó¹¤£©È«²¿ÓÃ withTransaction + SELECT FOR UPDATE ĞĞËø
+
+### ÒâÍâ
+1. PowerShell Set-Content ÆÆ»µ²âÊÔÎÄ¼ş UTF-8 ±àÂë£¨ÖĞÎÄ×¢ÊÍËğ»µÖÂ TS ½âÎö´íÎó£©£¬¸ÄÓÃ edit ¹¤¾ß + git checkout »Ö¸´
+2. ¾É²âÊÔ¶ÏÑÔÁË´íÎóµÄÊµÏÖĞĞÎª£¨Èç "executeRoundEnd Ê§°ÜÊ± end_step Î´µ÷"£©£¬ĞèÍ¬²½ĞŞÕı¶ÏÑÔÆ¥ÅäÕıÈ·Âß¼­
+3. test mock ´óÁ¿ÒÀÀµ `mockGetDbSessionState`£¬¸Äº¯ÊıÃûĞèÈ«Á¿Ìæ»»£»²¿·Ö²âÊÔÈ± activationOrder ×Ö¶Î
+4. lint ÓĞ 63 ¸ö¼ÈÓĞ error£¨¶àÎª test ÎÄ¼ş require ·ç¸ñ£©£¬·Ç±¾´ÎÒıÈë£¬Î´´¦Àí
+
+### ĞŞ¸´
+- Éú²ú´úÂë 15 ÎÄ¼ş£ºbattleActionService / battleSessionService / battleService / battleOutcomeService / battleRoom / craftingService / gatheringService / playerService / player.ts / processing.ts / characters.ts / jwt.ts / index.ts / auth.ts / authMiddleware.ts
+- ²âÊÔ 6 ÎÄ¼şÍ¬²½¸üĞÂ + deploy.sh »Ø¹ö»úÖÆĞŞ¸´
+- ²âÊÔ»ùÏß£ºÈ«Á¿ 671/702 Í¨¹ı£¨4 suite Ê§°Ü¾ùÎª±¾µØÎŞ PG/Redis£¬Óë»ùÏßÒ»ÖÂ£©£¬tsc Áã´íÎó£¬Ïà¹Ø 28 suite 566 ²âÊÔÈ«ÂÌ
+
+### ·¶Î§Íâ
+- T-FOLLOW-7 v0.1.1 ²¿ÊğÊ§°ÜÈÔĞè SSH µ÷ÊÔ£¨P1£©
+- Ê£Óà P1/P2 Ïî£º´íÎóÂëÍ³Ò»¡¢»º´æ¹¤¾ß³éÈ¡¡¢Redis key ³£Á¿¼¯ÖĞ¡¢Ç¨ÒÆ 004 È±Ê§¡¢CORS ÊÕÁ²µÈ
+
+---
+
+## 2026-08-06 - ÈÎÎñ£ºT-FIX Åú´Î 2£¨P1/P2 ²¢·¢/×Ê²ú°²È« + ´úÂëÕû½à£©
+
+### Prompt
+¼ÌĞø½øĞĞÊ£Óà¹¤×÷¡£
+
+### Ë¼¿¼
+ÔÚÅú´Î 1£¨P0 Õ½¶·ºËĞÄĞŞ¸´£©Ö®ºó£¬´¦ÀíÊ£Óà P1£¨²¢·¢/×Ê²ú°²È«£©ºÍ P2£¨´úÂëÕû½à£©Ïî£º
+- P1-A: moveCharacter Èı¶Î·ÇÔ­×Ó£¨hGet+hDel+hSet£©¸ÄÎª Lua ½Å±¾Ô­×ÓÖ´ĞĞ£¬¶Å¾øÁ½Æå×Ó²¢·¢ÇÀÕ¼Í¬Ò»¿Õ¸ñ
+- P1-B: settleBattle ÃİµÈ read-then-write ¾ºÌ¬ ¡ú ÊÂÎñÄÚ SELECT ... FOR UPDATE ĞĞËø¸´ºË settled_at
+- P1-C: consumePlayerCard Ö±½Ó DELETE ÎŞ¹éÊô¸´ºË ¡ú DELETE ´ø character_id + ×Ó²éÑ¯¸´ºË card ¹éÊô
+- P1-D: ÎŞÈ«¾Ö´íÎóÖĞ¼ä¼ş ¡ú ¼Ó 4 ²Î Express error handler£¬Í³Ò» JSON ¸ñÊ½
+- P1-E: CORS È«¿ª + auth ÎŞÏŞÁ÷ ¡ú CORS_ORIGIN env ÊÕÁ² + Redis Lua ÏŞÁ÷ÖĞ¼ä¼ş
+- P2-A: 5 ´¦ÊÖĞ´ 5 ·ÖÖÓ»º´æ ¡ú createCache ¹²Ïí¹¤¾ß
+- P2-B: Redis key 4 ´¦ÊÖĞ´ ¡ú redisKey ³£Á¿Ä£¿é
+- P2-C: controller ÓÃ `.includes('ÖĞÎÄ')` Æ¥Åä´íÎó ¡ú MatchmakingError/GatheringError ´íÎóÂë
+- P2-D: Ç¨ÒÆÈ± 004 + ÖÖ×Ó ON CONFLICT Ê§Ğ§ ¡ú 004 ¼ÓÎ¨Ò»Ô¼Êø + 005 ¸Ä ON CONFLICT(name)
+
+### ÒâÍâ
+1. battleSettlementService ¼°Æä¼¯³É²âÊÔµÄ withTransaction mock ¿Í»§¶Ë query ÎŞÄ¬ÈÏÊµÏÖ£¬ĞÂÔöĞĞËø²éÑ¯ºó `lockRes.rows` ±ÀÀ£ ¡ú ²âÊÔ beforeEach ¼Ó `mockClientQuery.mockResolvedValue({ rows: [{ settled_at: null }] })`
+2. migrate.test.ts 3 ¸öÊ§°ÜÊÇ Windows Â·¾¶·Ö¸ô·û£¨D:\ vs /£©¼ÈÓĞÎÊÌâ£¬·Ç±¾´ÎÒıÈë£¨CI Linux Í¨¹ı£©
+3. ¿ØÖÆÌ¨Êä³ö UTF-8 ÖĞÎÄÂÒÂë£¬ĞèÖØ¶¨Ïòµ½ÎÄ¼şºóÓÃ Read ¼ì²é
+4. rateLimit Lua ³£Á¿¶¨ÒåÔÚº¯Êıºó£¬Ä£¿é¼ÓÔØÆÚ const ³õÊ¼»¯Õı³££¨º¯ÊıÄÚÔËĞĞÊ±ÒıÓÃÎŞ TDZ ÎÊÌâ£©
+
+### ĞŞ¸´
+- Éú²ú´úÂë 12 ÎÄ¼ş£ºbattleService / battleSettlementService / battleActionService / matchmakingService / gatheringService / handService / battleOutcomeService / battleSessionService / battleInitializationService / statusEffectService / professionMechanicService / index.ts / player.ts / processing.ts / characters.ts / craftingService / processingService / cardService / skillService / professionService / matchmakingController / gatheringController / auth.ts
+- ĞÂÔö 4 ÎÄ¼ş£ºutils/cache.ts / utils/redisKeys.ts / middleware/rateLimit.ts / migrations/004_t_fix_card_template_unique.sql
+- ²âÊÔ 3 ÎÄ¼şÊÊÅä + migrate 004 Ç¨ÒÆÎÄ¼ş
+- ²âÊÔ»ùÏß£ºÈ«Á¿ 671/702 Í¨¹ı£¨4 suite Ê§°Ü = Windows Â·¾¶ + ±¾µØÎŞ PG/Redis£¬Óë»ùÏßÒ»ÖÂ£©£»tsc Áã´íÎó£»¸Ä¶¯ÎÄ¼şÁã lint error
+
+### ·¶Î§Íâ
+- migrate.test.ts µÄ Windows Â·¾¶¶ÏÑÔĞŞ¸´£¨CI Linux ÎŞĞè£©
+- T-FOLLOW-7 v0.1.1 ²¿ÊğÊ§°ÜÈÔ´ı SSH µ÷ÊÔ£¨ĞèÓÃ»§ VPS ·ÃÎÊ£©
+- Ê£Óà P2£ºREST ·ç¸ñÍ³Ò»£¨¶¯´Ê»¯ URL vs ×ÊÔ´»¯£©¡¢½ÇÉ«Ãû/ÓÃ»§Ãû³¤¶ÈĞ£Ñé¡¢authService ×¢²áÊÂÎñ»¯¡¢ÏìÓ¦°ü¹ü¸ñÊ½Í³Ò»

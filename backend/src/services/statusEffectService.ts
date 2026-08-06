@@ -10,6 +10,7 @@
 
 import { randomUUID } from 'crypto';
 import { redisClient } from '../config/redis';
+import { redisKey } from '../utils/redisKeys';
 
 // ========================================
 // 类型定义
@@ -41,7 +42,7 @@ export interface StatusEffect {
  * 获取状态效果 Redis key
  */
 function getEffectsKey(battleId: string, characterId: string): string {
-  return `battle:${battleId}:effects:${characterId}`;
+  return redisKey.effects(battleId, characterId);
 }
 
 // ========================================

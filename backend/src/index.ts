@@ -3,8 +3,8 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import http from 'http';
 import { Server as IOServer } from 'socket.io';
-import { testConnection as testDb } from './config/database';
-import { connectRedis } from './config/redis';
+import { testConnection as testDb, pool } from './config/database';
+import { connectRedis, redisClient } from './config/redis';
 import authRoutes from './routes/auth';
 import battleRoutes from './routes/battle';
 import playerRoutes from './routes/player';
@@ -17,8 +17,7 @@ import warehouseRoutes from './routes/warehouse';
 import professionRoutes from './routes/professions';
 import characterRoutes from './routes/characters';
 import cardRoutes from './routes/cards';
-import { query } from './config/database';
-import { checkAndCompleteGathering, initializeGatheringConfig, processDueGatheringTasks } from './services/gatheringService';
+import { initializeGatheringConfig, processDueGatheringTasks } from './services/gatheringService';
 import { initializeSocketServer } from './socket/socketServer';
 import { checkMigrationsStatus } from './scripts/migrate';
 
@@ -28,7 +27,11 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Middleware
-app.use(cors());
+// CORS：默认全开（开发期），生产用 CORS_ORIGIN 环境变量收敛
+const corsOrigin = process.env.CORS_ORIGIN
+  ? process.env.CORS_ORIGIN.split(',').map((s) => s.trim())
+  : '*';
+app.use(cors({ origin: corsOrigin }));
 app.use(express.json());
 
 // Routes
@@ -47,13 +50,42 @@ app.use('/api/cards', cardRoutes);
 
 // Health check
 app.get('/health', async (_req, res) => {
-  res.json({
-    status: 'ok',
+  let database: 'ok' | 'unknown' | 'down' = 'unknown';
+  let redis: 'ok' | 'unknown' | 'down' = 'unknown';
+
+  try {
+    const client = await pool.connect();
+    await client.query('SELECT NOW()');
+    client.release();
+    database = 'ok';
+  } catch {
+    database = 'down';
+  }
+
+  try {
+    const pong = await redisClient.ping();
+    redis = pong === 'PONG' ? 'ok' : 'down';
+  } catch {
+    redis = 'down';
+  }
+
+  const allOk = database === 'ok' && redis === 'ok';
+  res.status(allOk ? 200 : 503).json({
+    status: allOk ? 'ok' : 'degraded',
     timestamp: new Date().toISOString(),
-    services: {
-      database: 'unknown',
-      redis: 'unknown'
-    }
+    services: { database, redis },
+  });
+});
+
+// 全局错误处理中间件（4 参签名被 Express 识别为 error handler）
+// - 统一 JSON 错误格式，避免未捕获异常落到 Express 默认 HTML 错误页
+// - 不泄露内部错误详情（生产仅返回通用消息）
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  const isProd = process.env.NODE_ENV === 'production';
+  console.error('[unhandled]', err);
+  res.status(500).json({
+    error: isProd ? 'Internal server error' : err.message || 'Internal server error',
   });
 });
 
@@ -106,10 +138,10 @@ async function warnIfMigrationsPending(): Promise<void> {
   // 全部已 applied → 静默（不刷日志）
 }
 
-// T045: 同一 HTTP server 挂 WebSocket,共享端口 + CORS
+// T045: 同一 HTTP server 挂 WebSocket,共享端口 + CORS（与 REST 共用 CORS_ORIGIN）
 const httpServer = http.createServer(app);
 const io = new IOServer(httpServer, {
-  cors: { origin: '*' }, // MVP 开发期允许任意来源,生产期改为环境变量
+  cors: { origin: corsOrigin },
 });
 
 httpServer.listen(PORT, () => {

@@ -1,4 +1,5 @@
 import { query } from '../config/database';
+import { createCache } from '../utils/cache';
 
 export interface CardTemplate {
   id: string;
@@ -13,59 +14,40 @@ export interface CardTemplate {
   is_public_pool: boolean;    // T1001：是否进入战棋公共池（无限复用）
 }
 
-// 内存缓存（5分钟过期）
-let cardTemplatesCache: {
-  data: CardTemplate[];
-  timestamp: number;
-} | null = null;
-
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+// 内存缓存（5分钟过期，共享工具）
+const cardTemplatesCache = createCache<CardTemplate[]>(5 * 60 * 1000);
 
 /**
  * 从数据库获取所有卡牌模板（带缓存）
  */
 export async function getAllCardTemplates(): Promise<CardTemplate[]> {
-  const now = Date.now();
+  return cardTemplatesCache.getOrLoad(async () => {
+    const result = await query<{
+      id: string;
+      name: string;
+      description: string | null;
+      type: 'attack' | 'defense' | 'tactical';
+      cost: number;
+      effect: Record<string, unknown>;
+      profession: string | null;
+      template_no: number;
+      max_quantity: number;
+      is_public_pool: boolean;
+    }>('SELECT id, name, description, type, cost, effect, profession, template_no, max_quantity, is_public_pool FROM card_templates ORDER BY template_no');
 
-  // 检查缓存
-  if (cardTemplatesCache && (now - cardTemplatesCache.timestamp) < CACHE_TTL) {
-    return cardTemplatesCache.data;
-  }
-
-  // 查询数据库
-  const result = await query<{
-    id: string;
-    name: string;
-    description: string | null;
-    type: 'attack' | 'defense' | 'tactical';
-    cost: number;
-    effect: Record<string, unknown>;
-    profession: string | null;
-    template_no: number;
-    max_quantity: number;
-    is_public_pool: boolean;
-  }>('SELECT id, name, description, type, cost, effect, profession, template_no, max_quantity, is_public_pool FROM card_templates ORDER BY template_no');
-
-  const cardTemplates: CardTemplate[] = result.map(row => ({
-    id: row.id,
-    name: row.name,
-    description: row.description,
-    type: row.type,
-    cost: row.cost,
-    effect: row.effect,
-    profession: row.profession,
-    template_no: row.template_no,
-    max_quantity: row.max_quantity,
-    is_public_pool: row.is_public_pool,
-  }));
-
-  // 更新缓存
-  cardTemplatesCache = {
-    data: cardTemplates,
-    timestamp: now,
-  };
-
-  return cardTemplates;
+    return result.map(row => ({
+      id: row.id,
+      name: row.name,
+      description: row.description,
+      type: row.type,
+      cost: row.cost,
+      effect: row.effect,
+      profession: row.profession,
+      template_no: row.template_no,
+      max_quantity: row.max_quantity,
+      is_public_pool: row.is_public_pool,
+    }));
+  });
 }
 
 /**
@@ -96,7 +78,7 @@ export async function getPublicPoolCards(): Promise<CardTemplate[]> {
  * 清除卡牌缓存（用于测试或配置更新时）
  */
 export function clearCardTemplatesCache(): void {
-  cardTemplatesCache = null;
+  cardTemplatesCache.clear();
 }
 
 // ========================================

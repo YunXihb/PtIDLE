@@ -2,9 +2,7 @@ import { Router } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import {
   getPlayerProfile,
-  getPlayerBaseInfo,
-  updateResources,
-  updateLastOffline,
+  claimOfflineEarnings,
 } from '../services/playerService';
 import {
   calculateOfflineEarnings,
@@ -47,38 +45,36 @@ router.post('/offline-claim', authMiddleware, async (req: AuthRequest, res) => {
       return;
     }
 
-    // 1. 获取玩家基础信息
-    const baseInfo = await getPlayerBaseInfo(userId);
-    if (!baseInfo) {
+    // 1-5. 原子领取（单事务 + 行锁）：读玩家 → 算收益 → 合并资源 + 更新 last_offline
+    const outcome = await claimOfflineEarnings(userId, (base) => {
+      const earnings = calculateOfflineEarnings(base.last_offline);
+      const { stored, overflowed } = applyWarehouseLimits(
+        earnings,
+        base.resources,
+        base.warehouse_limits
+      );
+      return {
+        offlineTime: earnings.offlineTime,
+        earned: earnings.resources,
+        stored,
+        overflowed,
+      };
+    });
+
+    if (!outcome) {
       res.status(404).json({ error: 'Player not found' });
       return;
     }
-
-    // 2. 计算离线收益
-    const earnings = calculateOfflineEarnings(baseInfo.last_offline);
-
-    // 3. 应用仓储上限
-    const { stored, overflowed } = applyWarehouseLimits(
-      earnings,
-      baseInfo.resources,
-      baseInfo.warehouse_limits
-    );
-
-    // 4. 更新玩家资源
-    await updateResources(userId, stored);
-
-    // 5. 更新离线时间
-    await updateLastOffline(userId);
 
     // 6. 返回收益详情
     res.json({
       success: true,
       data: {
-        offlineTime: earnings.offlineTime,
-        earned: earnings.resources,
-        stored,
-        overflowed,
-        lastOffline: baseInfo.last_offline,
+        offlineTime: outcome.offlineTime,
+        earned: outcome.earned,
+        stored: outcome.stored,
+        overflowed: outcome.overflowed,
+        lastOffline: new Date().toISOString(),
       },
     });
   } catch (error) {

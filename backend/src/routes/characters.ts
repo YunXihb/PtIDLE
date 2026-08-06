@@ -131,6 +131,13 @@ router.get('/:id/deck', authMiddleware, async (req: AuthRequest, res) => {
       return;
     }
 
+    // 归属校验（防 IDOR）：确认该棋子属于当前登录用户
+    const owned = await getCharactersByUserId(userId);
+    if (!owned.some((c) => c.id === characterId)) {
+      res.status(403).json({ error: 'Forbidden' });
+      return;
+    }
+
     const cards = await getCharacterDeckCards(characterId);
 
     res.json({

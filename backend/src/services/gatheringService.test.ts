@@ -3,9 +3,11 @@ import * as gatheringService from '../services/gatheringService';
 import { query, execute } from '../config/database';
 
 // Mock the database module
+const mockWithTransaction = jest.fn();
 jest.mock('../config/database', () => ({
   query: jest.fn(),
-  execute: jest.fn()
+  execute: jest.fn(),
+  withTransaction: (...args: any[]) => mockWithTransaction(...args),
 }));
 
 // Mock skillService

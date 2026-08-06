@@ -2,7 +2,7 @@
 import request from 'supertest';
 import express from 'express';
 import processingRoutes from '../routes/processing';
-import { query, execute } from '../config/database';
+import { query } from '../config/database';
 
 // Create test app
 const app = express();
@@ -10,9 +10,11 @@ app.use(express.json());
 app.use('/api/processing', processingRoutes);
 
 // Mock the database module
+const mockWithTransaction = jest.fn();
 jest.mock('../config/database', () => ({
   query: jest.fn(),
-  execute: jest.fn()
+  execute: jest.fn(),
+  withTransaction: (...args: any[]) => mockWithTransaction(...args),
 }));
 
 // Mock auth middleware
@@ -106,11 +108,26 @@ jest.mock('../services/playerService', () => ({
 }));
 
 const mockedQuery = query as jest.MockedFunction<typeof query>;
-const mockedExecute = execute as jest.MockedFunction<typeof execute>;
+
+// withTransaction 透传：fn 收到 fakeClient，query 走 mockedQuery
+function defaultWithTransaction() {
+  mockWithTransaction.mockImplementation(async (fn: any) => {
+    const fakeClient = {
+      query: async (text: string, params?: any[]) => {
+        const res: any = await mockedQuery(text, params);
+        if (res && res.rowCount !== undefined) return res;
+        return { rows: (res as any[]) ?? [], rowCount: ((res as any[]) ?? []).length };
+      },
+      release: jest.fn(),
+    };
+    return await fn(fakeClient);
+  });
+}
 
 describe('Processing API Integration Tests', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    defaultWithTransaction();
   });
 
   describe('GET /api/processing/recipes', () => {
@@ -161,7 +178,10 @@ describe('Processing API Integration Tests', () => {
 
   describe('POST /api/processing/process', () => {
     it('should process materials successfully', async () => {
-      mockedExecute.mockResolvedValue(1);
+      // 事务内 SELECT players FOR UPDATE → 玩家有足够材料
+      mockedQuery.mockResolvedValueOnce([{ id: 'player-1', materials: { iron_ore: 10, coal: 10 } }] as any);
+      // 事务内 UPDATE materials
+      mockedQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
 
       const response = await request(app)
         .post('/api/processing/process')
@@ -171,11 +191,11 @@ describe('Processing API Integration Tests', () => {
       expect(response.body.success).toBe(true);
       expect(response.body.data.recipe).toBe('冶炼');
       expect(response.body.data.output).toEqual({ iron_ingot: 1 });
-      expect(mockedExecute).toHaveBeenCalled();
     });
 
     it('should process with custom quantity', async () => {
-      mockedExecute.mockResolvedValue(1);
+      mockedQuery.mockResolvedValueOnce([{ id: 'player-1', materials: { wood: 10 } }] as any);
+      mockedQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
 
       const response = await request(app)
         .post('/api/processing/process')
@@ -234,11 +254,8 @@ describe('Processing API Integration Tests', () => {
     });
 
     it('should return 400 for insufficient materials', async () => {
-      const playerService = require('../services/playerService');
-      (playerService.getPlayerProfile as jest.Mock).mockResolvedValueOnce({
-        id: 'player-1',
-        materials: { iron_ore: 1, coal: 0, iron_ingot: 0 },
-      });
+      // 玩家材料不足（事务内行锁读）
+      mockedQuery.mockResolvedValueOnce([{ id: 'player-1', materials: { iron_ore: 1, coal: 0, iron_ingot: 0 } }] as any);
 
       const response = await request(app)
         .post('/api/processing/process')
@@ -259,7 +276,8 @@ describe('Processing API Integration Tests', () => {
         efficiency: 1.5,
       });
 
-      mockedExecute.mockResolvedValue(1);
+      mockedQuery.mockResolvedValueOnce([{ id: 'player-1', materials: { iron_ore: 10, coal: 10 } }] as any);
+      mockedQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
 
       const response = await request(app)
         .post('/api/processing/process')

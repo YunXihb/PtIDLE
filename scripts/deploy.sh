@@ -51,19 +51,25 @@ for i in $(seq 1 30); do
   sleep 1
 done
 
-# T-FOLLOW-7 [5/6]: 成功路径 — 写 .last_good 为新 image digest
-# 注意: docker inspect 失败 / 写盘失败 不应让 deploy 变 red
-#       (deploy 实际成功, 仅是 .last_good 没持久化, 下次 deploy 无法回滚而已)
+# T-FOLLOW-7 [5/6]: 成功路径 — 写 .last_good 为可回滚的 image reference
+# 注意:
+#   - compose 容器名是 ptidle-backend-1（project-service-index），不是 ptidle-backend
+#   - {{.Image}} 返回本地镜像 ID（sha256:...），docker pull 拉不到 → 必须存 GHCR 引用
+#   - 因此用 docker inspect 拿该容器的 image name:tag 引用（如 ghcr.io/yunxihb/ptidle-backend:latest）
 if [ "$HEALTH_OK" = true ]; then
-  NEW_DIGEST=$(docker inspect --format='{{.Image}}' ptidle-backend 2>/dev/null || echo "")
-  if [ -n "$NEW_DIGEST" ]; then
-    if echo "$NEW_DIGEST" > "$LAST_GOOD_FILE" 2>/dev/null; then
-      echo "==> [5/6] Recorded last-good image: $NEW_DIGEST"
+  NEW_IMAGE_REF=$(docker inspect --format='{{index .Config.Labels "com.docker.compose.image"}}' ptidle-backend-1 2>/dev/null || echo "")
+  if [ -z "$NEW_IMAGE_REF" ]; then
+    # 兜底：从容器 label 或 image 解析
+    NEW_IMAGE_REF=$(docker inspect --format='{{.Config.Image}}' ptidle-backend-1 2>/dev/null || echo "")
+  fi
+  if [ -n "$NEW_IMAGE_REF" ]; then
+    if echo "$NEW_IMAGE_REF" > "$LAST_GOOD_FILE" 2>/dev/null; then
+      echo "==> [5/6] Recorded last-good image: $NEW_IMAGE_REF"
     else
       echo "⚠️  [5/6] Could not write $LAST_GOOD_FILE (deploy succeeded, but next deploy can't auto-rollback)"
     fi
   else
-    echo "⚠️  [5/6] Could not inspect new image digest (deploy succeeded, but .last_good not updated)"
+    echo "⚠️  [5/6] Could not inspect new image ref (deploy succeeded, but .last_good not updated)"
   fi
   exit 0
 fi

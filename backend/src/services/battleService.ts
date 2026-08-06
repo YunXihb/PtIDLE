@@ -18,6 +18,28 @@ export const BOARD_SIZE = 9; // 9x9 棋盘
 export const MAX_COORDINATE = BOARD_SIZE - 1; // 最大坐标值 8
 export const MIN_COORDINATE = 0; // 最小坐标值 0
 
+/**
+ * Lua: 原子移动棋子
+ * - 验证 from 位置确实是 characterId
+ * - 验证 to 位置为空
+ * - hDel(from) + hSet(to)
+ * 单线程原子执行，杜绝两棋子并发抢占同一空格的 lost-update。
+ * 返回 1 = 成功 / 0 = 失败。
+ */
+const LUA_ATOMIC_MOVE = `
+local fromVal = redis.call('HGET', KEYS[1], ARGV[1])
+if fromVal ~= ARGV[3] then
+  return 0
+end
+local toVal = redis.call('HGET', KEYS[1], ARGV[2])
+if toVal ~= false then
+  return 0
+end
+redis.call('HDEL', KEYS[1], ARGV[1])
+redis.call('HSET', KEYS[1], ARGV[2], ARGV[3])
+return 1
+`;
+
 // ========================================
 // 类型定义
 // ========================================
@@ -248,23 +270,17 @@ export async function moveCharacter(
     return false;
   }
 
-  // 验证起始位置确实是该棋子
-  const existingCharId = await redisClient.hGet(positionsKey, fromKey);
-  if (existingCharId !== characterId) {
+  // 原子移动（Lua 单线程执行，验证 + hDel + hSet 一体，防并发抢占）
+  try {
+    const result = await redisClient.eval(
+      LUA_ATOMIC_MOVE,
+      { keys: [positionsKey], arguments: [fromKey, toKey, characterId] }
+    );
+    return result === 1;
+  } catch (err) {
+    console.error(`[battleService] moveCharacter failed: battleId=${battleId} charId=${characterId}`, err);
     return false;
   }
-
-  // 验证目标位置是否为空
-  const targetOccupied = await redisClient.hGet(positionsKey, toKey);
-  if (targetOccupied !== null) {
-    return false; // 目标位置已被占用
-  }
-
-  // 原子性移动：删除旧位置，设置新位置
-  await redisClient.hDel(positionsKey, fromKey);
-  await redisClient.hSet(positionsKey, toKey, characterId);
-
-  return true;
 }
 
 /**
@@ -924,7 +940,8 @@ export async function validateAOEAttack(
   battleId: string,
   attackerId: string,
   cardId: string,
-  source: 'deck' | 'public_pool' = 'deck'
+  source: 'deck' | 'public_pool' = 'deck',
+  currentRound: number = 0
 ): Promise<AttackValidationResult> {
   // 1. 获取攻击者棋子信息
   const attacker = await getCharacterPiece(battleId, attackerId);
@@ -992,7 +1009,6 @@ export async function validateAOEAttack(
 
   // 12. T040 ranger 机制 1：攻击累计增伤触发 + 读取 boost
   // - 与单体同模式：累加 + 写 boost（如触发） + 读 active boost
-  // - AOE 路径暂 hardcode currentRound=0（T051 衔接时再补参数）
   // - 公共池卡不计入累积
   let damageBoosted: boolean | undefined;
   let damageBoostValue: number | undefined;
@@ -1001,8 +1017,8 @@ export async function validateAOEAttack(
     card.type === 'attack' &&
     source !== 'public_pool'
   ) {
-    await onRangerAttackCardPlayed(battleId, attackerId, 0);
-    const existingBoost = await getRangerDamageBoost(battleId, attackerId, 0);
+    await onRangerAttackCardPlayed(battleId, attackerId, currentRound);
+    const existingBoost = await getRangerDamageBoost(battleId, attackerId, currentRound);
     if (existingBoost) {
       damageBoosted = true;
       damageBoostValue = existingBoost.value;
@@ -1023,7 +1039,6 @@ export async function validateAOEAttack(
   // 14. T041 mage 机制 2：AOE 每个 target 附加 fire mark
   // - mage AOE 攻击命中 → 每个 target 获得 1 个 fire mark
   // - 公共池卡不附加 mark
-  // - AOE 路径暂 hardcode currentRound=0（T051 衔接时再补参数）
   let mageMarksApplied: number | undefined;
   let mageBurnTriggered: boolean | undefined;
   if (
@@ -1034,7 +1049,7 @@ export async function validateAOEAttack(
     let count = 0;
     let anyBurnTriggered = false;
     for (const targetId of targets) {
-      const result = await attachFireMark(battleId, targetId, 0, source);
+      const result = await attachFireMark(battleId, targetId, currentRound, source);
       if (result.marksAdded) count++;
       if (result.burnTriggered) anyBurnTriggered = true;
     }

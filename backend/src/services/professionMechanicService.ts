@@ -16,6 +16,7 @@
 
 import { redisClient } from '../config/redis';
 import { query } from '../config/database';
+import { redisKey } from '../utils/redisKeys';
 import {
   applyEffect,
   getActiveEffects,
@@ -157,7 +158,7 @@ interface WarriorStatus {
 }
 
 function getWarriorStatusKey(battleId: string, warriorId: string): string {
-  return `battle:${battleId}:warrior_status:${warriorId}`;
+  return redisKey.warriorStatus(battleId, warriorId);
 }
 
 async function readWarriorStatus(
@@ -321,7 +322,7 @@ async function removeTauntFromSource(
   targetId: string,
   sourceId: string
 ): Promise<void> {
-  const key = `battle:${battleId}:effects:${targetId}`;
+  const key = redisKey.effects(battleId, targetId);
   const all = await redisClient.lRange(key, 0, -1);
   for (const raw of all) {
     try {
@@ -368,7 +369,7 @@ interface RangerStatus {
 }
 
 function getRangerStatusKey(battleId: string, rangerId: string): string {
-  return `battle:${battleId}:ranger_status:${rangerId}`;
+  return redisKey.rangerStatus(battleId, rangerId);
 }
 
 async function readRangerStatus(

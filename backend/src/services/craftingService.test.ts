@@ -1,20 +1,39 @@
 import { getAllCraftingRecipes, getCraftingRecipesByCategory, getCraftingRecipeById, clearRecipesCache, executeCardCrafting, executeGearCrafting, executeConsumableCrafting } from '../services/craftingService';
-import { query, execute } from '../config/database';
+import { query, execute, withTransaction } from '../config/database';
 
 // Mock the database module
 jest.mock('../config/database', () => ({
   query: jest.fn(),
   execute: jest.fn(),
+  withTransaction: jest.fn(),
 }));
 
 const mockQuery = query as jest.MockedFunction<typeof query>;
 const mockExecute = execute as jest.MockedFunction<typeof execute>;
+const mockWithTransaction = withTransaction as jest.MockedFunction<typeof withTransaction>;
+
+// withTransaction 默认透传：fn 收到一个 proxy client，其 query/execute 走 mockQuery/mockExecute
+// mockQuery 可返回 { rows, rowCount } 显式控制 rowCount；否则 rows 数组长度兜底
+function defaultWithTransaction() {
+  mockWithTransaction.mockImplementation(async (fn: any) => {
+    const fakeClient = {
+      query: async (text: string, params?: any[]) => {
+        const res: any = await mockQuery(text, params);
+        if (res && res.rowCount !== undefined) return res;
+        return { rows: (res as any[]) ?? [], rowCount: ((res as any[]) ?? []).length };
+      },
+      release: jest.fn(),
+    };
+    return await fn(fakeClient);
+  });
+}
 
 describe('CraftingService', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     clearRecipesCache();
     jest.clearAllMocks();
+    defaultWithTransaction();
   });
 
   describe('getAllCraftingRecipes', () => {
@@ -244,12 +263,16 @@ describe('CraftingService', () => {
       mockQuery.mockResolvedValueOnce([mockRecipe] as any);
       // Mock player query
       mockQuery.mockResolvedValueOnce([mockPlayer] as any);
-      // Mock card template query
-      mockQuery.mockResolvedValueOnce([mockCardTemplate] as any);
-      // Mock update player materials
-      mockExecute.mockResolvedValueOnce({} as any);
-      // Mock insert player card
-      mockExecute.mockResolvedValueOnce({} as any);
+      // 事务内：卡牌模板查询
+      mockQuery.mockResolvedValueOnce([{ ...mockCardTemplate, max_quantity: 5 }] as any);
+      // 事务内：已有数量查询
+      mockQuery.mockResolvedValueOnce([{ total_quantity: 0 }] as any);
+      // 事务内：sequence 查询
+      mockQuery.mockResolvedValueOnce([{ max_sequence: 0 }] as any);
+      // 事务内：扣材料 UPDATE（rowCount 需 > 0）
+      mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
+      // 事务内：INSERT player_cards
+      mockQuery.mockResolvedValueOnce([] as any);
 
       const result = await executeCardCrafting('user-1', 'recipe-1', 1);
 
@@ -339,9 +362,16 @@ describe('CraftingService', () => {
       mockQuery.mockResolvedValueOnce([recipeWithProfession] as any);
       mockQuery.mockResolvedValueOnce([playerWithCharacters] as any);
       mockQuery.mockResolvedValueOnce(charactersWithWarrior as any);
-      mockQuery.mockResolvedValueOnce([mockCardTemplate] as any);
-      mockExecute.mockResolvedValueOnce({} as any);
-      mockExecute.mockResolvedValueOnce({} as any);
+      // 事务内：模板 + max_quantity
+      mockQuery.mockResolvedValueOnce([{ ...mockCardTemplate, max_quantity: 5 }] as any);
+      // 事务内：已有数量
+      mockQuery.mockResolvedValueOnce([{ total_quantity: 0 }] as any);
+      // 事务内：sequence
+      mockQuery.mockResolvedValueOnce([{ max_sequence: 0 }] as any);
+      // 事务内：扣材料
+      mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
+      // 事务内：INSERT
+      mockQuery.mockResolvedValueOnce([] as any);
 
       const result = await executeCardCrafting('user-1', 'recipe-1', 1);
 
@@ -364,9 +394,16 @@ describe('CraftingService', () => {
 
       mockQuery.mockResolvedValueOnce([recipeWithMoreInput] as any);
       mockQuery.mockResolvedValueOnce([playerWithEnoughMaterials] as any);
-      mockQuery.mockResolvedValueOnce([mockCardTemplate] as any);
-      mockExecute.mockResolvedValueOnce({} as any);
-      mockExecute.mockResolvedValueOnce({} as any);
+      // 事务内：模板 + max_quantity
+      mockQuery.mockResolvedValueOnce([{ ...mockCardTemplate, max_quantity: 5 }] as any);
+      // 事务内：已有数量
+      mockQuery.mockResolvedValueOnce([{ total_quantity: 0 }] as any);
+      // 事务内：sequence
+      mockQuery.mockResolvedValueOnce([{ max_sequence: 0 }] as any);
+      // 事务内：扣材料
+      mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
+      // 事务内：INSERT
+      mockQuery.mockResolvedValueOnce([] as any);
 
       const result = await executeCardCrafting('user-1', 'recipe-1', 3);
 

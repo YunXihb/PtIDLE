@@ -20,6 +20,7 @@ import * as battleSessionService from './battleSessionService';
 import { query, queryOne } from '../config/database';
 import { redisClient } from '../config/redis';
 import { broadcastFullState } from '../socket/battleStateBroadcaster';
+import { redisKey } from '../utils/redisKeys';
 
 // ─── 公共类型 ──────────────────────────────────────────────
 export type InitResult =
@@ -91,12 +92,12 @@ export async function initBattleField(io: IOServer, battleId: string): Promise<I
     await battleSessionService.initializeSession(battleId, p1Ids, p2Ids);
 
     // ── 步骤 5.5: ★ T052: 初始化胜利进度相关键 ────────────
-    await redisClient.set(`battle:${battleId}:stars:p1`, '0');
-    await redisClient.set(`battle:${battleId}:stars:p2`, '0');
-    await redisClient.set(`battle:${battleId}:alive_p1`, '3');
-    await redisClient.set(`battle:${battleId}:alive_p2`, '3');
+    await redisClient.set(redisKey.stars(battleId, 'p1'), '0');
+    await redisClient.set(redisKey.stars(battleId, 'p2'), '0');
+    await redisClient.set(redisKey.alive(battleId, 'p1'), '3');
+    await redisClient.set(redisKey.alive(battleId, 'p2'), '3');
     await redisClient.set(
-      `battle:${battleId}:bases`,
+      redisKey.bases(battleId),
       JSON.stringify({ '3,3': 'neutral', '6,6': 'neutral' })
     );
 
@@ -151,13 +152,13 @@ export async function cleanupPartialInit(battleId: string, lastSuccessfulStep: n
 
     // 步骤 5+ 失败 → DEL session
     if (lastSuccessfulStep >= 5) {
-      await redisClient.del(`battle:${battleId}:session`);
+      await redisClient.del(redisKey.session(battleId));
       // ★ T052: 同时 DEL 胜利进度相关键
-      await redisClient.del(`battle:${battleId}:stars:p1`);
-      await redisClient.del(`battle:${battleId}:stars:p2`);
-      await redisClient.del(`battle:${battleId}:alive_p1`);
-      await redisClient.del(`battle:${battleId}:alive_p2`);
-      await redisClient.del(`battle:${battleId}:bases`);
+      await redisClient.del(redisKey.stars(battleId, 'p1'));
+      await redisClient.del(redisKey.stars(battleId, 'p2'));
+      await redisClient.del(redisKey.alive(battleId, 'p1'));
+      await redisClient.del(redisKey.alive(battleId, 'p2'));
+      await redisClient.del(redisKey.bases(battleId));
     }
 
     // 步骤 4+ 失败 → DEL 6 个 hand/retained/discard
@@ -167,19 +168,19 @@ export async function cleanupPartialInit(battleId: string, lastSuccessfulStep: n
         p2Chars: [] as CharacterRow[],
       }));
       for (const c of [...p1Chars, ...p2Chars]) {
-        await redisClient.del(`battle:${battleId}:hand:${c.id}`);
-        await redisClient.del(`battle:${battleId}:retained:${c.id}`);
-        await redisClient.del(`battle:${battleId}:discard:${c.id}`);
+        await redisClient.del(redisKey.hand(battleId, c.id));
+        await redisClient.del(redisKey.retained(battleId, c.id));
+        await redisClient.del(redisKey.discard(battleId, c.id));
       }
     }
 
     // 步骤 2+ 失败 → DEL pieces + positions
     if (lastSuccessfulStep >= 2) {
-      await redisClient.del(`battle:${battleId}:pieces`);
-      await redisClient.del(`battle:${battleId}:positions`);
+      await redisClient.del(redisKey.pieces(battleId));
+      await redisClient.del(redisKey.positions(battleId));
     } else if (lastSuccessfulStep === 1) {
       // 步骤 1 失败 → 仅 positions 初始化但为空
-      await redisClient.del(`battle:${battleId}:positions`);
+      await redisClient.del(redisKey.positions(battleId));
     }
   } catch (err) {
     console.error(`[cleanupPartialInit:${battleId}] cleanup error:`, err);

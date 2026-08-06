@@ -123,6 +123,8 @@ describe('settleBattle - happy path', () => {
     (mockWithTransaction as jest.Mock).mockImplementation(
       async (fn: (client: any) => Promise<any>) => fn(mockClient)
     );
+    // 行锁幂等复核查询：默认返回「未结算」,让事务内 SQL 继续执行
+    mockClientQuery.mockResolvedValue({ rows: [{ settled_at: null }] });
   });
 
   it('1. p1 调用, p1 赢 → p1.wins+=1, p2.losses+=1, 双 pbh 写入, settled_at 写入', async () => {
@@ -340,7 +342,8 @@ describe('settleBattle - redis cleanup failure', () => {
 
   it('9. redis.keys 抛错 → 仍返 ok=true + 玩家数据, console.error 出现', async () => {
     setupLoadBattleOnly(buildBattleRow()); // settled_at = null → 进入 transaction
-    mockClientQuery.mockResolvedValue({ rowCount: 1 }); // transaction SQL 全部成功
+    // 行锁幂等复核 + transaction SQL 全部成功
+    mockClientQuery.mockResolvedValue({ rows: [{ settled_at: null }], rowCount: 1 });
     mockQueryOne
       .mockResolvedValueOnce({ wins: 1, losses: 0, draws: 0 })
       .mockResolvedValueOnce({ wins: 0, losses: 1, draws: 0 });

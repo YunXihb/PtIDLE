@@ -1,4 +1,4 @@
-import { query, execute } from '../config/database';
+import { query, execute, withTransaction } from '../config/database';
 import { getGatheringConfig, getGatheringSkillByType, clearSkillsCache } from './skillService';
 import {
   enqueueGatheringTask,
@@ -91,7 +91,9 @@ export async function startGathering(
   // 2. 检查是否已有进行中的采集任务
   const activeTask = idleQueue.find(task => task.status === 'active');
   if (activeTask) {
-    throw new Error('已有进行中的采集任务');
+    const err = new Error('已有进行中的采集任务') as Error & { code?: string };
+    err.code = 'GATHERING_ALREADY_ACTIVE';
+    throw err;
   }
 
   // 3. 创建新采集任务
@@ -201,90 +203,94 @@ async function calculateGatheringYield(
  * @param userId 用户ID
  */
 export async function completeGathering(userId: string): Promise<GatheringTask | null> {
-  // 1. 获取玩家数据
-  const playerResult = await query<{
-    id: string;
-    resources: Record<string, number>;
-    warehouse_limits: Record<string, number>;
-    idle_queue: GatheringTask[];
-    production_gear: Record<string, any>;
-  }>(
-    'SELECT id, resources, warehouse_limits, idle_queue, production_gear FROM players WHERE user_id = $1',
-    [userId]
-  );
+  // 单事务 + 行锁（SELECT ... FOR UPDATE）保证并发 complete 幂等：
+  //   两个并发请求同时进来时，第二个会等第一个 COMMIT，读到已 completed 的任务 → 返回 null
+  return withTransaction(async (client) => {
+    // 1. 行锁读玩家数据
+    const playerResult = await client.query<{
+      id: string;
+      resources: Record<string, number>;
+      warehouse_limits: Record<string, number>;
+      idle_queue: GatheringTask[];
+      production_gear: Record<string, any>;
+    }>(
+      'SELECT id, resources, warehouse_limits, idle_queue, production_gear FROM players WHERE user_id = $1 FOR UPDATE',
+      [userId]
+    );
 
-  if (playerResult.length === 0) {
-    return null;
-  }
-
-  const player = playerResult[0];
-  const idleQueue: GatheringTask[] = player.idle_queue || [];
-
-  // 2. 查找活跃任务
-  const activeTaskIndex = idleQueue.findIndex(task => task.status === 'active');
-  if (activeTaskIndex === -1) {
-    return null;
-  }
-
-  const activeTask = idleQueue[activeTaskIndex];
-
-  // 3. 检查任务是否已到期
-  const startTime = new Date(activeTask.startedAt).getTime();
-  const now = Date.now();
-  const elapsedSeconds = (now - startTime) / 1000;
-
-  if (elapsedSeconds < activeTask.duration) {
-    // 任务尚未完成
-    return null;
-  }
-
-  // 4. 计算产出
-  const { resources: earned, overflowed } = await calculateGatheringYield(
-    activeTask,
-    player.production_gear || {}
-  );
-
-  // 5. 应用仓储上限
-  const currentResources = player.resources || {};
-  const limits = player.warehouse_limits || { resource: 1000 };
-
-  const stored: Record<string, number> = {};
-  const actualOverflowed: Record<string, number> = {};
-
-  for (const [resource, amount] of Object.entries(earned)) {
-    const current = currentResources[resource] || 0;
-    const limit = limits.resource;
-    const maxAdd = Math.max(0, limit - current);
-    const actualStored = Math.min(amount, maxAdd);
-
-    stored[resource] = actualStored;
-    if (amount > maxAdd) {
-      actualOverflowed[resource] = amount - maxAdd;
+    if (playerResult.rows.length === 0) {
+      return null;
     }
-  }
 
-  // 6. 更新玩家资源
-  const updatedResources = { ...currentResources };
-  for (const [resource, amount] of Object.entries(stored)) {
-    updatedResources[resource] = (updatedResources[resource] || 0) + amount;
-  }
+    const player = playerResult.rows[0];
+    const idleQueue: GatheringTask[] = player.idle_queue || [];
 
-  // 7. 更新任务状态为完成
-  idleQueue[activeTaskIndex] = {
-    ...activeTask,
-    status: 'completed',
-    result: {
-      resources: stored,
-      overflowed: actualOverflowed,
-    },
-  };
+    // 2. 查找活跃任务（行锁下只会有一个请求走到这里）
+    const activeTaskIndex = idleQueue.findIndex(task => task.status === 'active');
+    if (activeTaskIndex === -1) {
+      return null;
+    }
 
-  await execute(
-    'UPDATE players SET resources = $1, idle_queue = $2, updated_at = NOW() WHERE user_id = $3',
-    [JSON.stringify(updatedResources), JSON.stringify(idleQueue), userId]
-  );
+    const activeTask = idleQueue[activeTaskIndex];
 
-  return idleQueue[activeTaskIndex];
+    // 3. 检查任务是否已到期
+    const startTime = new Date(activeTask.startedAt).getTime();
+    const now = Date.now();
+    const elapsedSeconds = (now - startTime) / 1000;
+
+    if (elapsedSeconds < activeTask.duration) {
+      // 任务尚未完成
+      return null;
+    }
+
+    // 4. 计算产出
+    const { resources: earned, overflowed } = await calculateGatheringYield(
+      activeTask,
+      player.production_gear || {}
+    );
+
+    // 5. 应用仓储上限
+    const currentResources = player.resources || {};
+    const limits = player.warehouse_limits || { resource: 1000 };
+
+    const stored: Record<string, number> = {};
+    const actualOverflowed: Record<string, number> = {};
+
+    for (const [resource, amount] of Object.entries(earned)) {
+      const current = currentResources[resource] || 0;
+      const limit = limits.resource;
+      const maxAdd = Math.max(0, limit - current);
+      const actualStored = Math.min(amount, maxAdd);
+
+      stored[resource] = actualStored;
+      if (amount > maxAdd) {
+        actualOverflowed[resource] = amount - maxAdd;
+      }
+    }
+
+    // 6. 更新玩家资源
+    const updatedResources = { ...currentResources };
+    for (const [resource, amount] of Object.entries(stored)) {
+      updatedResources[resource] = (updatedResources[resource] || 0) + amount;
+    }
+
+    // 7. 更新任务状态为完成
+    idleQueue[activeTaskIndex] = {
+      ...activeTask,
+      status: 'completed',
+      result: {
+        resources: stored,
+        overflowed: actualOverflowed,
+      },
+    };
+
+    await client.query(
+      'UPDATE players SET resources = $1, idle_queue = $2, updated_at = NOW() WHERE user_id = $3',
+      [JSON.stringify(updatedResources), JSON.stringify(idleQueue), userId]
+    );
+
+    return idleQueue[activeTaskIndex];
+  });
 }
 
 /**

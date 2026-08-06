@@ -1,5 +1,6 @@
 import { redisClient } from '../config/redis';
 import { query, queryOne, execute } from '../config/database';
+import { redisKey } from '../utils/redisKeys';
 
 // ========================================
 // 类型定义
@@ -56,7 +57,7 @@ export interface BattleSessionView extends BattleSessionState {
  * Redis 战斗会话状态 key
  */
 function getSessionKey(battleId: string): string {
-  return `battle:${battleId}:session`;
+  return redisKey.session(battleId);
 }
 
 // ========================================
@@ -432,7 +433,21 @@ export async function deleteSession(battleId: string): Promise<void> {
 }
 
 /**
- * 内部辅助：查询 DB 同步状态（用于测试和调试）
+ * 读取运行时会话状态（Redis 主存，含完整 activationOrder）
+ *
+ * 注意：这是战斗编排层（battleActionService / broadcaster）的**唯一**状态读取入口。
+ * Redis 是运行时主存（每步 phase 切换只写 Redis），PostgreSQL 仅作审计/恢复。
+ * 旧实现 getDbSessionState 读 DB 导致 phase 滞后，已废弃。
+ */
+export async function getSessionState(
+  battleId: string
+): Promise<BattleSessionState | null> {
+  return loadSessionState(battleId);
+}
+
+/**
+ * 内部辅助：查询 DB 同步状态（仅用于测试和调试，不用于运行时）
+ * @deprecated 运行时请用 getSessionState（读 Redis 主存）
  */
 export async function getDbSessionState(
   battleId: string
