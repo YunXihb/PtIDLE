@@ -2905,7 +2905,7 @@ T-FOLLOW-4 完成镜像 + GHCR 发布，但生产部署仍手动。T-FOLLOW-5 �
 - ❌ **Domain 绑定**: T-FOLLOW-6
 - ❌ **自动回滚**: T-FOLLOW-7+ (记录 .last-good tag + health check fail 时 restore)
 - ❌ **备份策略**: T-FOLLOW-8+ (daily pg_dump → B2 / S3)
-- ❌ **监控**: T-FOLLOW-9+ (UptimeRobot + GH Actions scheduled health check)
+- ⚠️ **监控**: T-FOLLOW-9 部分完成 (2026-08-07): GH Actions scheduled health check 已做 (每 15 min curl /health + issue 告警); UptimeRobot + 5xx 告警阻塞于域名
 - ❌ **镜像签名 / 扫描**: T-FOLLOW-10+ (cosign / trivy)
 - ❌ **Distroless 镜像**: T-FOLLOW-11+ (体积优化)
 - ❌ **HA / multi-instance**: T-FOLLOW-12+ (load balancer + 2 VPS, 仅在用户量到时考虑)
@@ -3012,7 +3012,7 @@ deploy.sh 加自动回滚 — health check 失败时自动切回上一个 known-
 - **局限**: 仍需 VPS 访问才能真修; trap 只改善"定位" (从 GH Actions 日志直接看行号), 不改部署逻辑
 
 ### 不做 (YAGNI)
-- ❌ 深 health check (DB/Redis ping / 5xx 率) — T-FOLLOW-9 监控
+- ⚠️ 深 health check: DB/Redis ping 已实现 (e7e51c9, 待镜像刷新上线); 5xx 率统计仍待做 — T-FOLLOW-9
 - ❌ 蓝绿/金丝雀 — 单 VPS 不需要
 - ❌ 自动重试 / 循环检测 — 回滚失败 → 用户介入
 - ❌ multi-image `.last_good` (保留 N 个 good tag) — 单 deploy 失败概率极低
@@ -3123,5 +3123,5 @@ deploy.sh 加自动回滚 — health check 失败时自动切回上一个 known-
 ### 关联
 - T-FOLLOW-5 (部署编排): 复用 docker-compose + SSH 模式
 - T-FOLLOW-7 (自动回滚): backup service 独立于 deploy, 不受回滚影响
-- T-FOLLOW-9 (监控, 待开发): 未来加 backup workflow 成功率告警
+- T-FOLLOW-9 (监控, 部分完成 2026-08-07): GH Actions health check 已做; backup workflow 成功率告警仍待做
 - migrate.js (T-FOLLOW-1): 恢复后 schema_migrations 被备份状态覆盖, 需重跑 migrate

@@ -2278,3 +2278,33 @@ T-FOLLOW-5 完成单 VPS CI 自动部署, 但生产级仍缺 HTTPS。规划 T-FO
 - B2/S3 实际实现（留 TODO 分支，return 1 不静默）
 - 真实 VPS 部署验证（需用户 SSH 更新 VPS 配置：docker-compose.yml + scripts + .env BACKUP_*；GH secrets VPS_* 已配 deploy.yml 复用）
 - T-FOLLOW-9 监控 / 剩余 P2（待用户选下一步）
+
+---
+
+## 2026-08-07 - 任务：T-FOLLOW-9 监控（GH Actions scheduled health check）+ 镜像滞后诊断
+
+### Prompt
+按次序推进剩余待办。先验证 CI/CD 闭环（接续点1）；用户选「先做监控(无域名)」--做 T-FOLLOW-9 的 GH Actions scheduled health check（不依赖域名），HTTPS/UptimeRobot 等有域名再补。
+
+### 思考
+CI/CD 闭环验证：GitHub Actions outage 已恢复，旧 run 31125799358 是 outage 期 cancelled（从未执行），重触发 run 31157796071 全 6 step success，deploy.sh 在 VPS 完整跑通 pull->migrate->recreate->health，CI/CD 闭环坐实。
+
+云镜白名单（原待办1）：SSH 取证 hids.log/ydservice.log，云镜从未隔离过 /opt/ptidle（零 ptidle 命中、无 isolate 动作），嫌疑排除，白名单非必要。
+
+T-FOLLOW-9 调研时发现**镜像滞后**：deploy.sh 拉 :latest，release.yml 仅 v* tag push 才更新 latest，最后 tag 是 v0.1.1 (e5d21ca, 2026-06-25)，自此所有 deploy 镜像层是空操作。未上线的 backend 代码：e7e51c9 (T-FIX P0 bug + 并发/资产安全 + /health active probe)。这解释了 #5（/health db/redis unknown = 旧镜像无 probe，非 bug）。
+
+### 意外
+1. architecture.md line 3015 用 em dash (U+2014) `-` 而非 hyphen，Edit old_string 反复不匹配；python repr 看似一样，hexdump 才发现 0x2014。改用 em dash 后匹配。
+2. progress.md 已完成表编辑时误把 T-FOLLOW-7 失败诊断行整行替换成 T-FOLLOW-9，及时回读发现并恢复。
+3. MEMORY.md 旧条目 "major outage" (空格) 被我写成 "major_outage" (下划线) 导致 Edit 不匹配--旧记忆里的空格/下划线细节易错。
+
+### 修复
+- 新增 .github/workflows/health-check.yml：cron 每 15 min (8,23,38,53) + workflow_dispatch，curl http://$VPS_HOST/health (--retry 3)，判定 200+status:ok，失败开/评论 issue (label health-check, 去重)，恢复自动关 issue，issues:write + GITHUB_TOKEN，复用 VPS_HOST 不引入新 secret
+- docs/deploy.md 加 §九 监控（机制/手动触发/局限），原 §九/十 顺延 §十/十一
+- memory-bank progress.md (T-FOLLOW-9 移已完成) / architecture.md (3 处状态改部分完成) / history.md (本条)
+- docs/superpowers/plans/2026-08-07-tfollow9-monitoring.md (plan 归档)
+
+### 范围外
+- Part B 镜像刷新（切 v0.1.2 tag）：outward-facing 发布+部署，需用户明确确认，未擅自做
+- UptimeRobot + 5xx 告警：阻塞于域名
+- backup workflow 成功率告警：后续

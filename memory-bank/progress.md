@@ -9,7 +9,7 @@
 
 | 任务ID | 名称 | 备注 |
 |--------|------|------|
-| T-FOLLOW-9 | 监控 (UptimeRobot free tier + GH Actions scheduled health check) | T-FOLLOW-6 完成后, 需要 https endpoint 外部 ping |
+<!-- T-FOLLOW-9 已完成 (2026-08-07), 见「已完成」表. 其余 UptimeRobot/5xx 告警阻塞于域名 -->
 
 ---
 
@@ -95,6 +95,7 @@
 | T-FIX 批次 2 (P1/P2) | 并发/资产安全 + 代码整洁：moveCharacter Lua 原子、settleBattle 行锁幂等、consumePlayerCard 归属复核、全局错误中间件、CORS 收敛 + auth 限流、共享缓存工具、Redis key 常量集中、错误码统一、迁移 004 + 唯一约束 | 2026-08-06 |
 | T-FOLLOW-8 | 备份策略（daily pg_dump + 保留 daily14/weekly8 + 恢复 + storage 抽象） | 2026-08-06 |
 | T-FOLLOW-7 失败诊断 | deploy.sh 加 ERR trap (`set -E` + `trap on_error ERR`) 打印失败行号 + 定位提示，改善 v0.1.1 部署失败 (8s exit 1) 无 step-level 输出问题。裸命令失败 (cd/pull/migrate/up) 触发，`if`/`while` 不触发。本地 bash 模拟验证 trap 行为；仍需 VPS 访问真正修复部署 | 2026-08-06 |
+| T-FOLLOW-9 | 监控（GH Actions scheduled health check：每 15 min curl /health，失败开/评论 issue 告警，恢复自动关 issue；复用 VPS_HOST，GITHUB_TOKEN 开 issue） | 2026-08-07 |
 
 ---
 

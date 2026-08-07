@@ -1,0 +1,90 @@
+# =============================================================================
+# PtIDLE Health Check Workflow (T-FOLLOW-9)
+# =============================================================================
+# 触发: schedule (每 15 min) + workflow_dispatch (手动)
+# 行为: curl ping http://$VPS_HOST/health
+#       - 失败: 开/评论 GitHub issue (label=health-check) 告警, 去重不重复开
+#       - 成功: 若有 open issue 自动评论+关闭 (恢复通知)
+#       - 失败时 step exit 1, 让 Actions UI 显示 failed run (默认失败通知)
+# 权限: issues: write (开/关/评论 issue), 用默认 GITHUB_TOKEN, 不引入新 secret
+# 依赖 secrets: VPS_HOST (同 deploy.yml / backup.yml 复用)
+#
+# 局限 (镜像刷新前): 若生产仍跑 v0.1.1 旧镜像, /health 永远返回 200/ok
+#   (硬编码占位, 无 DB/Redis probe), 本检查只能抓 backend 宕机/崩溃/端口不通,
+#   抓不到 DB/Redis 故障. 镜像刷新到 e7e51c9+ (含 active probe, DB down 返回 503)
+#   后才有完整意义. 见 docs/deploy.md T-FOLLOW-9 章节.
+# =============================================================================
+
+name: Health Check
+
+on:
+  schedule:
+    - cron: '8,23,38,53 * * * *'   # 每 15 min, 偏移避整点减 GH 调度拥塞
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+jobs:
+  health-check:
+    name: Ping /health
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Ping /health and alert
+        run: |
+          set +e
+          HEALTH_URL="http://${{ secrets.VPS_HOST }}/health"
+          LABEL="health-check"
+          TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          # --- ping (curl --retry 抖动, -w 末尾追加 http_code) ---
+          RESP=$(curl -sS --max-time 10 --retry 3 --retry-delay 5 -w $'\n%{http_code}' "$HEALTH_URL")
+          CODE=$(printf '%s' "$RESP" | tail -n1)
+          BODY=$(printf '%s' "$RESP" | sed '$d')
+          echo "--- HTTP $CODE ---"
+          echo "$BODY"
+
+          # --- 判定: 200 且 body 含 "status":"ok" ---
+          if [ "$CODE" = "200" ] && printf '%s' "$BODY" | grep -q '"status"[[:space:]]*:[[:space:]]*"ok"'; then
+            RESULT=ok
+          else
+            RESULT=fail
+          fi
+          echo "Result: $RESULT"
+
+          # --- 确保 label 存在 ---
+          gh label create "$LABEL" --color D73A4A --if-not-exists 2>/dev/null || true
+          OPEN=$(gh issue list --label "$LABEL" --state open --json number --jq '.[0].number // empty' 2>/dev/null || echo "")
+
+          if [ "$RESULT" = "ok" ]; then
+            if [ -n "$OPEN" ]; then
+              printf '✅ Recovered at %s — /health back to HTTP 200 / status:ok.\n\nrun: %s\n' "$TS" "$RUN_URL" > /tmp/msg.txt
+              gh issue comment "$OPEN" --body-file /tmp/msg.txt
+              gh issue close "$OPEN"
+              echo "Recovered: closed issue #$OPEN"
+            else
+              echo "OK: /health healthy, no open issue."
+            fi
+          else
+            # --- 失败告警 (写文件避免 heredoc 缩进/转义问题) ---
+            {
+              printf '🚨 Health check FAILED at %s\n\n' "$TS"
+              printf -- '- Endpoint: `%s`\n' "$HEALTH_URL"
+              printf -- '- HTTP code: `%s`\n' "$CODE"
+              printf -- '- Response:\n```\n%s\n```\n' "$BODY"
+              printf -- '- Run: %s\n\n' "$RUN_URL"
+              printf '排查: VPS 容器状态 (`docker ps`) / 最近 deploy 日志 / DB-Redis 连接 / VPS 网络.\n'
+            } > /tmp/msg.txt
+            if [ -n "$OPEN" ]; then
+              gh issue comment "$OPEN" --body-file /tmp/msg.txt
+              echo "Still failing: commented on issue #$OPEN"
+            else
+              gh issue create --title "🚨 Production /health check failing" --label "$LABEL" --body-file /tmp/msg.txt
+              echo "Opened new issue"
+            fi
+            exit 1   # 让 Actions UI 显示 failed run
+          fi

@@ -620,7 +620,35 @@ docker compose run --rm -e CONFIRM_RESTORE=yes backup /rs.sh latest
 
 ---
 
-## 九、常见问题
+## 九、监控（T-FOLLOW-9）
+
+生产健康由 `.github/workflows/health-check.yml` 定时探测，失败开 GitHub issue 告警。
+
+### 9.1 机制
+
+- **触发**：schedule cron `8,23,38,53 * * * *`（每 15 min，偏移避整点减 GH 调度拥塞）+ `workflow_dispatch`（手动）
+- **探测**：`curl http://$VPS_HOST/health`（复用 `VPS_HOST` secret，不引入新 secret），`--retry 3 --retry-delay 5` 抗网络抖动
+- **判定**：HTTP 200 且 body 含 `"status":"ok"`
+- **告警**：失败时用 `gh` CLI 开 GitHub issue（label `health-check`，标题 `🚨 Production /health check failing`），含时间 / endpoint / HTTP code / 响应 / run 链接 / 排查指引；去重--已有 open issue 则评论不重开
+- **恢复**：成功且存在 open issue 时自动评论 `✅ Recovered` 并关闭
+- **权限**：`issues: write`，用默认 `GITHUB_TOKEN`，无需额外 secret
+
+### 9.2 手动触发
+
+```bash
+gh workflow run health-check.yml -R YunXihb/PtIDLE
+gh run list -R YunXihb/PtIDLE --workflow=health-check.yml --limit 1
+```
+
+### 9.3 局限与后续
+
+- **镜像刷新前**：若生产仍跑 v0.1.1 旧镜像，`/health` 硬编码占位（无 DB/Redis probe），永远返回 200/ok。本检查此时只能抓 backend 宕机 / 崩溃 / 端口不通，**抓不到 DB/Redis 故障**。镜像刷新到 `e7e51c9+`（含 active probe，DB/Redis down 时返回 503 `degraded`）后才有完整意义。
+- **UptimeRobot 外部 5 min ping + 5xx 告警**：阻塞于域名（见 § 5.3 HTTPS），有域名后补
+- **backup workflow 成功率告警**：可选扩展，后续
+
+---
+
+## 十、常见问题
 
 ### Q1: 容器启动后立刻退出？
 
@@ -659,7 +687,7 @@ Migrations 是向前兼容的（不删除列），所以降级代码不需要回
 
 ---
 
-## 十、相关链接
+## 十一、相关链接
 
 - 仓库：https://github.com/YunXihb/PtIDLE
 - 镜像：https://github.com/YunXihb/PtIDLE/pkgs/container/ptidle-backend
