@@ -9,6 +9,7 @@
 import { Response } from 'express';
 import { AuthRequest } from '../middleware/auth';
 import { settleBattle } from '../services/battleSettlementService';
+import { ok, fail } from '../utils/http';
 
 /**
  * POST /api/battle/result
@@ -37,7 +38,7 @@ export async function settleBattleHandler(
 
     if (!userId) {
       // authMiddleware 通常已拦截,这里是防御性兜底
-      res.status(401).json({ error: 'Unauthorized' });
+      fail(res, 401, 'Unauthorized');
       return;
     }
 
@@ -45,7 +46,7 @@ export async function settleBattleHandler(
 
     // 400: 缺 battleId / 类型错
     if (typeof battleId !== 'string' || battleId.length === 0) {
-      res.status(400).json({ error: 'battleId is required (string)' });
+      fail(res, 400, 'battleId is required (string)');
       return;
     }
 
@@ -55,13 +56,13 @@ export async function settleBattleHandler(
       // result is { ok: false; error: 'battle_not_found' | 'not_participant' | 'battle_not_finished' }
       switch (result.error) {
         case 'battle_not_found':
-          res.status(404).json({ error: 'Battle not found' });
+          fail(res, 404, 'Battle not found');
           return;
         case 'not_participant':
-          res.status(403).json({ error: 'Not a participant of this battle' });
+          fail(res, 403, 'Not a participant of this battle');
           return;
         case 'battle_not_finished':
-          res.status(409).json({ error: 'Battle is not finished yet' });
+          fail(res, 409, 'Battle is not finished yet');
           return;
         default: {
           // Exhaustiveness: if a new variant is added, TS fails here at compile time.
@@ -72,12 +73,9 @@ export async function settleBattleHandler(
     }
 
     // result.ok === true: TS narrows via the early-return switch above
-    res.status(200).json({
-      success: true,
-      data: result.data,
-    });
+    ok(res, result.data);
   } catch (error) {
     console.error('[T054] settleBattleHandler unexpected error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    fail(res, 500, 'Internal server error');
   }
 }

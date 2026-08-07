@@ -8,6 +8,7 @@ import {
   calculateOfflineEarnings,
   applyWarehouseLimits,
 } from '../services/offlineService';
+import { ok, fail } from '../utils/http';
 
 const router = Router();
 
@@ -17,21 +18,21 @@ router.get('/profile', authMiddleware, async (req: AuthRequest, res) => {
     const userId = req.user?.userId;
 
     if (!userId) {
-      res.status(401).json({ error: 'Unauthorized' });
+      fail(res, 401, 'Unauthorized');
       return;
     }
 
     const profile = await getPlayerProfile(userId);
 
     if (!profile) {
-      res.status(404).json({ error: 'Player not found' });
+      fail(res, 404, 'Player not found');
       return;
     }
 
-    res.json(profile);
+    ok(res, profile);
   } catch (error) {
     console.error('Error fetching player profile:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    fail(res, 500, 'Internal server error');
   }
 });
 
@@ -41,7 +42,7 @@ router.post('/offline-claim', authMiddleware, async (req: AuthRequest, res) => {
     const userId = req.user?.userId;
 
     if (!userId) {
-      res.status(401).json({ error: 'Unauthorized' });
+      fail(res, 401, 'Unauthorized');
       return;
     }
 
@@ -62,24 +63,21 @@ router.post('/offline-claim', authMiddleware, async (req: AuthRequest, res) => {
     });
 
     if (!outcome) {
-      res.status(404).json({ error: 'Player not found' });
+      fail(res, 404, 'Player not found');
       return;
     }
 
     // 6. 返回收益详情
-    res.json({
-      success: true,
-      data: {
-        offlineTime: outcome.offlineTime,
-        earned: outcome.earned,
-        stored: outcome.stored,
-        overflowed: outcome.overflowed,
-        lastOffline: new Date().toISOString(),
-      },
+    ok(res, {
+      offlineTime: outcome.offlineTime,
+      earned: outcome.earned,
+      stored: outcome.stored,
+      overflowed: outcome.overflowed,
+      lastOffline: new Date().toISOString(),
     });
   } catch (error) {
     console.error('Error claiming offline earnings:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    fail(res, 500, 'Internal server error');
   }
 });
 

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { getAllCardTemplates, getCardTemplateById, getPlayerCards, getPublicPoolCards } from '../services/cardService';
 import { query } from '../config/database';
+import { ok, fail } from '../utils/http';
 
 const router = Router();
 
@@ -10,13 +11,10 @@ router.get('/', async (_req, res) => {
   try {
     const cardTemplates = await getAllCardTemplates();
 
-    res.json({
-      success: true,
-      data: cardTemplates,
-    });
+    ok(res, cardTemplates);
   } catch (error) {
     console.error('Error fetching card templates:', error);
-    res.status(500).json({ error: 'Failed to fetch card templates' });
+    fail(res, 500, 'Failed to fetch card templates');
   }
 });
 
@@ -24,13 +22,10 @@ router.get('/', async (_req, res) => {
 router.get('/public-pool', async (_req, res) => {
   try {
     const poolCards = await getPublicPoolCards();
-    res.json({
-      success: true,
-      data: poolCards,
-    });
+    ok(res, poolCards);
   } catch (error) {
     console.error('Error fetching public pool cards:', error);
-    res.status(500).json({ error: 'Failed to fetch public pool cards' });
+    fail(res, 500, 'Failed to fetch public pool cards');
   }
 });
 
@@ -42,17 +37,14 @@ router.get('/:id', async (req, res) => {
     const cardTemplate = await getCardTemplateById(id);
 
     if (!cardTemplate) {
-      res.status(404).json({ error: 'Card template not found' });
+      fail(res, 404, 'Card template not found');
       return;
     }
 
-    res.json({
-      success: true,
-      data: cardTemplate,
-    });
+    ok(res, cardTemplate);
   } catch (error) {
     console.error('Error fetching card template:', error);
-    res.status(500).json({ error: 'Failed to fetch card template' });
+    fail(res, 500, 'Failed to fetch card template');
   }
 });
 
@@ -62,7 +54,7 @@ router.get('/my/list', authMiddleware, async (req: AuthRequest, res) => {
     const userId = req.user?.userId;
 
     if (!userId) {
-      res.status(401).json({ error: 'Unauthorized' });
+      fail(res, 401, 'Unauthorized');
       return;
     }
 
@@ -73,7 +65,7 @@ router.get('/my/list', authMiddleware, async (req: AuthRequest, res) => {
     );
 
     if (playerResult.length === 0) {
-      res.status(404).json({ error: 'Player not found' });
+      fail(res, 404, 'Player not found');
       return;
     }
 
@@ -98,7 +90,7 @@ router.get('/my/list', authMiddleware, async (req: AuthRequest, res) => {
     });
   } catch (error) {
     console.error('Error fetching player cards:', error);
-    res.status(500).json({ error: 'Failed to fetch player cards' });
+    fail(res, 500, 'Failed to fetch player cards');
   }
 });
 

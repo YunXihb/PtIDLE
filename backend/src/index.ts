@@ -85,6 +85,7 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
   const isProd = process.env.NODE_ENV === 'production';
   console.error('[unhandled]', err);
   res.status(500).json({
+    success: false,
     error: isProd ? 'Internal server error' : err.message || 'Internal server error',
   });
 });

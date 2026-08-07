@@ -1,4 +1,4 @@
-import { query, execute } from '../config/database';
+import { query, execute, withTransaction } from '../config/database';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
@@ -54,36 +54,43 @@ export async function createUser(input: CreateUserInput): Promise<Omit<User, 'pa
     throw new InvalidInputError('Password must be at least 6 characters');
   }
 
-  // Check if username already exists
-  const existingUsers = await query<User>(
-    'SELECT id FROM users WHERE username = $1',
-    [input.username.trim()]
-  );
+  const username = input.username.trim();
 
-  if (existingUsers.length > 0) {
-    throw new UserAlreadyExistsError(input.username);
-  }
-
-  // Hash password and create user
+  // Hash password 在事务外完成（CPU 密集，避免占用连接）
   const passwordHash = await hashPassword(input.password);
   const userId = uuidv4();
   const now = new Date();
 
-  await execute(
-    `INSERT INTO users (id, username, password_hash, created_at, last_login)
-     VALUES ($1, $2, $3, $4, NULL)`,
-    [userId, input.username.trim(), passwordHash, now]
-  );
+  // 事务：existence check + INSERT user + initializePlayer 原子化
+  // 修复此前 INSERT user 与 initializePlayer 各自独立 execute、中间失败留孤立 user 的 bug
+  return withTransaction(async (client) => {
+    // Check if username already exists（事务内同连接读，保证一致性）
+    const existing = await client.query<User>(
+      'SELECT id FROM users WHERE username = $1',
+      [username]
+    );
 
-  // 初始化玩家数据（创建玩家记录和棋子）
-  await initializePlayer(userId);
+    if (existing.rows.length > 0) {
+      throw new UserAlreadyExistsError(username);
+    }
 
-  return {
-    id: userId,
-    username: input.username.trim(),
-    created_at: now,
-    last_login: null
-  };
+    // Create user
+    await client.query(
+      `INSERT INTO users (id, username, password_hash, created_at, last_login)
+       VALUES ($1, $2, $3, $4, NULL)`,
+      [userId, username, passwordHash, now]
+    );
+
+    // 初始化玩家数据（创建玩家记录和棋子）—— 同一事务，失败则整体回滚
+    await initializePlayer(userId, client);
+
+    return {
+      id: userId,
+      username,
+      created_at: now,
+      last_login: null
+    };
+  });
 }
 
 function generateToken(userId: string, username: string): string {

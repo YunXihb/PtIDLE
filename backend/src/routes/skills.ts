@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { getAllGatheringSkills, getGatheringSkillByType } from '../services/skillService';
+import { ok, fail } from '../utils/http';
 
 const router = Router();
 
@@ -7,10 +8,10 @@ const router = Router();
 router.get('/gathering', async (req, res) => {
   try {
     const skills = await getAllGatheringSkills();
-    res.json({ success: true, data: skills });
+    ok(res, skills);
   } catch (error) {
     console.error('Error fetching gathering skills:', error);
-    res.status(500).json({ error: 'Failed to fetch gathering skills' });
+    fail(res, 500, 'Failed to fetch gathering skills');
   }
 });
 
@@ -21,14 +22,14 @@ router.get('/gathering/:type', async (req, res) => {
     const skill = await getGatheringSkillByType(type);
 
     if (!skill) {
-      res.status(404).json({ error: 'Skill not found' });
+      fail(res, 404, 'Skill not found');
       return;
     }
 
-    res.json({ success: true, data: skill });
+    ok(res, skill);
   } catch (error) {
     console.error('Error fetching gathering skill:', error);
-    res.status(500).json({ error: 'Failed to fetch gathering skill' });
+    fail(res, 500, 'Failed to fetch gathering skill');
   }
 });
 

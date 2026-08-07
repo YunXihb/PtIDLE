@@ -99,11 +99,12 @@ describe('Player API Integration Tests', () => {
         .set('Authorization', `Bearer ${validToken}`);
 
       expect(response.status).toBe(200);
-      expect(response.body.id).toBe('player-123');
-      expect(response.body.username).toBe(testUsername);
-      expect(response.body.resources).toEqual({ iron_ore: 10, coal: 5 });
-      expect(response.body.characters).toHaveLength(1);
-      expect(response.body.characters[0].profession).toBe('warrior');
+      expect(response.body.success).toBe(true);
+      expect(response.body.data.id).toBe('player-123');
+      expect(response.body.data.username).toBe(testUsername);
+      expect(response.body.data.resources).toEqual({ iron_ore: 10, coal: 5 });
+      expect(response.body.data.characters).toHaveLength(1);
+      expect(response.body.data.characters[0].profession).toBe('warrior');
     });
 
     it('should return 404 when player not found', async () => {

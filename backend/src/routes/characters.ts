@@ -8,6 +8,7 @@ import {
   removeCardFromCharacter,
   getCharacterDeckCards,
 } from '../services/characterService';
+import { ok, fail } from '../utils/http';
 
 const router = Router();
 
@@ -17,19 +18,16 @@ router.get('/', authMiddleware, async (req: AuthRequest, res) => {
     const userId = req.user?.userId;
 
     if (!userId) {
-      res.status(401).json({ error: 'Unauthorized' });
+      fail(res, 401, 'Unauthorized');
       return;
     }
 
     const characters = await getCharactersByUserId(userId);
 
-    res.json({
-      success: true,
-      data: characters,
-    });
+    ok(res, characters);
   } catch (error) {
     console.error('Error fetching characters:', error);
-    res.status(500).json({ error: 'Failed to fetch characters' });
+    fail(res, 500, 'Failed to fetch characters');
   }
 });
 
@@ -39,7 +37,7 @@ router.post('/', authMiddleware, async (req: AuthRequest, res) => {
     const userId = req.user?.userId;
 
     if (!userId) {
-      res.status(401).json({ error: 'Unauthorized' });
+      fail(res, 401, 'Unauthorized');
       return;
     }
 
@@ -47,12 +45,12 @@ router.post('/', authMiddleware, async (req: AuthRequest, res) => {
 
     // 验证输入
     if (!name || typeof name !== 'string' || name.trim().length === 0) {
-      res.status(400).json({ error: 'Character name is required' });
+      fail(res, 400, 'Character name is required');
       return;
     }
 
     if (!profession || !['warrior', 'ranger', 'mage'].includes(profession)) {
-      res.status(400).json({ error: 'Invalid profession. Must be warrior, ranger, or mage' });
+      fail(res, 400, 'Invalid profession. Must be warrior, ranger, or mage');
       return;
     }
 
@@ -60,24 +58,21 @@ router.post('/', authMiddleware, async (req: AuthRequest, res) => {
 
     if (!result.success) {
       if (result.error === 'Player not found') {
-        res.status(404).json({ error: result.error });
+        fail(res, 404, result.error);
         return;
       }
       if (result.error?.includes('Maximum character limit')) {
-        res.status(400).json({ error: result.error });
+        fail(res, 400, result.error);
         return;
       }
-      res.status(400).json({ error: result.error });
+      fail(res, 400, result.error!);
       return;
     }
 
-    res.status(201).json({
-      success: true,
-      data: result.character,
-    });
+    ok(res, result.character, 201);
   } catch (error) {
     console.error('Error creating character:', error);
-    res.status(500).json({ error: 'Failed to create character' });
+    fail(res, 500, 'Failed to create character');
   }
 });
 
@@ -89,13 +84,13 @@ router.put('/:id/name', authMiddleware, async (req: AuthRequest, res) => {
     const { name } = req.body;
 
     if (!userId) {
-      res.status(401).json({ error: 'Unauthorized' });
+      fail(res, 401, 'Unauthorized');
       return;
     }
 
     // 验证输入
     if (!name || typeof name !== 'string' || name.trim().length === 0) {
-      res.status(400).json({ error: 'Character name is required' });
+      fail(res, 400, 'Character name is required');
       return;
     }
 
@@ -103,20 +98,17 @@ router.put('/:id/name', authMiddleware, async (req: AuthRequest, res) => {
 
     if (!result.success) {
       if (result.error === 'Character not found' || result.error === 'Player not found') {
-        res.status(404).json({ error: result.error });
+        fail(res, 404, result.error);
         return;
       }
-      res.status(400).json({ error: result.error });
+      fail(res, 400, result.error!);
       return;
     }
 
-    res.json({
-      success: true,
-      data: result.character,
-    });
+    ok(res, result.character);
   } catch (error) {
     console.error('Error updating character name:', error);
-    res.status(500).json({ error: 'Failed to update character name' });
+    fail(res, 500, 'Failed to update character name');
   }
 });
 
@@ -127,26 +119,23 @@ router.get('/:id/deck', authMiddleware, async (req: AuthRequest, res) => {
     const characterId = req.params.id;
 
     if (!userId) {
-      res.status(401).json({ error: 'Unauthorized' });
+      fail(res, 401, 'Unauthorized');
       return;
     }
 
     // 归属校验（防 IDOR）：确认该棋子属于当前登录用户
     const owned = await getCharactersByUserId(userId);
     if (!owned.some((c) => c.id === characterId)) {
-      res.status(403).json({ error: 'Forbidden' });
+      fail(res, 403, 'Forbidden');
       return;
     }
 
     const cards = await getCharacterDeckCards(characterId);
 
-    res.json({
-      success: true,
-      data: cards,
-    });
+    ok(res, cards);
   } catch (error) {
     console.error('Error fetching character deck:', error);
-    res.status(500).json({ error: 'Failed to fetch character deck' });
+    fail(res, 500, 'Failed to fetch character deck');
   }
 });
 
@@ -158,17 +147,17 @@ router.put('/:id/deck', authMiddleware, async (req: AuthRequest, res) => {
     const { cardId, action } = req.body;
 
     if (!userId) {
-      res.status(401).json({ error: 'Unauthorized' });
+      fail(res, 401, 'Unauthorized');
       return;
     }
 
     if (!cardId || typeof cardId !== 'string') {
-      res.status(400).json({ error: 'cardId is required' });
+      fail(res, 400, 'cardId is required');
       return;
     }
 
     if (!action || !['assign', 'remove'].includes(action)) {
-      res.status(400).json({ error: 'action must be "assign" or "remove"' });
+      fail(res, 400, 'action must be "assign" or "remove"');
       return;
     }
 
@@ -181,24 +170,21 @@ router.put('/:id/deck', authMiddleware, async (req: AuthRequest, res) => {
 
     if (!result.success) {
       if (result.error === 'Character not found' || result.error === 'Player not found' || result.error === 'Card not found') {
-        res.status(404).json({ error: result.error });
+        fail(res, 404, result.error);
         return;
       }
       if (result.error?.includes('already assigned') || result.error?.includes('full') || result.error?.includes('not found in') || result.error?.includes('profession')) {
-        res.status(400).json({ error: result.error });
+        fail(res, 400, result.error);
         return;
       }
-      res.status(400).json({ error: result.error });
+      fail(res, 400, result.error!);
       return;
     }
 
-    res.json({
-      success: true,
-      data: { character_deck_id: result.character_deck_id },
-    });
+    ok(res, { character_deck_id: result.character_deck_id });
   } catch (error) {
     console.error('Error updating character deck:', error);
-    res.status(500).json({ error: 'Failed to update character deck' });
+    fail(res, 500, 'Failed to update character deck');
   }
 });
 

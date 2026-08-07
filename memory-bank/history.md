@@ -2308,3 +2308,34 @@ T-FOLLOW-9 调研时发现**镜像滞后**：deploy.sh 拉 :latest，release.yml
 - Part B 镜像刷新（切 v0.1.2 tag）：outward-facing 发布+部署，需用户明确确认，未擅自做
 - UptimeRobot + 5xx 告警：阻塞于域名
 - backup workflow 成功率告警：后续
+
+---
+
+## 2026-08-07 - 任务：P2 代码改进 批次1（注册事务化 + 响应包裹统一）
+
+### Prompt
+用户选「事务化+响应包裹 (推荐)」范围 + zod 校验库（留下一批）。继续进行 P2：先做注册事务化（数据完整性，隔离低风险），再做响应包裹统一（API 一致性）。
+
+### 思考
+注册事务化：`createUser` 原 5 次独立 `execute`（INSERT user + INSERT players + 3× characters）各自 auto-commit，中间失败留孤立 user（re-register 撞 UserAlreadyExistsError，永不能玩）。`withTransaction`（T053 已有）给 client，但 `execute`/`query` 用自己的 pool 连接无法参与，故必须把 client 线程化进 `initializePlayer`。password hash（bcrypt ~100ms CPU）留事务外避免占连接。existence check 移入事务内同连接读，UNIQUE 约束仍兜底 race。
+
+响应包裹：测试套件早已把 `{success,data}`/`{success,error}` 当事实标准（70× body.data、42× body.error、33× body.success），仅 ~10 处裸字段断言（player /profile、matchmaking matched/status、gathering message）是偏差。故统一 Toward 信封风险远低于预期。决策：保留少数刻意顶层字段（matchmaking matched/status、cards pagination、gathering message、processing missing、409 data.battleId）因其有客户端/测试契约，不强塞进 data；其余裸数据 wrap、错误加 success:false、用 ok()/fail() helper。错误消息原值保留（body.error 断言不动）。inline try/catch 结构保留，next(error)+ApiError 留 REST 统一批次。
+
+### 意外
+1. authService.test.ts / auth.integration.test.ts / e2e.test.ts 三个文件都 `jest.mock('../config/database', () => ({query, execute}))` 但没 mock `withTransaction` -> 重构后 `withTransaction is not a function`。三处均补 withTransaction mock（委托 fn(mockClient)）并重写 register 断言（execute 调用 -> client.query 调用，索引 +1 因 existence SELECT 成首调）。
+2. player.ts 整文件 Edit 反复不匹配（含中文注释行），拆成小块编辑（import / profile / offline-claim success / 各 error）才过。characters/crafting/processing 改用 Write 整文件重写规避。
+3. 真库 smoke：mock 测试覆盖不了真实 BEGIN/COMMIT/ROLLBACK，故写 _smoke_txn.ts 跑 ts-node 验证（注册原子提交 user+1player+3chars、重复拒、withTransaction 抛错后 ROLLBACK 留 0 行），跑完删除。
+
+### 修复
+- playerService.initializePlayer 加可选 `client?: PoolClient`（有 client 走 client.query，无 client 走 execute 向后兼容）
+- authService.createUser 包 withTransaction（hash 在外，existence+INSERT user+initializePlayer 在内）
+- 新增 src/utils/http.ts：`ok(res,data,status=200)` / `fail(res,status,error)`
+- index.ts 全局错误中间件 body 加 `success: false`
+- 12 routes + 4 controllers 全部改 ok()/fail()（auth.ts、battle.ts 仅路由接线无需改）
+- 测试更新：authService.test.ts（mock withTransaction + 注册回滚回归用例）、auth.integration.test.ts、e2e.test.ts、player.integration.test.ts（/profile 裸字段 -> body.data.*）
+- memory-bank progress.md/architecture.md/history.md 同步 + docs/superpowers/plans 归档
+
+### 范围外
+- zod 字段校验（用户已选 zod，下一批）
+- REST 统一（next(error) + ApiError + 状态码 + 路由命名审计，下一批）
+- 未切新 release tag / 未部署（outward-facing，需用户确认）

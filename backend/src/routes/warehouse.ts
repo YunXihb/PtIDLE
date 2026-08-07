@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { getWarehouseData } from '../services/warehouseService';
+import { ok, fail } from '../utils/http';
 
 const router = Router();
 
@@ -9,28 +10,25 @@ router.get('/', authMiddleware, async (req: AuthRequest, res) => {
   try {
     const userId = req.user?.userId;
     if (!userId) {
-      res.status(401).json({ error: 'Unauthorized' });
+      fail(res, 401, 'Unauthorized');
       return;
     }
 
     const warehouse = await getWarehouseData(userId);
 
     if (!warehouse) {
-      res.status(404).json({ error: 'Player not found' });
+      fail(res, 404, 'Player not found');
       return;
     }
 
-    res.json({
-      success: true,
-      data: {
-        resources: warehouse.resources,
-        materials: warehouse.materials,
-        storageLimits: warehouse.storageLimits,
-      },
+    ok(res, {
+      resources: warehouse.resources,
+      materials: warehouse.materials,
+      storageLimits: warehouse.storageLimits,
     });
   } catch (error) {
     console.error('Error fetching warehouse data:', error);
-    res.status(500).json({ error: 'Failed to fetch warehouse data' });
+    fail(res, 500, 'Failed to fetch warehouse data');
   }
 });
 

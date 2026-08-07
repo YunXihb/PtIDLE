@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { getAllCraftingRecipes, getCraftingRecipesByCategory, executeCardCrafting, executeGearCrafting, executeConsumableCrafting } from '../services/craftingService';
+import { ok, fail } from '../utils/http';
 
 const router = Router();
 
@@ -8,10 +9,10 @@ const router = Router();
 router.get('/recipes', async (req, res) => {
   try {
     const recipes = await getAllCraftingRecipes();
-    res.json({ success: true, data: recipes });
+    ok(res, recipes);
   } catch (error) {
     console.error('Error fetching crafting recipes:', error);
-    res.status(500).json({ error: 'Failed to fetch crafting recipes' });
+    fail(res, 500, 'Failed to fetch crafting recipes');
   }
 });
 
@@ -21,10 +22,10 @@ router.get('/recipes/:category', async (req, res) => {
     const { category } = req.params;
     const recipes = await getCraftingRecipesByCategory(category);
 
-    res.json({ success: true, data: recipes });
+    ok(res, recipes);
   } catch (error) {
     console.error('Error fetching crafting recipes by category:', error);
-    res.status(500).json({ error: 'Failed to fetch crafting recipes' });
+    fail(res, 500, 'Failed to fetch crafting recipes');
   }
 });
 
@@ -33,19 +34,19 @@ router.post('/card', authMiddleware, async (req: AuthRequest, res) => {
   try {
     const userId = req.user?.userId;
     if (!userId) {
-      res.status(401).json({ error: 'Unauthorized' });
+      fail(res, 401, 'Unauthorized');
       return;
     }
 
     const { recipeId, quantity = 1 } = req.body;
 
     if (!recipeId) {
-      res.status(400).json({ error: 'recipeId is required' });
+      fail(res, 400, 'recipeId is required');
       return;
     }
 
     if (quantity < 1 || !Number.isInteger(quantity)) {
-      res.status(400).json({ error: 'quantity must be a positive integer' });
+      fail(res, 400, 'quantity must be a positive integer');
       return;
     }
 
@@ -53,33 +54,30 @@ router.post('/card', authMiddleware, async (req: AuthRequest, res) => {
 
     if (!result.success) {
       if (result.error === 'Recipe not found' || result.error === 'Card template not found') {
-        res.status(404).json({ success: false, error: result.error });
+        fail(res, 404, result.error);
         return;
       }
       if (result.error?.includes('Insufficient materials')) {
-        res.status(400).json({ success: false, error: result.error });
+        fail(res, 400, result.error);
         return;
       }
       if (result.error?.includes('Requires')) {
-        res.status(403).json({ success: false, error: result.error });
+        fail(res, 403, result.error);
         return;
       }
-      res.status(400).json({ success: false, error: result.error });
+      fail(res, 400, result.error!);
       return;
     }
 
-    res.json({
-      success: true,
-      data: {
-        cardName: result.cardName,
-        quantity: result.quantity,
-        materialsUsed: result.materialsUsed,
-        playerCardId: result.playerCardId,
-      },
+    ok(res, {
+      cardName: result.cardName,
+      quantity: result.quantity,
+      materialsUsed: result.materialsUsed,
+      playerCardId: result.playerCardId,
     });
   } catch (error) {
     console.error('Error crafting card:', error);
-    res.status(500).json({ error: 'Failed to craft card' });
+    fail(res, 500, 'Failed to craft card');
   }
 });
 
@@ -88,19 +86,19 @@ router.post('/gear', authMiddleware, async (req: AuthRequest, res) => {
   try {
     const userId = req.user?.userId;
     if (!userId) {
-      res.status(401).json({ error: 'Unauthorized' });
+      fail(res, 401, 'Unauthorized');
       return;
     }
 
     const { recipeId, quantity = 1 } = req.body;
 
     if (!recipeId) {
-      res.status(400).json({ error: 'recipeId is required' });
+      fail(res, 400, 'recipeId is required');
       return;
     }
 
     if (quantity < 1 || !Number.isInteger(quantity)) {
-      res.status(400).json({ error: 'quantity must be a positive integer' });
+      fail(res, 400, 'quantity must be a positive integer');
       return;
     }
 
@@ -108,32 +106,29 @@ router.post('/gear', authMiddleware, async (req: AuthRequest, res) => {
 
     if (!result.success) {
       if (result.error === 'Recipe not found') {
-        res.status(404).json({ success: false, error: result.error });
+        fail(res, 404, result.error);
         return;
       }
       if (result.error?.includes('Insufficient materials')) {
-        res.status(400).json({ success: false, error: result.error });
+        fail(res, 400, result.error);
         return;
       }
       if (result.error === 'Player not found') {
-        res.status(404).json({ success: false, error: result.error });
+        fail(res, 404, result.error);
         return;
       }
-      res.status(400).json({ success: false, error: result.error });
+      fail(res, 400, result.error!);
       return;
     }
 
-    res.json({
-      success: true,
-      data: {
-        gearName: result.gearName,
-        bonus: result.bonus,
-        materialsUsed: result.materialsUsed,
-      },
+    ok(res, {
+      gearName: result.gearName,
+      bonus: result.bonus,
+      materialsUsed: result.materialsUsed,
     });
   } catch (error) {
     console.error('Error crafting gear:', error);
-    res.status(500).json({ error: 'Failed to craft gear' });
+    fail(res, 500, 'Failed to craft gear');
   }
 });
 
@@ -142,19 +137,19 @@ router.post('/consumable', authMiddleware, async (req: AuthRequest, res) => {
   try {
     const userId = req.user?.userId;
     if (!userId) {
-      res.status(401).json({ error: 'Unauthorized' });
+      fail(res, 401, 'Unauthorized');
       return;
     }
 
     const { recipeId, quantity = 1 } = req.body;
 
     if (!recipeId) {
-      res.status(400).json({ error: 'recipeId is required' });
+      fail(res, 400, 'recipeId is required');
       return;
     }
 
     if (quantity < 1 || !Number.isInteger(quantity)) {
-      res.status(400).json({ error: 'quantity must be a positive integer' });
+      fail(res, 400, 'quantity must be a positive integer');
       return;
     }
 
@@ -162,34 +157,31 @@ router.post('/consumable', authMiddleware, async (req: AuthRequest, res) => {
 
     if (!result.success) {
       if (result.error === 'Recipe not found') {
-        res.status(404).json({ success: false, error: result.error });
+        fail(res, 404, result.error);
         return;
       }
       if (result.error?.includes('Insufficient materials')) {
-        res.status(400).json({ success: false, error: result.error });
+        fail(res, 400, result.error);
         return;
       }
       if (result.error === 'Player not found') {
-        res.status(404).json({ success: false, error: result.error });
+        fail(res, 404, result.error);
         return;
       }
-      res.status(400).json({ success: false, error: result.error });
+      fail(res, 400, result.error!);
       return;
     }
 
-    res.json({
-      success: true,
-      data: {
-        consumableName: result.consumableName,
-        quantity: result.quantity,
-        effect: result.effect,
-        materialsUsed: result.materialsUsed,
-        playerConsumableId: result.playerConsumableId,
-      },
+    ok(res, {
+      consumableName: result.consumableName,
+      quantity: result.quantity,
+      effect: result.effect,
+      materialsUsed: result.materialsUsed,
+      playerConsumableId: result.playerConsumableId,
     });
   } catch (error) {
     console.error('Error crafting consumable:', error);
-    res.status(500).json({ error: 'Failed to craft consumable' });
+    fail(res, 500, 'Failed to craft consumable');
   }
 });
 

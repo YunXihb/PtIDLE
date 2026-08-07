@@ -1,4 +1,5 @@
 import { query, execute, withTransaction } from '../config/database';
+import type { PoolClient } from 'pg';
 import { v4 as uuidv4 } from 'uuid';
 
 interface PlayerProfile {
@@ -43,14 +44,26 @@ const PROFESSION_CONFIG: Record<string, Omit<Profession, 'name'>> = {
 /**
  * 初始化玩家数据
  * 在用户注册成功后调用，创建玩家记录和初始棋子
+ *
  * @param userId 用户 ID
+ * @param client 可选事务客户端；传入则所有写入走该连接（与调用方共用同一事务），
+ *               不传则各自独立 execute（向后兼容旧调用与单元测试）
  */
-export async function initializePlayer(userId: string): Promise<void> {
+export async function initializePlayer(userId: string, client?: PoolClient): Promise<void> {
+  // 统一写入入口：有 client 走事务连接，无 client 走池化 execute
+  const run = async (text: string, params: any[]): Promise<void> => {
+    if (client) {
+      await client.query(text, params);
+    } else {
+      await execute(text, params);
+    }
+  };
+
   // 1. 创建 players 记录
   const playerId = uuidv4();
   const now = new Date();
 
-  await execute(
+  await run(
     `INSERT INTO players (id, user_id, resources, materials, production_gear, warehouse_limits, idle_queue, last_offline, created_at, updated_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
     [
@@ -75,7 +88,7 @@ export async function initializePlayer(userId: string): Promise<void> {
     const profession = professions[i];
     const config = PROFESSION_CONFIG[profession];
 
-    await execute(
+    await run(
       `INSERT INTO characters (id, player_id, name, profession, health, max_health, movement, energy, max_energy, position_x, position_y, is_alive, created_at, updated_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
       [

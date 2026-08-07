@@ -3,7 +3,7 @@ import request from 'supertest';
 import express from 'express';
 import authRoutes from '../routes/auth';
 import playerRoutes from '../routes/player';
-import { query, execute } from '../config/database';
+import { query, execute, withTransaction } from '../config/database';
 
 // Create test app
 const app = express();
@@ -14,7 +14,8 @@ app.use('/api/player', playerRoutes);
 // Mock the database module
 jest.mock('../config/database', () => ({
   query: jest.fn(),
-  execute: jest.fn()
+  execute: jest.fn(),
+  withTransaction: jest.fn()
 }));
 
 // Mock bcryptjs
@@ -32,12 +33,23 @@ jest.mock('jsonwebtoken', () => ({
 
 const mockedQuery = query as jest.MockedFunction<typeof query>;
 const mockedExecute = execute as jest.MockedFunction<typeof execute>;
+const mockedWithTransaction = withTransaction as jest.MockedFunction<typeof withTransaction>;
+
+// withTransaction mock 调用 fn 时传入的 client；每个 test 在 register 后用它断言写入
+let capturedClient: any;
 
 describe('E2E: User Registration and Player Initialization', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockedQuery.mockReset();
     mockedExecute.mockReset();
+    mockedWithTransaction.mockReset();
+    capturedClient = null;
+    // 默认 withTransaction：以 mock client 调用 fn（register 的 existence/INSERT/init 走 client.query）
+    mockedWithTransaction.mockImplementation(async (fn: any) => {
+      capturedClient = { query: jest.fn().mockResolvedValue({ rows: [], rowCount: 1 }) };
+      return fn(capturedClient);
+    });
     process.env.JWT_SECRET = 'test_secret';
     process.env.JWT_EXPIRES_IN = '7d';
   });
@@ -46,12 +58,7 @@ describe('E2E: User Registration and Player Initialization', () => {
     const username = 'e2euser';
     const password = 'password123';
 
-    // Step 1: Register new user
-    mockedQuery
-      .mockReturnValueOnce(Promise.resolve([])) // No existing user
-      .mockReturnValueOnce(Promise.resolve([{ id: 'player-123' }])); // Player created
-    mockedExecute.mockResolvedValue(1);
-
+    // Step 1: Register new user (existence/INSERT/init 走 withTransaction + client.query)
     const registerResponse = await request(app)
       .post('/api/auth/register')
       .send({ username, password });
@@ -60,10 +67,10 @@ describe('E2E: User Registration and Player Initialization', () => {
     expect(registerResponse.body.success).toBe(true);
     expect(registerResponse.body.data.username).toBe(username);
 
-    // Verify player initialization was called (execute called 5 times: 1 user + 1 player + 3 characters)
-    expect(mockedExecute).toHaveBeenCalledTimes(5);
+    // existence check + INSERT user + initializePlayer(1 player + 3 chars) = 6 client.query
+    expect(capturedClient.query).toHaveBeenCalledTimes(6);
 
-    // Step 2: Login with registered user
+    // Step 2: Login with registered user (login 走 query/execute)
     mockedQuery
       .mockReturnValueOnce(Promise.resolve([{
         id: 'user-123',
@@ -85,23 +92,16 @@ describe('E2E: User Registration and Player Initialization', () => {
   });
 
   it('should create player with 3 characters on registration', async () => {
-    mockedQuery
-      .mockReturnValueOnce(Promise.resolve([]))
-      .mockReturnValueOnce(Promise.resolve([{ id: 'player-new' }]));
-    mockedExecute.mockResolvedValue(1);
-
     await request(app)
       .post('/api/auth/register')
       .send({ username: 'newplayer', password: 'password123' });
 
-    // Verify execute was called 5 times (1 user + 1 player + 3 characters)
-    const executeCalls = mockedExecute.mock.calls;
-    expect(executeCalls.length).toBe(5);
+    // client.query: [0]existence [1]INSERT user [2]INSERT players [3-5]characters
+    const queryCalls = capturedClient.query.mock.calls;
+    expect(queryCalls.length).toBe(6);
 
-    // Verify character insert calls
-    const characterCalls = executeCalls.slice(2) as Array<[string, any[]]>; // Skip user and player inserts
-
-    // Check that 3 character inserts were made
+    // Verify character insert calls (calls 3,4,5)
+    const characterCalls = queryCalls.slice(3) as Array<[string, any[]]>;
     expect(characterCalls.length).toBe(3);
 
     // Verify professions: warrior, ranger, mage
@@ -112,17 +112,12 @@ describe('E2E: User Registration and Player Initialization', () => {
   });
 
   it('should initialize player with correct resources', async () => {
-    mockedQuery
-      .mockReturnValueOnce(Promise.resolve([]))
-      .mockReturnValueOnce(Promise.resolve([{ id: 'player-res' }]));
-    mockedExecute.mockResolvedValue(1);
-
     await request(app)
       .post('/api/auth/register')
       .send({ username: 'resourceuser', password: 'password123' });
 
-    // Get the player insert call
-    const playerCall = mockedExecute.mock.calls[1]!;
+    // INSERT players 是 client.query 第 3 次调用（[0]existence [1]user [2]players）
+    const playerCall = capturedClient.query.mock.calls[2]!;
 
     // Verify resources
     const resources = JSON.parse(playerCall[1]![2]!);
@@ -145,17 +140,12 @@ describe('E2E: User Registration and Player Initialization', () => {
   });
 
   it('should create characters with correct initial stats', async () => {
-    mockedQuery
-      .mockReturnValueOnce(Promise.resolve([]))
-      .mockReturnValueOnce(Promise.resolve([{ id: 'player-stats' }]));
-    mockedExecute.mockResolvedValue(1);
-
     await request(app)
       .post('/api/auth/register')
       .send({ username: 'statsuser', password: 'password123' });
 
-    // Get character insert calls
-    const characterCalls = mockedExecute.mock.calls.slice(2);
+    // character inserts = client.query 第 4-6 次调用（index 3,4,5）
+    const characterCalls = capturedClient.query.mock.calls.slice(3);
 
     // Warrior: HP=20, Movement=2, Energy=3
     const warriorStats = characterCalls[0]![1]!;
@@ -177,18 +167,16 @@ describe('E2E: User Registration and Player Initialization', () => {
   });
 
   it('should prevent registration with duplicate username', async () => {
-    // First registration succeeds
-    mockedQuery
-      .mockReturnValueOnce(Promise.resolve([]))
-      .mockReturnValueOnce(Promise.resolve([{ id: 'player-1' }]));
-    mockedExecute.mockResolvedValue(1);
-
+    // First registration succeeds (默认 withTransaction: existence rows:[])
     await request(app)
       .post('/api/auth/register')
       .send({ username: 'duplicate', password: 'password123' });
 
-    // Second registration with same username should fail
-    mockedQuery.mockResolvedValue([{ id: 'existing-id' }] as any);
+    // Second registration: existence 返回已存在用户 -> UserAlreadyExistsError -> 400
+    mockedWithTransaction.mockImplementation(async (fn: any) => {
+      const client = { query: jest.fn().mockResolvedValueOnce({ rows: [{ id: 'existing-id' }] }) };
+      return fn(client);
+    });
 
     const response = await request(app)
       .post('/api/auth/register')

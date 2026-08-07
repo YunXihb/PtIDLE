@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { getAllProcessingRecipes, getProcessingRecipeByType } from '../services/processingService';
 import { withTransaction } from '../config/database';
+import { ok, fail } from '../utils/http';
 
 const router = Router();
 
@@ -9,10 +10,10 @@ const router = Router();
 router.get('/recipes', async (req, res) => {
   try {
     const recipes = await getAllProcessingRecipes();
-    res.json({ success: true, data: recipes });
+    ok(res, recipes);
   } catch (error) {
     console.error('Error fetching processing recipes:', error);
-    res.status(500).json({ error: 'Failed to fetch processing recipes' });
+    fail(res, 500, 'Failed to fetch processing recipes');
   }
 });
 
@@ -23,14 +24,14 @@ router.get('/recipes/:type', async (req, res) => {
     const recipe = await getProcessingRecipeByType(type);
 
     if (!recipe) {
-      res.status(404).json({ error: 'Recipe not found' });
+      fail(res, 404, 'Recipe not found');
       return;
     }
 
-    res.json({ success: true, data: recipe });
+    ok(res, recipe);
   } catch (error) {
     console.error('Error fetching processing recipe:', error);
-    res.status(500).json({ error: 'Failed to fetch processing recipe' });
+    fail(res, 500, 'Failed to fetch processing recipe');
   }
 });
 
@@ -39,30 +40,30 @@ router.post('/process', authMiddleware, async (req: AuthRequest, res) => {
   try {
     const userId = req.user?.userId;
     if (!userId) {
-      res.status(401).json({ error: 'Unauthorized' });
+      fail(res, 401, 'Unauthorized');
       return;
     }
 
     const { recipeType, quantity = 1 } = req.body;
 
     if (!recipeType) {
-      res.status(400).json({ error: 'recipeType is required' });
+      fail(res, 400, 'recipeType is required');
       return;
     }
 
     if (quantity < 1 || !Number.isInteger(quantity)) {
-      res.status(400).json({ error: 'quantity must be a positive integer' });
+      fail(res, 400, 'quantity must be a positive integer');
       return;
     }
 
     // 获取配方
     const recipe = await getProcessingRecipeByType(recipeType);
     if (!recipe) {
-      res.status(404).json({ error: 'Recipe not found' });
+      fail(res, 404, 'Recipe not found');
       return;
     }
 
-    // 单事务 + 行锁：读玩家 → 校验材料 → 扣料 + 加产出（防并发把材料扣成负数 / 重复加工）
+    // 单事务 + 行锁：读玩家 -> 校验材料 -> 扣料 + 加产出（防并发把材料扣成负数 / 重复加工）
     const result = await withTransaction<{
       playerId: string;
       updatedMaterials: Record<string, number>;
@@ -126,33 +127,31 @@ router.post('/process', authMiddleware, async (req: AuthRequest, res) => {
       return { playerId: player.id, updatedMaterials };
     });
 
-    res.json({
-      success: true,
-      data: {
-        recipe: recipe.name,
-        type: recipe.type,
-        quantity,
-        input: Object.fromEntries(
-          Object.entries(recipe.input).map(([k, v]) => [k, v * quantity])
-        ),
-        output: Object.fromEntries(
-          Object.entries(recipe.output).map(([k, v]) => [k, Math.floor(v * quantity * recipe.efficiency)])
-        ),
-        materials: result.updatedMaterials,
-      },
+    ok(res, {
+      recipe: recipe.name,
+      type: recipe.type,
+      quantity,
+      input: Object.fromEntries(
+        Object.entries(recipe.input).map(([k, v]) => [k, v * quantity])
+      ),
+      output: Object.fromEntries(
+        Object.entries(recipe.output).map(([k, v]) => [k, Math.floor(v * quantity * recipe.efficiency)])
+      ),
+      materials: result.updatedMaterials,
     });
   } catch (error) {
     const e = error as Error & { code?: string; missing?: string[] };
     if (e.code === 'INSUFFICIENT_MATERIALS') {
-      res.status(400).json({ error: 'Insufficient materials', missing: e.missing });
+      // 保留 missing 字段供客户端定位缺料（信封 + 额外字段）
+      res.status(400).json({ success: false, error: 'Insufficient materials', missing: e.missing });
       return;
     }
     if (e.code === 'PLAYER_NOT_FOUND') {
-      res.status(404).json({ error: 'Player not found' });
+      fail(res, 404, 'Player not found');
       return;
     }
     console.error('Error processing materials:', error);
-    res.status(500).json({ error: 'Failed to process materials' });
+    fail(res, 500, 'Failed to process materials');
   }
 });
 

@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { getAllProfessions, getProfessionByName } from '../services/professionService';
+import { ok, fail } from '../utils/http';
 
 const router = Router();
 
@@ -7,10 +8,10 @@ const router = Router();
 router.get('/', async (req, res) => {
   try {
     const professions = await getAllProfessions();
-    res.json({ success: true, data: professions });
+    ok(res, professions);
   } catch (error) {
     console.error('Error fetching professions:', error);
-    res.status(500).json({ error: 'Failed to fetch professions' });
+    fail(res, 500, 'Failed to fetch professions');
   }
 });
 
@@ -21,14 +22,14 @@ router.get('/:name', async (req, res) => {
     const profession = await getProfessionByName(name);
 
     if (!profession) {
-      res.status(404).json({ error: 'Profession not found' });
+      fail(res, 404, 'Profession not found');
       return;
     }
 
-    res.json({ success: true, data: profession });
+    ok(res, profession);
   } catch (error) {
     console.error('Error fetching profession:', error);
-    res.status(500).json({ error: 'Failed to fetch profession' });
+    fail(res, 500, 'Failed to fetch profession');
   }
 });
 

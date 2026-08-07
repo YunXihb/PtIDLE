@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { createUser, login, UserAlreadyExistsError, InvalidInputError, InvalidCredentialsError } from '../services/authService';
+import { ok, fail } from '../utils/http';
 
 export async function register(req: Request, res: Response, next: NextFunction) {
   try {
@@ -7,24 +8,15 @@ export async function register(req: Request, res: Response, next: NextFunction) 
 
     const user = await createUser({ username, password });
 
-    res.status(201).json({
-      success: true,
-      data: user
-    });
+    ok(res, user, 201);
   } catch (error) {
     if (error instanceof UserAlreadyExistsError) {
-      res.status(400).json({
-        success: false,
-        error: error.message
-      });
+      fail(res, 400, error.message);
       return;
     }
 
     if (error instanceof InvalidInputError) {
-      res.status(400).json({
-        success: false,
-        error: error.message
-      });
+      fail(res, 400, error.message);
       return;
     }
 
@@ -38,24 +30,15 @@ export async function handleLogin(req: Request, res: Response, next: NextFunctio
 
     const result = await login(username, password);
 
-    res.status(200).json({
-      success: true,
-      data: result
-    });
+    ok(res, result);
   } catch (error) {
     if (error instanceof InvalidCredentialsError) {
-      res.status(401).json({
-        success: false,
-        error: error.message
-      });
+      fail(res, 401, error.message);
       return;
     }
 
     if (error instanceof InvalidInputError) {
-      res.status(400).json({
-        success: false,
-        error: error.message
-      });
+      fail(res, 400, error.message);
       return;
     }
 

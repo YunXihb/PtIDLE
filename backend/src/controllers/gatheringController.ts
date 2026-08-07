@@ -8,6 +8,7 @@ import {
   getGatheringEfficiency,
   SkillType,
 } from '../services/gatheringService';
+import { ok, fail } from '../utils/http';
 
 interface StartGatheringBody {
   skillType: SkillType;
@@ -26,7 +27,7 @@ export async function startGatheringHandler(
     const userId = req.user?.userId;
 
     if (!userId) {
-      res.status(401).json({ error: 'Unauthorized' });
+      fail(res, 401, 'Unauthorized');
       return;
     }
 
@@ -34,24 +35,18 @@ export async function startGatheringHandler(
 
     // 验证技能类型
     if (!['mining', 'woodcutting', 'herbalism'].includes(skillType)) {
-      res.status(400).json({
-        error: 'Invalid skill type',
-        message: 'Skill type must be mining, woodcutting, or herbalism',
-      });
+      fail(res, 400, 'Invalid skill type');
       return;
     }
 
     const task = await startGathering(userId, skillType, characterId);
 
     if (!task) {
-      res.status(404).json({ error: 'Player not found' });
+      fail(res, 404, 'Player not found');
       return;
     }
 
-    res.status(201).json({
-      success: true,
-      data: task,
-    });
+    ok(res, task, 201);
   } catch (error) {
     console.error('Error starting gathering:', error);
 
@@ -61,11 +56,11 @@ export async function startGatheringHandler(
       (error as Error & { code?: string }).code === 'GATHERING_ALREADY_ACTIVE';
 
     if (isAlreadyActive) {
-      res.status(400).json({ error: 'Already has active gathering task' });
+      fail(res, 400, 'Already has active gathering task');
       return;
     }
 
-    res.status(500).json({ error: 'Internal server error' });
+    fail(res, 500, 'Internal server error');
   }
 }
 
@@ -81,13 +76,14 @@ export async function getGatheringStatusHandler(
     const userId = req.user?.userId;
 
     if (!userId) {
-      res.status(401).json({ error: 'Unauthorized' });
+      fail(res, 401, 'Unauthorized');
       return;
     }
 
     const status = await getGatheringStatus(userId);
 
     if (!status) {
+      // 无活跃任务：data:null + message（测试断言 body.message，保留）
       res.json({
         success: true,
         data: null,
@@ -96,13 +92,10 @@ export async function getGatheringStatusHandler(
       return;
     }
 
-    res.json({
-      success: true,
-      data: status,
-    });
+    ok(res, status);
   } catch (error) {
     console.error('Error getting gathering status:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    fail(res, 500, 'Internal server error');
   }
 }
 
@@ -118,26 +111,21 @@ export async function completeGatheringHandler(
     const userId = req.user?.userId;
 
     if (!userId) {
-      res.status(401).json({ error: 'Unauthorized' });
+      fail(res, 401, 'Unauthorized');
       return;
     }
 
     const completedTask = await completeGathering(userId);
 
     if (!completedTask) {
-      res.status(400).json({
-        error: 'No active gathering task or task not yet completed',
-      });
+      fail(res, 400, 'No active gathering task or task not yet completed');
       return;
     }
 
-    res.json({
-      success: true,
-      data: completedTask,
-    });
+    ok(res, completedTask);
   } catch (error) {
     console.error('Error completing gathering:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    fail(res, 500, 'Internal server error');
   }
 }
 
@@ -153,26 +141,21 @@ export async function cancelGatheringHandler(
     const userId = req.user?.userId;
 
     if (!userId) {
-      res.status(401).json({ error: 'Unauthorized' });
+      fail(res, 401, 'Unauthorized');
       return;
     }
 
     const cancelled = await cancelGathering(userId);
 
     if (!cancelled) {
-      res.status(400).json({
-        error: 'No active gathering task to cancel',
-      });
+      fail(res, 400, 'No active gathering task to cancel');
       return;
     }
 
-    res.json({
-      success: true,
-      message: 'Gathering task cancelled',
-    });
+    ok(res, null);
   } catch (error) {
     console.error('Error cancelling gathering:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    fail(res, 500, 'Internal server error');
   }
 }
 
@@ -188,26 +171,23 @@ export async function getGatheringEfficiencyHandler(
     const userId = req.user?.userId;
 
     if (!userId) {
-      res.status(401).json({ error: 'Unauthorized' });
+      fail(res, 401, 'Unauthorized');
       return;
     }
 
     const result = await getGatheringEfficiency(userId);
 
     if (!result.success) {
-      res.status(404).json({ error: result.error });
+      fail(res, 404, result.error!);
       return;
     }
 
-    res.json({
-      success: true,
-      data: {
-        efficiency: result.efficiency,
-        totalBonus: result.totalBonus,
-      },
+    ok(res, {
+      efficiency: result.efficiency,
+      totalBonus: result.totalBonus,
     });
   } catch (error) {
     console.error('Error getting gathering efficiency:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    fail(res, 500, 'Internal server error');
   }
 }

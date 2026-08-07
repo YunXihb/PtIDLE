@@ -97,6 +97,7 @@
 | T-FOLLOW-7 失败诊断 | deploy.sh 加 ERR trap (`set -E` + `trap on_error ERR`) 打印失败行号 + 定位提示，改善 v0.1.1 部署失败 (8s exit 1) 无 step-level 输出问题。裸命令失败 (cd/pull/migrate/up) 触发，`if`/`while` 不触发。本地 bash 模拟验证 trap 行为；仍需 VPS 访问真正修复部署 | 2026-08-06 |
 | T-FOLLOW-9 | 监控（GH Actions scheduled health check：每 15 min curl /health，失败开/评论 issue 告警，恢复自动关 issue；复用 VPS_HOST，GITHUB_TOKEN 开 issue） | 2026-08-07 |
 | v0.1.2 Release | tag v0.1.2(4824672) -> release.yml run 31161641510 (首次冷构建 multi-arch 29min 被取消, rerun 吃 cache 4min success) -> deploy.yml run 31164125069 (workflow_run) 自动 success. 上线 e7e51c9 (T-FIX P0+资产安全+/health probe). /health 现返回 database:ok redis:ok (#5 修复). 镜像滞后解决 | 2026-08-07 |
+| P2 代码改进 批次1 | 注册事务化 + 响应包裹统一。createUser 包 withTransaction（existence+INSERT user+initializePlayer 原子化，修孤立 user bug；initializePlayer 加可选 client），新增 utils/http.ts ok()/fail()，12 routes+4 controllers 全部信封化（裸数据->ok，错误加 success:false），全局错误中间件加 success:false。tsc 零错；jest 703/703 全绿（+1 注册回滚回归测试）；真库 smoke 验证 commit/duplicate/ROLLBACK。剩 zod 字段校验 + REST 统一(next(error)/ApiError) 下一批 | 2026-08-07 |
 
 ---
 

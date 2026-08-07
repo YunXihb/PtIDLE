@@ -162,6 +162,12 @@ docker compose down   # 收工时关容器
 
 ### API 响应格式
 
+统一信封（P2 代码改进 批次1 落实）：所有路由/控制器经 `src/utils/http.ts` 的 `ok(res, data, status=200)` / `fail(res, status, error)` 输出，全局错误中间件同样返回信封。
+
+- 成功：`{ success: true, data }`（创建资源传 201）
+- 失败：`{ success: false, error }`
+- 少数端点保留额外顶层字段供客户端快速判定/定位：matchmaking 的 `matched`/`status`、cards `/my/list` 的 `pagination`、gathering status 空任务的 `message`、processing 缺料的 `missing`、matchmaking 409 的 `data.battleId`。
+
 ```typescript
 // POST /api/player/offline-claim 响应
 {
@@ -175,6 +181,10 @@ docker compose down   # 收工时关容器
   }
 }
 ```
+
+### 注册事务化（P2 代码改进 批次1）
+
+`authService.createUser` 将 existence check + INSERT user + `initializePlayer`（INSERT players + 3 characters）包进 `withTransaction`，password hash 留在事务外（CPU 密集）。`initializePlayer` 加可选 `client?: PoolClient` 参数：传入则写入走同一事务连接，不传则各自 `execute`（向后兼容）。修复此前 5 次独立 auto-commit 写入中间失败留孤立 user 的数据完整性 bug。真库 smoke 验证：注册原子提交（user+1 player+3 chars）、重复拒绝、`withTransaction` 真实 ROLLBACK 留 0 行。
 
 ## 采集系统
 

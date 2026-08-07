@@ -2,7 +2,7 @@
 import request from 'supertest';
 import express from 'express';
 import authRoutes from '../routes/auth';
-import { query, execute } from '../config/database';
+import { query, execute, withTransaction } from '../config/database';
 
 // Create test app
 const app = express();
@@ -12,7 +12,8 @@ app.use('/api/auth', authRoutes);
 // Mock the database module
 jest.mock('../config/database', () => ({
   query: jest.fn(),
-  execute: jest.fn()
+  execute: jest.fn(),
+  withTransaction: jest.fn()
 }));
 
 // Mock bcryptjs
@@ -28,12 +29,19 @@ jest.mock('jsonwebtoken', () => ({
 
 const mockedQuery = query as jest.MockedFunction<typeof query>;
 const mockedExecute = execute as jest.MockedFunction<typeof execute>;
+const mockedWithTransaction = withTransaction as jest.MockedFunction<typeof withTransaction>;
 
 describe('Auth API Integration Tests', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockedQuery.mockReset();
     mockedExecute.mockReset();
+    // 默认 withTransaction：以 mock client 调用 fn（register 的 existence/INSERT/init 走 client.query）
+    mockedWithTransaction.mockReset();
+    mockedWithTransaction.mockImplementation(async (fn: any) => {
+      const client = { query: jest.fn().mockResolvedValue({ rows: [], rowCount: 1 }) };
+      return fn(client);
+    });
     process.env.JWT_SECRET = 'test_secret';
     process.env.JWT_EXPIRES_IN = '7d';
   });
@@ -45,12 +53,11 @@ describe('Auth API Integration Tests', () => {
     };
 
     it('should register a new user and create player data', async () => {
-      // Mock: no existing user, then successful insert
-      mockedQuery
-        .mockResolvedValueOnce([]) // Check existing user
-        .mockResolvedValueOnce([{ id: 'player-uuid' }]); // getPlayerIdByUserId
-
-      mockedExecute.mockResolvedValue(1);
+      let capturedClient: any;
+      mockedWithTransaction.mockImplementation(async (fn: any) => {
+        capturedClient = { query: jest.fn().mockResolvedValue({ rows: [], rowCount: 1 }) };
+        return fn(capturedClient);
+      });
 
       const response = await request(app)
         .post('/api/auth/register')
@@ -61,8 +68,8 @@ describe('Auth API Integration Tests', () => {
       expect(response.body.data).toBeDefined();
       expect(response.body.data.username).toBe(validRegisterInput.username);
 
-      // Verify player was created (execute called 4 times: 1 user + 1 player + 3 characters)
-      expect(mockedExecute).toHaveBeenCalledTimes(5);
+      // existence check + INSERT user + initializePlayer(1 player + 3 chars) = 6 client.query
+      expect(capturedClient.query).toHaveBeenCalledTimes(6);
     });
 
     it('should return 400 for missing username', async () => {
@@ -102,7 +109,13 @@ describe('Auth API Integration Tests', () => {
     });
 
     it('should return 400 for existing username', async () => {
-      mockedQuery.mockResolvedValue([{ id: 'existing-user-id' }] as any);
+      // existence check 在事务内走 client.query，返回已存在用户
+      mockedWithTransaction.mockImplementation(async (fn: any) => {
+        const client = {
+          query: jest.fn().mockResolvedValueOnce({ rows: [{ id: 'existing-user-id' }] }),
+        };
+        return fn(client);
+      });
 
       const response = await request(app)
         .post('/api/auth/register')
@@ -113,17 +126,18 @@ describe('Auth API Integration Tests', () => {
     });
 
     it('should trim whitespace from username', async () => {
-      mockedQuery
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([{ id: 'player-uuid' }]);
-      mockedExecute.mockResolvedValue(1);
+      let capturedClient: any;
+      mockedWithTransaction.mockImplementation(async (fn: any) => {
+        capturedClient = { query: jest.fn().mockResolvedValue({ rows: [], rowCount: 1 }) };
+        return fn(capturedClient);
+      });
 
       await request(app)
         .post('/api/auth/register')
         .send({ username: '  newuser  ', password: 'password123' });
 
-      // Verify username was trimmed in the query
-      const queryCall = mockedQuery.mock.calls[0]!;
+      // existence check 是 client.query 第 1 次调用，参数 [0] 为 username（已 trim）
+      const queryCall = capturedClient.query.mock.calls[0]!;
       expect(queryCall[1]![0]).toBe('newuser');
     });
   });
