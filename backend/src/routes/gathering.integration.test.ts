@@ -4,11 +4,13 @@ import express from 'express';
 import gatheringRoutes from '../routes/gathering';
 import { query, execute } from '../config/database';
 import * as skillService from '../services/skillService';
+import { errorHandler } from '../middleware/errorHandler';
 
 // Create test app
 const app = express();
 app.use(express.json());
 app.use('/api/gathering', gatheringRoutes);
+app.use(errorHandler);
 
 // Mock the database module
 const mockWithTransaction = jest.fn();

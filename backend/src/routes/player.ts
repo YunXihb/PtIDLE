@@ -13,7 +13,7 @@ import { ok, fail } from '../utils/http';
 const router = Router();
 
 // 获取玩家完整信息
-router.get('/profile', authMiddleware, async (req: AuthRequest, res) => {
+router.get('/profile', authMiddleware, async (req: AuthRequest, res, next) => {
   try {
     const userId = req.user?.userId;
 
@@ -31,13 +31,12 @@ router.get('/profile', authMiddleware, async (req: AuthRequest, res) => {
 
     ok(res, profile);
   } catch (error) {
-    console.error('Error fetching player profile:', error);
-    fail(res, 500, 'Internal server error');
+    next(error);
   }
 });
 
 // 离线收益结算
-router.post('/offline-claim', authMiddleware, async (req: AuthRequest, res) => {
+router.post('/offline-claim', authMiddleware, async (req: AuthRequest, res, next) => {
   try {
     const userId = req.user?.userId;
 
@@ -46,7 +45,7 @@ router.post('/offline-claim', authMiddleware, async (req: AuthRequest, res) => {
       return;
     }
 
-    // 1-5. 原子领取（单事务 + 行锁）：读玩家 → 算收益 → 合并资源 + 更新 last_offline
+    // 1-5. 原子领取（单事务 + 行锁）：读玩家 -> 算收益 -> 合并资源 + 更新 last_offline
     const outcome = await claimOfflineEarnings(userId, (base) => {
       const earnings = calculateOfflineEarnings(base.last_offline);
       const { stored, overflowed } = applyWarehouseLimits(
@@ -76,8 +75,7 @@ router.post('/offline-claim', authMiddleware, async (req: AuthRequest, res) => {
       lastOffline: new Date().toISOString(),
     });
   } catch (error) {
-    console.error('Error claiming offline earnings:', error);
-    fail(res, 500, 'Internal server error');
+    next(error);
   }
 });
 

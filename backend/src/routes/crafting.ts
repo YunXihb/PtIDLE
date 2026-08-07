@@ -1,36 +1,36 @@
 import { Router } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { getAllCraftingRecipes, getCraftingRecipesByCategory, executeCardCrafting, executeGearCrafting, executeConsumableCrafting } from '../services/craftingService';
+import { validate } from '../middleware/validate';
+import { craftSchema } from '../validations/crafting';
 import { ok, fail } from '../utils/http';
 
 const router = Router();
 
 // 获取所有制造配方
-router.get('/recipes', async (req, res) => {
+router.get('/recipes', async (_req, res, next) => {
   try {
     const recipes = await getAllCraftingRecipes();
     ok(res, recipes);
   } catch (error) {
-    console.error('Error fetching crafting recipes:', error);
-    fail(res, 500, 'Failed to fetch crafting recipes');
+    next(error);
   }
 });
 
 // 按分类获取制造配方
-router.get('/recipes/:category', async (req, res) => {
+router.get('/recipes/:category', async (req, res, next) => {
   try {
     const { category } = req.params;
     const recipes = await getCraftingRecipesByCategory(category);
 
     ok(res, recipes);
   } catch (error) {
-    console.error('Error fetching crafting recipes by category:', error);
-    fail(res, 500, 'Failed to fetch crafting recipes');
+    next(error);
   }
 });
 
 // 执行卡牌制造
-router.post('/card', authMiddleware, async (req: AuthRequest, res) => {
+router.post('/card', authMiddleware, validate(craftSchema), async (req: AuthRequest, res, next) => {
   try {
     const userId = req.user?.userId;
     if (!userId) {
@@ -38,17 +38,7 @@ router.post('/card', authMiddleware, async (req: AuthRequest, res) => {
       return;
     }
 
-    const { recipeId, quantity = 1 } = req.body;
-
-    if (!recipeId) {
-      fail(res, 400, 'recipeId is required');
-      return;
-    }
-
-    if (quantity < 1 || !Number.isInteger(quantity)) {
-      fail(res, 400, 'quantity must be a positive integer');
-      return;
-    }
+    const { recipeId, quantity } = req.body;
 
     const result = await executeCardCrafting(userId, recipeId, quantity);
 
@@ -76,13 +66,12 @@ router.post('/card', authMiddleware, async (req: AuthRequest, res) => {
       playerCardId: result.playerCardId,
     });
   } catch (error) {
-    console.error('Error crafting card:', error);
-    fail(res, 500, 'Failed to craft card');
+    next(error);
   }
 });
 
 // 执行装备制造
-router.post('/gear', authMiddleware, async (req: AuthRequest, res) => {
+router.post('/gear', authMiddleware, validate(craftSchema), async (req: AuthRequest, res, next) => {
   try {
     const userId = req.user?.userId;
     if (!userId) {
@@ -90,17 +79,7 @@ router.post('/gear', authMiddleware, async (req: AuthRequest, res) => {
       return;
     }
 
-    const { recipeId, quantity = 1 } = req.body;
-
-    if (!recipeId) {
-      fail(res, 400, 'recipeId is required');
-      return;
-    }
-
-    if (quantity < 1 || !Number.isInteger(quantity)) {
-      fail(res, 400, 'quantity must be a positive integer');
-      return;
-    }
+    const { recipeId, quantity } = req.body;
 
     const result = await executeGearCrafting(userId, recipeId, quantity);
 
@@ -127,13 +106,12 @@ router.post('/gear', authMiddleware, async (req: AuthRequest, res) => {
       materialsUsed: result.materialsUsed,
     });
   } catch (error) {
-    console.error('Error crafting gear:', error);
-    fail(res, 500, 'Failed to craft gear');
+    next(error);
   }
 });
 
 // 执行消耗品制造
-router.post('/consumable', authMiddleware, async (req: AuthRequest, res) => {
+router.post('/consumable', authMiddleware, validate(craftSchema), async (req: AuthRequest, res, next) => {
   try {
     const userId = req.user?.userId;
     if (!userId) {
@@ -141,17 +119,7 @@ router.post('/consumable', authMiddleware, async (req: AuthRequest, res) => {
       return;
     }
 
-    const { recipeId, quantity = 1 } = req.body;
-
-    if (!recipeId) {
-      fail(res, 400, 'recipeId is required');
-      return;
-    }
-
-    if (quantity < 1 || !Number.isInteger(quantity)) {
-      fail(res, 400, 'quantity must be a positive integer');
-      return;
-    }
+    const { recipeId, quantity } = req.body;
 
     const result = await executeConsumableCrafting(userId, recipeId, quantity);
 
@@ -180,8 +148,7 @@ router.post('/consumable', authMiddleware, async (req: AuthRequest, res) => {
       playerConsumableId: result.playerConsumableId,
     });
   } catch (error) {
-    console.error('Error crafting consumable:', error);
-    fail(res, 500, 'Failed to craft consumable');
+    next(error);
   }
 });
 

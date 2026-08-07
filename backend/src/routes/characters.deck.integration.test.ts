@@ -6,6 +6,7 @@ import express from 'express';
 import jwt from 'jsonwebtoken';
 import characterRoutes from './characters';
 import * as characterService from '../services/characterService';
+import { errorHandler } from '../middleware/errorHandler';
 
 jest.mock('../services/characterService');
 
@@ -17,6 +18,7 @@ const mockedAssignCardToCharacter =
 const app = express();
 app.use(express.json());
 app.use('/api/characters', characterRoutes);
+app.use(errorHandler);
 
 describe('Characters Deck API Integration Tests (T039)', () => {
   const testUserId = 'test-user-id';

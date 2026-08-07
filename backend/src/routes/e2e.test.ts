@@ -4,12 +4,14 @@ import express from 'express';
 import authRoutes from '../routes/auth';
 import playerRoutes from '../routes/player';
 import { query, execute, withTransaction } from '../config/database';
+import { errorHandler } from '../middleware/errorHandler';
 
 // Create test app
 const app = express();
 app.use(express.json());
 app.use('/api/auth', authRoutes);
 app.use('/api/player', playerRoutes);
+app.use(errorHandler);
 
 // Mock the database module
 jest.mock('../config/database', () => ({

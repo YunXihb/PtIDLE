@@ -46,11 +46,13 @@ import jwt from 'jsonwebtoken';
 import battleRoutes from './battle';
 import { JWT_SECRET } from '../config/jwt';
 import { redisClient } from '../config/redis';
+import { errorHandler } from '../middleware/errorHandler';
 
 // Create test app (uses REAL auth middleware so we can test 401 separately)
 const app = express();
 app.use(express.json());
 app.use('/api/battle', battleRoutes);
+app.use(errorHandler);
 
 const mockedRedis = redisClient as unknown as {
   keys: jest.Mock;

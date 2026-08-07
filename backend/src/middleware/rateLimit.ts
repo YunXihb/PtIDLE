@@ -30,7 +30,7 @@ export function rateLimit(
         { keys: [key], arguments: [String(windowSeconds)] }
       )) as number;
       if (Number(result) > max) {
-        res.status(429).json({ error: 'Too many requests, please try again later' });
+        res.status(429).json({ success: false, error: 'Too many requests, please try again later' });
         return;
       }
       next();

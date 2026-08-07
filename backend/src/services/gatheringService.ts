@@ -7,6 +7,7 @@ import {
   acquireGatheringLock,
   releaseGatheringLock,
 } from './idleQueueService';
+import { ApiError } from '../utils/ApiError';
 
 export type SkillType = 'mining' | 'woodcutting' | 'herbalism';
 
@@ -91,9 +92,7 @@ export async function startGathering(
   // 2. 检查是否已有进行中的采集任务
   const activeTask = idleQueue.find(task => task.status === 'active');
   if (activeTask) {
-    const err = new Error('已有进行中的采集任务') as Error & { code?: string };
-    err.code = 'GATHERING_ALREADY_ACTIVE';
-    throw err;
+    throw new ApiError(400, 'Already has active gathering task');
   }
 
   // 3. 创建新采集任务

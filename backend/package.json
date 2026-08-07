@@ -24,7 +24,8 @@
     "pg": "^8.20.0",
     "redis": "^4.6.10",
     "socket.io": "^4.7.2",
-    "uuid": "^9.0.1"
+    "uuid": "^9.0.1",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",

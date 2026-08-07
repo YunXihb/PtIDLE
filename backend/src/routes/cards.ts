@@ -7,30 +7,28 @@ import { ok, fail } from '../utils/http';
 const router = Router();
 
 // 获取所有卡牌模板（无需认证）
-router.get('/', async (_req, res) => {
+router.get('/', async (_req, res, next) => {
   try {
     const cardTemplates = await getAllCardTemplates();
 
     ok(res, cardTemplates);
   } catch (error) {
-    console.error('Error fetching card templates:', error);
-    fail(res, 500, 'Failed to fetch card templates');
+    next(error);
   }
 });
 
 // T1001：获取战棋公共池卡牌（无需认证；放 /:id 之前以避免被贪婪匹配）
-router.get('/public-pool', async (_req, res) => {
+router.get('/public-pool', async (_req, res, next) => {
   try {
     const poolCards = await getPublicPoolCards();
     ok(res, poolCards);
   } catch (error) {
-    console.error('Error fetching public pool cards:', error);
-    fail(res, 500, 'Failed to fetch public pool cards');
+    next(error);
   }
 });
 
 // 获取单个卡牌模板（无需认证）
-router.get('/:id', async (req, res) => {
+router.get('/:id', async (req, res, next) => {
   try {
     const { id } = req.params;
 
@@ -43,13 +41,12 @@ router.get('/:id', async (req, res) => {
 
     ok(res, cardTemplate);
   } catch (error) {
-    console.error('Error fetching card template:', error);
-    fail(res, 500, 'Failed to fetch card template');
+    next(error);
   }
 });
 
 // 获取玩家拥有的所有卡牌（需要认证）
-router.get('/my/list', authMiddleware, async (req: AuthRequest, res) => {
+router.get('/my/list', authMiddleware, async (req: AuthRequest, res, next) => {
   try {
     const userId = req.user?.userId;
 
@@ -89,8 +86,7 @@ router.get('/my/list', authMiddleware, async (req: AuthRequest, res) => {
       },
     });
   } catch (error) {
-    console.error('Error fetching player cards:', error);
-    fail(res, 500, 'Failed to fetch player cards');
+    next(error);
   }
 });
 

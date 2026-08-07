@@ -18,7 +18,7 @@ export function authMiddleware(
   const authHeader = req.headers.authorization;
 
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    res.status(401).json({ error: 'No token provided' });
+    res.status(401).json({ success: false, error: 'No token provided' });
     return;
   }
 
@@ -35,6 +35,6 @@ export function authMiddleware(
 
     next();
   } catch (error) {
-    res.status(401).json({ error: 'Invalid token' });
+    res.status(401).json({ success: false, error: 'Invalid token' });
   }
 }

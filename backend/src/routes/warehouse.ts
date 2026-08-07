@@ -6,7 +6,7 @@ import { ok, fail } from '../utils/http';
 const router = Router();
 
 // 获取玩家仓库数据
-router.get('/', authMiddleware, async (req: AuthRequest, res) => {
+router.get('/', authMiddleware, async (req: AuthRequest, res, next) => {
   try {
     const userId = req.user?.userId;
     if (!userId) {
@@ -27,8 +27,7 @@ router.get('/', authMiddleware, async (req: AuthRequest, res) => {
       storageLimits: warehouse.storageLimits,
     });
   } catch (error) {
-    console.error('Error fetching warehouse data:', error);
-    fail(res, 500, 'Failed to fetch warehouse data');
+    next(error);
   }
 });
 

@@ -162,11 +162,22 @@ docker compose down   # 收工时关容器
 
 ### API 响应格式
 
-统一信封（P2 代码改进 批次1 落实）：所有路由/控制器经 `src/utils/http.ts` 的 `ok(res, data, status=200)` / `fail(res, status, error)` 输出，全局错误中间件同样返回信封。
+统一信封（P2 代码改进 批次1/2 落实）：所有路由/控制器经 `src/utils/http.ts` 的 `ok(res, data, status=200)` / `fail(res, status, error)` 输出；未捕获错误经 `next(error)` 流向 `src/middleware/errorHandler.ts` 全局处理器，同样返回信封。
 
 - 成功：`{ success: true, data }`（创建资源传 201）
 - 失败：`{ success: false, error }`
 - 少数端点保留额外顶层字段供客户端快速判定/定位：matchmaking 的 `matched`/`status`、cards `/my/list` 的 `pagination`、gathering status 空任务的 `message`、processing 缺料的 `missing`、matchmaking 409 的 `data.battleId`。
+
+#### 请求校验（P2 批次2）
+
+写端点经 `src/middleware/validate.ts` 的 `validate(schema)` 中间件做 zod 校验（schema 在 `src/validations/`）：校验失败 `next(ApiError(400, 首条 issue 消息))`，通过则用解析值（含 default/trim 转换）替换 `req.body`。schema 自定义 message 与既有契约对齐（如 `Password must be at least 6 characters`、`recipeType is required`、`Invalid skill type`）。
+
+#### 错误处理（P2 批次2）
+
+- `src/utils/ApiError.ts`：携带 `status` / `message` / `code?`(内部判别，不进响应) / `extra?`(展开进响应，如 `{ missing }`) 的应用错误。
+- `src/middleware/errorHandler.ts`：状态感知全局处理器——`ApiError` 按 `status` 返回（+ `extra` 展开），`ZodError` 返回 400，其余 500（生产屏蔽内部详情）。index.ts 与各集成测试 app 均挂载此中间件。
+- 路由/控制器 catch 统一 `next(error)`：ad-hoc `Error & {code}` 已收敛为 `ApiError`（gathering `GATHERING_ALREADY_ACTIVE`、processing `INSUFFICIENT_MATERIALS`/`PLAYER_NOT_FOUND`）；catch-all 500 不再各自 `console.error + fail(500,...)`，交由全局处理器。matchmaking 因 LOSER 兜底逻辑复杂暂保留原 code-matching 结构。authController 早已用 `next(error)`。`result.success` 返回对象型服务（crafting/characters/battle/gathering-efficiency）保留显式 `fail()` 映射。
+- auth/rateLimit 中间件的 401/429 响应补 `success: false` 保持信封一致。
 
 ```typescript
 // POST /api/player/offline-claim 响应

@@ -2339,3 +2339,31 @@ T-FOLLOW-9 调研时发现**镜像滞后**：deploy.sh 拉 :latest，release.yml
 - zod 字段校验（用户已选 zod，下一批）
 - REST 统一（next(error) + ApiError + 状态码 + 路由命名审计，下一批）
 - 未切新 release tag / 未部署（outward-facing，需用户确认）
+
+## 2026-08-07 - 任务：P2 代码改进 批次2（zod 字段校验 + REST 统一）
+
+### Prompt
+延续批次1 的「范围外」项：用户选 zod 做字段校验。本批做 zod 校验 + REST 统一（next(error)+ApiError+状态码+路由命名审计）。
+
+### 思考
+校验：写端点（register/login/gathering-start/crafting×3/processing/characters×3/battle）原散落手写 `if(!field)` / `includes(enum)` 检查，消息不一。改 zod 路由层 `validate(schema)` 中间件统一：safeParse 失败 `next(ApiError(400, 首条 issue 消息))`，通过则替换 req.body（含 default/trim）。schema 自定义 message 逐一对齐既有测试断言（password ≥6、recipeType required、quantity positive integer、Invalid skill type、battleId required 等）。用 zod v3（errorMap 稳定、enum/required_error/invalid_type_error 可控）；empirically 验证 `z.string().trim().min(1)` 在 v3.25 是 trim 先于 min（空格串被拒）。
+
+REST 统一：原全局错误中间件硬编码 500，`next(error)` 只能产 500，故各 handler 自行 `console.error+fail(500,...)`。引入 `ApiError`(status+code?+extra?) + 状态感知 `errorHandler`（ApiError 按 status+展开 extra / ZodError 400 / 其余 500 屏蔽）。catch 统一 `next(error)` 去 boilerplate；ad-hoc `Error&{code}` 收敛 ApiError（gathering GATHERING_ALREADY_ACTIVE->400、processing INSUFFICIENT_MATERIALS->400+missing(extra) / PLAYER_NOT_FOUND->404）。`result.success` 返回对象型服务（crafting/characters/battle/gathering-efficiency）保留显式 fail()（改 throw 需重写所有 mock，风险高收益低）。matchmaking LOSER 兜底（409+data.battleId / 400 兜底）逻辑复杂，保留原 code-matching 不动。auth/rateLimit 401/429 补 success:false。
+
+### 意外
+1. 集成测试自建 mini express app **未挂全局错误中间件** -> `next(error)` 落到 Express 默认处理器（HTML/无信封）-> 7 suite 26 test 红（authController/auth.integration/processing/gathering/battle/cards.public-pool/gatheringService 单测）。根因非代码错，是测试 app 缺处理器。修复：把全局处理器抽成 `middleware/errorHandler.ts` 可复用，index.ts + 10 个测试 app 均挂载。gatheringService 单测断言旧 throw 消息「已有进行中的采集任务」-> 改 toMatchObject({name:'ApiError',status:400,message:'Already has active gathering task'})。
+2. cards.public-pool 500 测试原断言 `body.error==='Failed to fetch public pool cards'`：改 next(error) 后 500 消息由全局处理器决定（dev=err.message / prod=mask），不再固定。测试改为断言 `status 500 + success:false + error truthy`，反映新契约（500 消息 env-dependent）。
+
+### 修复
+- 新增 zod@3 + `middleware/validate.ts` + `validations/{auth,gathering,crafting,processing,characters,battle}.ts`
+- 新增 `utils/ApiError.ts`（status/code?/extra?）+ `middleware/errorHandler.ts`（状态感知，index.ts + 10 测试 app 挂载）
+- 写端点全挂 validate()，删手写校验；路由/控制器 catch 统一 next(error)
+- gatheringService 抛 ApiError(400,'Already has active gathering task')；processing 路由内 INSUFFICIENT_MATERIALS/PLAYER_NOT_FOUND 抛 ApiError（missing 经 extra 回传）
+- auth/rateLimit 401/429 补 success:false；auth.test.ts 3 处断言同步
+- processing 测试加 `body.missing` 断言（验证 ApiError.extra -> errorHandler 展开）
+- memory-bank progress/architecture/history 同步 + plan 归档
+
+### 范围外
+- matchmaking 错误流未转 ApiError（LOSER 兜底复杂，保留 code-matching；envelope 已正确）
+- `result.success` 型服务未改 throw（需重写 mock，风险高）
+- 未切新 release tag / 未部署（outward-facing，需用户确认；P2 批次1+2 代码均未上线，生产仍 v0.1.2）

@@ -3,10 +3,12 @@
 import request from 'supertest';
 import express from 'express';
 import cardsRoutes from './cards';
+import { errorHandler } from '../middleware/errorHandler';
 
 const app = express();
 app.use(express.json());
 app.use('/api/cards', cardsRoutes);
+app.use(errorHandler);
 
 // Mock the cardService module — must be declared before importing route
 jest.mock('../services/cardService', () => ({
@@ -75,7 +77,8 @@ describe('GET /api/cards/public-pool (T1001)', () => {
     const res = await request(app).get('/api/cards/public-pool');
 
     expect(res.status).toBe(500);
-    expect(res.body.error).toBe('Failed to fetch public pool cards');
+    expect(res.body.success).toBe(false);
+    expect(res.body.error).toBeTruthy();
   });
 
   it('should be reachable before /:id route (no greedy match)', async () => {

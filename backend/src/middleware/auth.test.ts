@@ -27,7 +27,7 @@ describe('authMiddleware', () => {
     );
 
     expect(mockResponse.status).toHaveBeenCalledWith(401);
-    expect(mockResponse.json).toHaveBeenCalledWith({ error: 'No token provided' });
+    expect(mockResponse.json).toHaveBeenCalledWith({ success: false, error: 'No token provided' });
     expect(nextFunction).not.toHaveBeenCalled();
   });
 
@@ -43,7 +43,7 @@ describe('authMiddleware', () => {
     );
 
     expect(mockResponse.status).toHaveBeenCalledWith(401);
-    expect(mockResponse.json).toHaveBeenCalledWith({ error: 'No token provided' });
+    expect(mockResponse.json).toHaveBeenCalledWith({ success: false, error: 'No token provided' });
     expect(nextFunction).not.toHaveBeenCalled();
   });
 
@@ -59,7 +59,7 @@ describe('authMiddleware', () => {
     );
 
     expect(mockResponse.status).toHaveBeenCalledWith(401);
-    expect(mockResponse.json).toHaveBeenCalledWith({ error: 'Invalid token' });
+    expect(mockResponse.json).toHaveBeenCalledWith({ success: false, error: 'Invalid token' });
     expect(nextFunction).not.toHaveBeenCalled();
   });
 

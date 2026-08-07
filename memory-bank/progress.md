@@ -98,6 +98,7 @@
 | T-FOLLOW-9 | 监控（GH Actions scheduled health check：每 15 min curl /health，失败开/评论 issue 告警，恢复自动关 issue；复用 VPS_HOST，GITHUB_TOKEN 开 issue） | 2026-08-07 |
 | v0.1.2 Release | tag v0.1.2(4824672) -> release.yml run 31161641510 (首次冷构建 multi-arch 29min 被取消, rerun 吃 cache 4min success) -> deploy.yml run 31164125069 (workflow_run) 自动 success. 上线 e7e51c9 (T-FIX P0+资产安全+/health probe). /health 现返回 database:ok redis:ok (#5 修复). 镜像滞后解决 | 2026-08-07 |
 | P2 代码改进 批次1 | 注册事务化 + 响应包裹统一。createUser 包 withTransaction（existence+INSERT user+initializePlayer 原子化，修孤立 user bug；initializePlayer 加可选 client），新增 utils/http.ts ok()/fail()，12 routes+4 controllers 全部信封化（裸数据->ok，错误加 success:false），全局错误中间件加 success:false。tsc 零错；jest 703/703 全绿（+1 注册回滚回归测试）；真库 smoke 验证 commit/duplicate/ROLLBACK。剩 zod 字段校验 + REST 统一(next(error)/ApiError) 下一批 | 2026-08-07 |
+| P2 代码改进 批次2 | zod 字段校验 + REST 统一。新增 zod@3 + `middleware/validate.ts`（safeParse 失败 next(ApiError(400,首条msg))，通过替换 req.body）+ `validations/` 6 schema（auth/gathering/crafting/processing/characters/battle，自定义 message 对齐既有契约）；新增 `utils/ApiError.ts`（status+code?+extra?）+ `middleware/errorHandler.ts`（状态感知：ApiError 按 status+展开 extra / ZodError 400 / 其余 500 屏蔽）；路由/控制器 catch 统一 next(error)，ad-hoc `Error&{code}` 收敛为 ApiError（gathering 已活跃/processing 缺料+玩家不存在，缺料 missing 经 extra 回传），catch-all 500 不再各自 console.error+fail；auth/rateLimit 401/429 补 success:false。matchmaking LOSER 兜底保留原结构。tsc 零错；jest 703/703 全绿；10 个集成测试 app 挂载 errorHandler 保持错误信封一致。路由命名审计：现状一致（action 风格 /start /complete /result 等有意为之），无需改名 | 2026-08-07 |
 
 ---
 

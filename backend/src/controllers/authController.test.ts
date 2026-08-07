@@ -2,11 +2,13 @@
 import request from 'supertest';
 import express from 'express';
 import authRoutes from '../routes/auth';
+import { errorHandler } from '../middleware/errorHandler';
 
 // Create test app
 const app = express();
 app.use(express.json());
 app.use('/api/auth', authRoutes);
+app.use(errorHandler);
 
 describe('Auth API Integration Tests', () => {
   const testUsername = `testuser_${Date.now()}`;

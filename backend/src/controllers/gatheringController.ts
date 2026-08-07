@@ -1,4 +1,4 @@
-import { Response } from 'express';
+import { Response, NextFunction } from 'express';
 import { AuthRequest } from '../middleware/auth';
 import {
   startGathering,
@@ -21,7 +21,8 @@ interface StartGatheringBody {
  */
 export async function startGatheringHandler(
   req: AuthRequest,
-  res: Response
+  res: Response,
+  next: NextFunction
 ): Promise<void> {
   try {
     const userId = req.user?.userId;
@@ -33,12 +34,6 @@ export async function startGatheringHandler(
 
     const { skillType, characterId } = req.body as StartGatheringBody;
 
-    // 验证技能类型
-    if (!['mining', 'woodcutting', 'herbalism'].includes(skillType)) {
-      fail(res, 400, 'Invalid skill type');
-      return;
-    }
-
     const task = await startGathering(userId, skillType, characterId);
 
     if (!task) {
@@ -48,19 +43,8 @@ export async function startGatheringHandler(
 
     ok(res, task, 201);
   } catch (error) {
-    console.error('Error starting gathering:', error);
-
-    // 用错误码匹配（T-FIX：替代脆弱的 `.includes('中文')` 匹配）
-    const isAlreadyActive =
-      error instanceof Error &&
-      (error as Error & { code?: string }).code === 'GATHERING_ALREADY_ACTIVE';
-
-    if (isAlreadyActive) {
-      fail(res, 400, 'Already has active gathering task');
-      return;
-    }
-
-    fail(res, 500, 'Internal server error');
+    // startGathering 抛 ApiError(400, 'Already has active gathering task') 等，交由全局处理器按 status 返回
+    next(error);
   }
 }
 
@@ -70,7 +54,8 @@ export async function startGatheringHandler(
  */
 export async function getGatheringStatusHandler(
   req: AuthRequest,
-  res: Response
+  res: Response,
+  next: NextFunction
 ): Promise<void> {
   try {
     const userId = req.user?.userId;
@@ -94,8 +79,7 @@ export async function getGatheringStatusHandler(
 
     ok(res, status);
   } catch (error) {
-    console.error('Error getting gathering status:', error);
-    fail(res, 500, 'Internal server error');
+    next(error);
   }
 }
 
@@ -105,7 +89,8 @@ export async function getGatheringStatusHandler(
  */
 export async function completeGatheringHandler(
   req: AuthRequest,
-  res: Response
+  res: Response,
+  next: NextFunction
 ): Promise<void> {
   try {
     const userId = req.user?.userId;
@@ -124,8 +109,7 @@ export async function completeGatheringHandler(
 
     ok(res, completedTask);
   } catch (error) {
-    console.error('Error completing gathering:', error);
-    fail(res, 500, 'Internal server error');
+    next(error);
   }
 }
 
@@ -135,7 +119,8 @@ export async function completeGatheringHandler(
  */
 export async function cancelGatheringHandler(
   req: AuthRequest,
-  res: Response
+  res: Response,
+  next: NextFunction
 ): Promise<void> {
   try {
     const userId = req.user?.userId;
@@ -154,8 +139,7 @@ export async function cancelGatheringHandler(
 
     ok(res, null);
   } catch (error) {
-    console.error('Error cancelling gathering:', error);
-    fail(res, 500, 'Internal server error');
+    next(error);
   }
 }
 
@@ -165,7 +149,8 @@ export async function cancelGatheringHandler(
  */
 export async function getGatheringEfficiencyHandler(
   req: AuthRequest,
-  res: Response
+  res: Response,
+  next: NextFunction
 ): Promise<void> {
   try {
     const userId = req.user?.userId;
@@ -187,7 +172,6 @@ export async function getGatheringEfficiencyHandler(
       totalBonus: result.totalBonus,
     });
   } catch (error) {
-    console.error('Error getting gathering efficiency:', error);
-    fail(res, 500, 'Internal server error');
+    next(error);
   }
 }

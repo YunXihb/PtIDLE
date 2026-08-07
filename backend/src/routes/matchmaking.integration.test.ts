@@ -61,6 +61,7 @@ import request from 'supertest';
 import express from 'express';
 import matchmakingRoutes from './matchmaking';
 import { redisClient } from '../config/redis';
+import { errorHandler } from '../middleware/errorHandler';
 
 const mockedRedis = redisClient as unknown as {
   set: jest.Mock;
@@ -76,6 +77,7 @@ const mockedRedis = redisClient as unknown as {
 const app = express();
 app.use(express.json());
 app.use('/api/match', matchmakingRoutes);
+app.use(errorHandler);
 
 describe('Matchmaking API Integration Tests', () => {
   beforeEach(() => {

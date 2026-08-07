@@ -81,7 +81,11 @@ describe('gatheringService', () => {
       }]);
 
       await expect(gatheringService.startGathering(userId, 'woodcutting'))
-        .rejects.toThrow('已有进行中的采集任务');
+        .rejects.toMatchObject({
+          name: 'ApiError',
+          status: 400,
+          message: 'Already has active gathering task',
+        });
     });
 
     it('should return null if player not found', async () => {

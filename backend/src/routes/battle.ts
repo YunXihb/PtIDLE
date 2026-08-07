@@ -5,8 +5,10 @@
 //
 // 所有路由均需 JWT 认证。
 
-import { Router } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
+import { validate } from '../middleware/validate';
+import { settleSchema } from '../validations/battle';
 import { settleBattleHandler } from '../controllers/battleController';
 
 const router = Router();
@@ -15,8 +17,8 @@ const router = Router();
 router.use(authMiddleware);
 
 // POST /api/battle/result - 对战结算
-router.post('/result', async (req: AuthRequest, res) => {
-  await settleBattleHandler(req, res);
+router.post('/result', validate(settleSchema), (req: Request, res: Response, next: NextFunction) => {
+  settleBattleHandler(req as AuthRequest, res, next).catch(next);
 });
 
 export default router;

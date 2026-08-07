@@ -8,12 +8,14 @@ import {
   removeCardFromCharacter,
   getCharacterDeckCards,
 } from '../services/characterService';
+import { validate } from '../middleware/validate';
+import { createCharacterSchema, updateCharacterNameSchema, deckSchema } from '../validations/characters';
 import { ok, fail } from '../utils/http';
 
 const router = Router();
 
 // 获取玩家所有棋子
-router.get('/', authMiddleware, async (req: AuthRequest, res) => {
+router.get('/', authMiddleware, async (req: AuthRequest, res, next) => {
   try {
     const userId = req.user?.userId;
 
@@ -26,13 +28,12 @@ router.get('/', authMiddleware, async (req: AuthRequest, res) => {
 
     ok(res, characters);
   } catch (error) {
-    console.error('Error fetching characters:', error);
-    fail(res, 500, 'Failed to fetch characters');
+    next(error);
   }
 });
 
 // 创建棋子
-router.post('/', authMiddleware, async (req: AuthRequest, res) => {
+router.post('/', authMiddleware, validate(createCharacterSchema), async (req: AuthRequest, res, next) => {
   try {
     const userId = req.user?.userId;
 
@@ -42,17 +43,6 @@ router.post('/', authMiddleware, async (req: AuthRequest, res) => {
     }
 
     const { name, profession } = req.body;
-
-    // 验证输入
-    if (!name || typeof name !== 'string' || name.trim().length === 0) {
-      fail(res, 400, 'Character name is required');
-      return;
-    }
-
-    if (!profession || !['warrior', 'ranger', 'mage'].includes(profession)) {
-      fail(res, 400, 'Invalid profession. Must be warrior, ranger, or mage');
-      return;
-    }
 
     const result = await createCharacter(userId, name.trim(), profession);
 
@@ -71,13 +61,12 @@ router.post('/', authMiddleware, async (req: AuthRequest, res) => {
 
     ok(res, result.character, 201);
   } catch (error) {
-    console.error('Error creating character:', error);
-    fail(res, 500, 'Failed to create character');
+    next(error);
   }
 });
 
 // 更新棋子名称
-router.put('/:id/name', authMiddleware, async (req: AuthRequest, res) => {
+router.put('/:id/name', authMiddleware, validate(updateCharacterNameSchema), async (req: AuthRequest, res, next) => {
   try {
     const userId = req.user?.userId;
     const characterId = req.params.id;
@@ -85,12 +74,6 @@ router.put('/:id/name', authMiddleware, async (req: AuthRequest, res) => {
 
     if (!userId) {
       fail(res, 401, 'Unauthorized');
-      return;
-    }
-
-    // 验证输入
-    if (!name || typeof name !== 'string' || name.trim().length === 0) {
-      fail(res, 400, 'Character name is required');
       return;
     }
 
@@ -107,13 +90,12 @@ router.put('/:id/name', authMiddleware, async (req: AuthRequest, res) => {
 
     ok(res, result.character);
   } catch (error) {
-    console.error('Error updating character name:', error);
-    fail(res, 500, 'Failed to update character name');
+    next(error);
   }
 });
 
 // 获取棋子牌库
-router.get('/:id/deck', authMiddleware, async (req: AuthRequest, res) => {
+router.get('/:id/deck', authMiddleware, async (req: AuthRequest, res, next) => {
   try {
     const userId = req.user?.userId;
     const characterId = req.params.id;
@@ -134,13 +116,12 @@ router.get('/:id/deck', authMiddleware, async (req: AuthRequest, res) => {
 
     ok(res, cards);
   } catch (error) {
-    console.error('Error fetching character deck:', error);
-    fail(res, 500, 'Failed to fetch character deck');
+    next(error);
   }
 });
 
 // 分配或移除卡牌
-router.put('/:id/deck', authMiddleware, async (req: AuthRequest, res) => {
+router.put('/:id/deck', authMiddleware, validate(deckSchema), async (req: AuthRequest, res, next) => {
   try {
     const userId = req.user?.userId;
     const characterId = req.params.id;
@@ -148,16 +129,6 @@ router.put('/:id/deck', authMiddleware, async (req: AuthRequest, res) => {
 
     if (!userId) {
       fail(res, 401, 'Unauthorized');
-      return;
-    }
-
-    if (!cardId || typeof cardId !== 'string') {
-      fail(res, 400, 'cardId is required');
-      return;
-    }
-
-    if (!action || !['assign', 'remove'].includes(action)) {
-      fail(res, 400, 'action must be "assign" or "remove"');
       return;
     }
 
@@ -183,8 +154,7 @@ router.put('/:id/deck', authMiddleware, async (req: AuthRequest, res) => {
 
     ok(res, { character_deck_id: result.character_deck_id });
   } catch (error) {
-    console.error('Error updating character deck:', error);
-    fail(res, 500, 'Failed to update character deck');
+    next(error);
   }
 });
 

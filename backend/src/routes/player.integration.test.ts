@@ -4,6 +4,7 @@ import express from 'express';
 import jwt from 'jsonwebtoken';
 import playerRoutes from '../routes/player';
 import * as playerService from '../services/playerService';
+import { errorHandler } from '../middleware/errorHandler';
 
 // Mock the playerService
 jest.mock('../services/playerService');
@@ -14,6 +15,7 @@ const mockedClaimOfflineEarnings = playerService.claimOfflineEarnings as jest.Mo
 const app = express();
 app.use(express.json());
 app.use('/api/player', playerRoutes);
+app.use(errorHandler);
 
 describe('Player API Integration Tests', () => {
   const testUserId = 'test-user-id';

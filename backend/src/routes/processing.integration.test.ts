@@ -3,11 +3,13 @@ import request from 'supertest';
 import express from 'express';
 import processingRoutes from '../routes/processing';
 import { query } from '../config/database';
+import { errorHandler } from '../middleware/errorHandler';
 
 // Create test app
 const app = express();
 app.use(express.json());
 app.use('/api/processing', processingRoutes);
+app.use(errorHandler);
 
 // Mock the database module
 const mockWithTransaction = jest.fn();
@@ -263,6 +265,8 @@ describe('Processing API Integration Tests', () => {
 
       expect(response.status).toBe(400);
       expect(response.body.error).toBe('Insufficient materials');
+      // ApiError.extra -> 经 errorHandler 展开到响应体，供客户端定位缺料
+      expect(response.body.missing).toEqual(['iron_ore', 'coal']);
     });
 
     it('should apply efficiency to output', async () => {

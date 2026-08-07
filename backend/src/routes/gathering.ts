@@ -1,5 +1,7 @@
-import { Router } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
+import { validate } from '../middleware/validate';
+import { startGatheringSchema } from '../validations/gathering';
 import {
   startGatheringHandler,
   getGatheringStatusHandler,
@@ -14,28 +16,28 @@ const router = Router();
 router.use(authMiddleware);
 
 // POST /api/gathering/start - 开始采集任务
-router.post('/start', async (req: AuthRequest, res) => {
-  await startGatheringHandler(req, res);
+router.post('/start', validate(startGatheringSchema), (req: Request, res: Response, next: NextFunction) => {
+  startGatheringHandler(req as AuthRequest, res, next).catch(next);
 });
 
 // GET /api/gathering/status - 查询采集状态
-router.get('/status', async (req: AuthRequest, res) => {
-  await getGatheringStatusHandler(req, res);
+router.get('/status', (req: Request, res: Response, next: NextFunction) => {
+  getGatheringStatusHandler(req as AuthRequest, res, next).catch(next);
 });
 
 // POST /api/gathering/complete - 完成采集任务
-router.post('/complete', async (req: AuthRequest, res) => {
-  await completeGatheringHandler(req, res);
+router.post('/complete', (req: Request, res: Response, next: NextFunction) => {
+  completeGatheringHandler(req as AuthRequest, res, next).catch(next);
 });
 
 // POST /api/gathering/cancel - 取消采集任务
-router.post('/cancel', async (req: AuthRequest, res) => {
-  await cancelGatheringHandler(req, res);
+router.post('/cancel', (req: Request, res: Response, next: NextFunction) => {
+  cancelGatheringHandler(req as AuthRequest, res, next).catch(next);
 });
 
 // GET /api/gathering/efficiency - 获取采集效率信息
-router.get('/efficiency', async (req: AuthRequest, res) => {
-  await getGatheringEfficiencyHandler(req, res);
+router.get('/efficiency', (req: Request, res: Response, next: NextFunction) => {
+  getGatheringEfficiencyHandler(req as AuthRequest, res, next).catch(next);
 });
 
 export default router;

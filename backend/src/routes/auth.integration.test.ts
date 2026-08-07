@@ -3,11 +3,13 @@ import request from 'supertest';
 import express from 'express';
 import authRoutes from '../routes/auth';
 import { query, execute, withTransaction } from '../config/database';
+import { errorHandler } from '../middleware/errorHandler';
 
 // Create test app
 const app = express();
 app.use(express.json());
 app.use('/api/auth', authRoutes);
+app.use(errorHandler);
 
 // Mock the database module
 jest.mock('../config/database', () => ({

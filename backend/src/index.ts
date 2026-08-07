@@ -20,6 +20,7 @@ import cardRoutes from './routes/cards';
 import { initializeGatheringConfig, processDueGatheringTasks } from './services/gatheringService';
 import { initializeSocketServer } from './socket/socketServer';
 import { checkMigrationsStatus } from './scripts/migrate';
+import { errorHandler } from './middleware/errorHandler';
 
 dotenv.config();
 
@@ -77,18 +78,9 @@ app.get('/health', async (_req, res) => {
   });
 });
 
-// 全局错误处理中间件（4 参签名被 Express 识别为 error handler）
-// - 统一 JSON 错误格式，避免未捕获异常落到 Express 默认 HTML 错误页
-// - 不泄露内部错误详情（生产仅返回通用消息）
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  const isProd = process.env.NODE_ENV === 'production';
-  console.error('[unhandled]', err);
-  res.status(500).json({
-    success: false,
-    error: isProd ? 'Internal server error' : err.message || 'Internal server error',
-  });
-});
+// 全局错误处理中间件：统一 JSON 错误格式（ApiError 按 status / ZodError 400 / 其它 500）
+// 详见 src/middleware/errorHandler.ts
+app.use(errorHandler);
 
 // Initialize connections
 async function initializeApp() {

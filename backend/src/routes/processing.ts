@@ -2,23 +2,25 @@ import { Router } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { getAllProcessingRecipes, getProcessingRecipeByType } from '../services/processingService';
 import { withTransaction } from '../config/database';
+import { validate } from '../middleware/validate';
+import { processSchema } from '../validations/processing';
 import { ok, fail } from '../utils/http';
+import { ApiError } from '../utils/ApiError';
 
 const router = Router();
 
 // 获取所有加工配方
-router.get('/recipes', async (req, res) => {
+router.get('/recipes', async (_req, res, next) => {
   try {
     const recipes = await getAllProcessingRecipes();
     ok(res, recipes);
   } catch (error) {
-    console.error('Error fetching processing recipes:', error);
-    fail(res, 500, 'Failed to fetch processing recipes');
+    next(error);
   }
 });
 
 // 获取单个加工配方
-router.get('/recipes/:type', async (req, res) => {
+router.get('/recipes/:type', async (req, res, next) => {
   try {
     const { type } = req.params;
     const recipe = await getProcessingRecipeByType(type);
@@ -30,13 +32,12 @@ router.get('/recipes/:type', async (req, res) => {
 
     ok(res, recipe);
   } catch (error) {
-    console.error('Error fetching processing recipe:', error);
-    fail(res, 500, 'Failed to fetch processing recipe');
+    next(error);
   }
 });
 
 // 执行加工操作
-router.post('/process', authMiddleware, async (req: AuthRequest, res) => {
+router.post('/process', authMiddleware, validate(processSchema), async (req: AuthRequest, res, next) => {
   try {
     const userId = req.user?.userId;
     if (!userId) {
@@ -45,16 +46,6 @@ router.post('/process', authMiddleware, async (req: AuthRequest, res) => {
     }
 
     const { recipeType, quantity = 1 } = req.body;
-
-    if (!recipeType) {
-      fail(res, 400, 'recipeType is required');
-      return;
-    }
-
-    if (quantity < 1 || !Number.isInteger(quantity)) {
-      fail(res, 400, 'quantity must be a positive integer');
-      return;
-    }
 
     // 获取配方
     const recipe = await getProcessingRecipeByType(recipeType);
@@ -76,9 +67,7 @@ router.post('/process', authMiddleware, async (req: AuthRequest, res) => {
         [userId]
       );
       if (playerRes.rows.length === 0) {
-        const err = new Error('Player not found') as Error & { code?: string };
-        err.code = 'PLAYER_NOT_FOUND';
-        throw err;
+        throw new ApiError(404, 'Player not found');
       }
       const player = playerRes.rows[0];
 
@@ -96,13 +85,10 @@ router.post('/process', authMiddleware, async (req: AuthRequest, res) => {
       }
 
       if (missingMaterials.length > 0) {
-        const err = new Error('Insufficient materials') as Error & {
-          code?: string;
-          missing?: string[];
-        };
-        err.code = 'INSUFFICIENT_MATERIALS';
-        err.missing = missingMaterials;
-        throw err;
+        // missing 经 ApiError.extra 附加到响应体，供客户端定位缺料
+        throw new ApiError(400, 'Insufficient materials', {
+          extra: { missing: missingMaterials },
+        });
       }
 
       // 扣除输入材料
@@ -140,18 +126,7 @@ router.post('/process', authMiddleware, async (req: AuthRequest, res) => {
       materials: result.updatedMaterials,
     });
   } catch (error) {
-    const e = error as Error & { code?: string; missing?: string[] };
-    if (e.code === 'INSUFFICIENT_MATERIALS') {
-      // 保留 missing 字段供客户端定位缺料（信封 + 额外字段）
-      res.status(400).json({ success: false, error: 'Insufficient materials', missing: e.missing });
-      return;
-    }
-    if (e.code === 'PLAYER_NOT_FOUND') {
-      fail(res, 404, 'Player not found');
-      return;
-    }
-    console.error('Error processing materials:', error);
-    fail(res, 500, 'Failed to process materials');
+    next(error);
   }
 });
 
