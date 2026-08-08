@@ -3146,3 +3146,46 @@ deploy.sh åŠ è‡ªåŠ¨å›æ»š â€” health check å¤±è´¥æ—¶è‡ªåŠ¨åˆ‡å›ä¸Šä¸€ä¸ª known-
 - T-FOLLOW-7 (è‡ªåŠ¨å›æ»š): backup service ç‹¬ç«‹äº deploy, ä¸å—å›æ»šå½±å“
 - T-FOLLOW-9 (ç›‘æ§, éƒ¨åˆ†å®Œæˆ 2026-08-07): GH Actions health check å·²åš; backup workflow æˆåŠŸç‡å‘Šè­¦ä»å¾…åš
 - migrate.js (T-FOLLOW-1): æ¢å¤å schema_migrations è¢«å¤‡ä»½çŠ¶æ€è¦†ç›–, éœ€é‡è·‘ migrate
+
+---
+
+## Ç°¶Ë (T057, 2026-08-08)
+
+### ¼¼ÊõÕ»
+Vite 5 + Vue 3 (Composition API) + TypeScript + Vue Router 4 + Pinia + axios + socket.io-client
+
+### Ä¿Â¼½á¹¹ (frontend/)
+```
+frontend/
+©À©¤©¤ package.json / vite.config.ts / tsconfig*.json / index.html
+©¸©¤©¤ src/
+    ©À©¤©¤ main.ts / App.vue / env.d.ts
+    ©À©¤©¤ types/index.ts          # ¶ÔÆëºó¶Ë REST + WS ÆõÔ¼µÄÀàĞÍ¶¨Òå
+    ©À©¤©¤ router/index.ts         # Â·ÓÉ + ¼øÈ¨ÊØÎÀ (guest Ò³ vs µÇÂ¼Ò³)
+    ©À©¤©¤ stores/
+    ©¦   ©À©¤©¤ auth.ts             # token/user ³Ö¾Ã»¯(localStorage) + login/register/logout
+    ©¦   ©À©¤©¤ player.ts           # profile/warehouse/characters/myCards
+    ©¦   ©¸©¤©¤ game.ts             # WS Á¬½Ó + ¶ÔÕ½×´Ì¬»ú(´éºÏ/ÆåÅÌ/ÊÖÅÆ/»ØºÏ/Ê¤¸º)
+    ©À©¤©¤ services/
+    ©¦   ©À©¤©¤ http.ts             # axios ÊµÀı + JWT À¹½ØÆ÷ + 401 µÇ³ö + typed helpers
+    ©¦   ©¸©¤©¤ api.ts              # È«²¿ REST µ÷ÓÃ (authApi/playerApi/gatheringApi/...)
+    ©¸©¤©¤ views/                  # Login/Register/HomeLayout/Home/Workshop/Warehouse/Characters/Cards/Battle
+```
+
+### ¹Ø¼üÉè¼Æ
+| Ïî | Ñ¡Ôñ |
+|----|------|
+| API ²ã | axios À¹½ØÆ÷Í³Ò»¸½ JWT + 401 ×Ô¶¯µÇ³öÌøµÇÂ¼ + °şÀë `{success,data}` ĞÅ·â£»`httpGet/Post/Put/Delete` typed helpers Ö±½Ó·µ»ØĞÅ·âÀàĞÍ |
+| WS | socket.io `io('/', {auth:{token}})` Ä¬ÈÏÃüÃû¿Õ¼ä£»ÎÕÊÖÆÚ JWT ¼øÈ¨£»`connect_error` ´¦Àí¼øÈ¨Ê§°Ü |
+| ¶ÔÕ½×´Ì¬ | game store ¼¯ÖĞ¹ÜÀí board/ownHand/»ØºÏ/Ê¤¸º£¬ÊÂ¼şÇı¶¯¸üĞÂ£»`isMyTurn` ÅÉÉúÆôÓÃ/½ûÓÃ²Ù×÷ |
+| Â·ÓÉÊØÎÀ | Î´µÇÂ¼ ¡ú /login£»guest Ò³(login/register)ÒÑµÇÂ¼ ¡ú /home |
+| ¿ª·¢´úÀí | vite proxy: /api + /socket.io ¡ú localhost:3000 (Ãâ CORS) |
+
+### ×´Ì¬
+- T057 Íê³É: ÏîÄ¿¿É `npm run build` (vue-tsc + vite) Í¨¹ı
+- T058(Â·ÓÉ) / T059(Pinia) / T060-T063(µÇÂ¼×¢²á/Ö÷Ò³+ÀëÏßÊÕÒæ) Ëæ¹Ç¼Ü¾ÍĞ÷
+- T064+ (¹¤·»/²Ö¿â/Æå×Ó/¿¨ÅÆ/Õ½Æå/Æ¥Åä/½áËã½çÃæ) ´ı¿ª·¢
+- Ç°¶ËÉú²úÍĞ¹Ü·½°¸Î´¶¨ (Caddy ¾²Ì¬ÍĞ¹Ü / µ¥¶À²¿Êğ / Óëºó¶ËÍ¬Óò)
+
+*ÎÄµµ°æ±¾£ºv1.51*
+*×îºó¸üĞÂ£º2026-08-08*

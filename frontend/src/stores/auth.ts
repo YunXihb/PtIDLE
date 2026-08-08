@@ -37,7 +37,9 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function register(username: string, password: string) {
-    const res = await authApi.register(username, password);
+    // 后端 register 只返回 User（不发 token），注册成功后自动登录拿 token
+    await authApi.register(username, password);
+    const res = await authApi.login(username, password);
     token.value = res.data.token;
     user.value = res.data.user;
     persist();

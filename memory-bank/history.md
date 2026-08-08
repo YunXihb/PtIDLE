@@ -2367,3 +2367,31 @@ REST ç»Ÿä¸€ï¼šåŸå…¨å±€é”™è¯¯ä¸­é—´ä»¶ç¡¬ç¼–ç  500ï¼Œ`next(error)` åªèƒ½äº§ 50
 - matchmaking é”™è¯¯æµæœªè½¬ ApiErrorï¼ˆLOSER å…œåº•å¤æ‚ï¼Œä¿ç•™ code-matchingï¼›envelope å·²æ­£ç¡®ï¼‰
 - `result.success` å‹æœåŠ¡æœªæ”¹ throwï¼ˆéœ€é‡å†™ mockï¼Œé£é™©é«˜ï¼‰
 - æœªåˆ‡æ–° release tag / æœªéƒ¨ç½²ï¼ˆoutward-facingï¼Œéœ€ç”¨æˆ·ç¡®è®¤ï¼›P2 æ‰¹æ¬¡1+2 ä»£ç å‡æœªä¸Šçº¿ï¼Œç”Ÿäº§ä» v0.1.2ï¼‰
+
+---
+
+## 2026-08-08 - ÈÎÎñ£ºv0.1.3 ²¿Êğ + Ç°¶Ë T057 ³õÊ¼»¯
+
+### Prompt
+ÓÃ»§£ºVPS ÓĞ¸Ä¶¯£¬ÖØĞÂ½øĞĞÍ¨Ñ¶£»È·ÈÏÍ¨Ñ¶Õı³£ºó²¿Êğ£»¼ÇÂ¼²¿Êğ½á¹û£»¼ÌĞøÇ°¶Ë¿ª·¢£¬Íê³É T057 ºóÍ£Ö¹¡£
+
+### Ë¼¿¼
+- VPS Í¨Ñ¶£º±¾µØÎŞ SSH Æ¾¾İ£¨½ö GitHub secrets£©£¬¸ÄÓÃ GitHub API ¼ä½ÓÑéÖ¤£ºhealth-check workflow Á¬Ğø 5 ´Î success£¨VPS ÔÚÏß£©+ release/deploy workflow ×´Ì¬¡£
+- ²¿Êğ£ºpush tag v0.1.3(a2514ba£¬º¬ P2 Åú´Î1&2 ºó¶Ë¸Ä½ø + Ç°¶Ë¹Ç¼ÜÌá½») ¡ú Release run 31262817512 success ¡ú Deploy run 31262952269 success ×Ô¶¯ÉÏÏß¡£È·ÈÏ T-FOLLOW-7 ²¿ÊğÎÊÌâÒÑ½â¾ö¡£
+- Ç°¶Ë£ºT057 ³õÊ¼»¯ Vue3 ÏîÄ¿¡£¹Ç¼Üº¬ÀàĞÍ¶¨Òå(¶ÔÆë REST/WS ÆõÔ¼)¡¢axios À¹½ØÆ÷(JWT ¸½Í· + 401 µÇ³ö + ĞÅ·â°şÀë)¡¢typed request helpers(httpGet/Post/Put/Delete ·µ»ØĞÅ·â)¡¢3 stores(auth º¬ token ³Ö¾Ã»¯ / player µµ°¸+²Ö¿â+¿¨ÅÆ / game WS ¶ÔÕ½×´Ì¬»ú)¡¢Â·ÓÉÊØÎÀ¡¢µÇÂ¼/×¢²á/Ö÷Ò³(ÀëÏßÊÕÒæµ¯´°)¡¢5 Õ¼Î»ÊÓÍ¼(T064+ ´ıÊµÏÖ)¡£
+
+### ÒâÍâ
+1. ºó¶Ë register Ö»·µ»Ø User ²»·¢ token ¡ú auth store register Ğè×¢²áºó×Ô¶¯µ÷ login ÄÃ token£¨Ô­ÊµÏÖ´íÎó¶Á res.data.token£©
+2. router ÒıÓÃµÄ WorkshopView µÈÊÓÍ¼²»´æÔÚµ¼ÖÂ vite build Ê§°Ü ¡ú ½¨ 5 ¸öÕ¼Î»ÊÓÍ¼
+3. axios ·ºĞÍÓëÀ¹½ØÆ÷ĞÅ·â°şÀë²»Æ¥Åä£¨TS ±¨ AxiosResponse vs ĞÅ·â£©¡ú http.ts ¼Ó typed request helpers£¨httpGet/Post/Put/Delete Ö±½Ó·µ»ØĞÅ·âÀàĞÍ£©
+
+### ĞŞ¸´
+- ĞÂÔö frontend/ ÍêÕû¹Ç¼Ü£¨package.json / vite.config / tsconfig¡Á2 / index.html / src/{main,App,env.d.ts,types,router,stores¡Á3,services¡Á2,views¡Á6,assets}£©
+- backend/.dockerignore ÅÅ³ı frontend
+- ²¿Êğ v0.1.3 ÉÏÏß£¨P2 ºó¶Ë¸Ä½ø£©
+- memory-bank progress/history Í¬²½
+
+### ·¶Î§Íâ
+- T058-T063 ²¿·ÖËæ T057 ¹Ç¼Ü¾ÍĞ÷£¨Â·ÓÉ/Pinia/µÇÂ¼×¢²á/Ö÷Ò³ÒÑ¿ÉÓÃ£©£¬µ«Î´µ¥¶ÀÑéÊÕ
+- T064+ Ç°¶Ë½çÃæ£¨¹¤·»/²Ö¿â/Æå×Ó/¿¨ÅÆ/Õ½Æå/Æ¥Åä/½áËã£©´ıºóĞø
+- Ç°¶ËÎ´½Ó CDN/²¿Êğ£¨Éú²úÇ°¶ËÍĞ¹Ü·½°¸Î´¶¨£©

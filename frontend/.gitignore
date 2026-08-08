@@ -5,6 +5,10 @@ node_modules/
 dist/
 dist-ssr/
 coverage/
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
+vite.config.js.map
 
 # Local env
 .env
