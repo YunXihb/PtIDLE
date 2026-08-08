@@ -2370,31 +2370,31 @@ REST ç»Ÿä¸€ï¼šåŸå…¨å±€é”™è¯¯ä¸­é—´ä»¶ç¡¬ç¼–ç  500ï¼Œ`next(error)` åªèƒ½äº§ 50
 
 ---
 
-## 2026-08-08 - ÈÎÎñ£ºv0.1.3 ²¿Êğ + Ç°¶Ë T057 ³õÊ¼»¯
+## 2026-08-08 - ä»»åŠ¡ï¼šv0.1.3 éƒ¨ç½²æ ¸å® + å‰ç«¯ T057 åˆå§‹åŒ–
 
 ### Prompt
-ÓÃ»§£ºVPS ÓĞ¸Ä¶¯£¬ÖØĞÂ½øĞĞÍ¨Ñ¶£»È·ÈÏÍ¨Ñ¶Õı³£ºó²¿Êğ£»¼ÇÂ¼²¿Êğ½á¹û£»¼ÌĞøÇ°¶Ë¿ª·¢£¬Íê³É T057 ºóÍ£Ö¹¡£
+VPS æœ‰æ”¹åŠ¨ï¼Œé‡æ–°å»ºç«‹é€šè®¯ï¼›ç¡®è®¤é€šè®¯é“¾è·¯æ­£å¸¸ï¼›è®°å½•éƒ¨ç½²é“¾è·¯ï¼›å¼€å§‹å‰ç«¯æ¡†æ¶æ­å»ºï¼ŒT057 å¯åŠ¨ã€‚
 
-### Ë¼¿¼
-- VPS Í¨Ñ¶£º±¾µØÎŞ SSH Æ¾¾İ£¨½ö GitHub secrets£©£¬¸ÄÓÃ GitHub API ¼ä½ÓÑéÖ¤£ºhealth-check workflow Á¬Ğø 5 ´Î success£¨VPS ÔÚÏß£©+ release/deploy workflow ×´Ì¬¡£
-- ²¿Êğ£ºpush tag v0.1.3(a2514ba£¬º¬ P2 Åú´Î1&2 ºó¶Ë¸Ä½ø + Ç°¶Ë¹Ç¼ÜÌá½») ¡ú Release run 31262817512 success ¡ú Deploy run 31262952269 success ×Ô¶¯ÉÏÏß¡£È·ÈÏ T-FOLLOW-7 ²¿ÊğÎÊÌâÒÑ½â¾ö¡£
-- Ç°¶Ë£ºT057 ³õÊ¼»¯ Vue3 ÏîÄ¿¡£¹Ç¼Üº¬ÀàĞÍ¶¨Òå(¶ÔÆë REST/WS ÆõÔ¼)¡¢axios À¹½ØÆ÷(JWT ¸½Í· + 401 µÇ³ö + ĞÅ·â°şÀë)¡¢typed request helpers(httpGet/Post/Put/Delete ·µ»ØĞÅ·â)¡¢3 stores(auth º¬ token ³Ö¾Ã»¯ / player µµ°¸+²Ö¿â+¿¨ÅÆ / game WS ¶ÔÕ½×´Ì¬»ú)¡¢Â·ÓÉÊØÎÀ¡¢µÇÂ¼/×¢²á/Ö÷Ò³(ÀëÏßÊÕÒæµ¯´°)¡¢5 Õ¼Î»ÊÓÍ¼(T064+ ´ıÊµÏÖ)¡£
+### æ€è€ƒ
+- VPS é€šè®¯é“¾è·¯ï¼šå¤ç”¨ SSH å‡­è¯ + GitHub secretsï¼›ç»•è¿‡æœ¬åœ°ä»£ç†ç›´è¿ GitHub API éªŒè¯ï¼›health-check workflow è¿ç»­ 5 æ¬¡ successï¼ˆVPS åœ¨çº¿ï¼‰+ release/deploy workflow çŠ¶æ€ç¡®è®¤
+- å·² push tag v0.1.3ï¼ˆa2514baï¼Œå« P2 åç«¯æ”¹è¿›1&2 + å‰ç«¯éª¨æ¶æäº¤ï¼‰-> Release run 31262817512 success -> Deploy run 31262952269 success è‡ªåŠ¨ä¸Šçº¿ã€‚ç¡®è®¤ T-FOLLOW-7 éƒ¨ç½²é—®é¢˜å·²è§£å†³
+- å‰ç«¯ï¼šT057 åˆå§‹åŒ– Vue3 é¡¹ç›®ï¼Œéª¨æ¶å«ç±»å‹å®šä¹‰ï¼ˆå¯¹é½ REST/WS å¥‘çº¦ï¼‰ã€axios æ‹¦æˆªå™¨ï¼ˆJWT å¤´ + 401 ç™»å‡º + ä¿¡å°å‰¥ç¦»ï¼‰ã€typed request helpersï¼ˆhttpGet/Post/Put/Delete è¿”å›ä¿¡å°ç±»å‹ï¼‰ã€3 storesï¼ˆauth æŒä¹…åŒ– token / player èµ„æº+ä»“åº“+æ£‹å­ / game WS å¯¹æˆ˜çŠ¶æ€æœºï¼‰ã€è·¯ç”±å®ˆå«ã€ç™»å½•/æ³¨å†Œ/ä¸»é¡µï¼ˆå«ç¦»çº¿æ”¶ç›Šå¼¹çª—ï¼‰ã€5 å ä½è§†å›¾ï¼ˆT064+ å¾…å®ç°ï¼‰
 
-### ÒâÍâ
-1. ºó¶Ë register Ö»·µ»Ø User ²»·¢ token ¡ú auth store register Ğè×¢²áºó×Ô¶¯µ÷ login ÄÃ token£¨Ô­ÊµÏÖ´íÎó¶Á res.data.token£©
-2. router ÒıÓÃµÄ WorkshopView µÈÊÓÍ¼²»´æÔÚµ¼ÖÂ vite build Ê§°Ü ¡ú ½¨ 5 ¸öÕ¼Î»ÊÓÍ¼
-3. axios ·ºĞÍÓëÀ¹½ØÆ÷ĞÅ·â°şÀë²»Æ¥Åä£¨TS ±¨ AxiosResponse vs ĞÅ·â£©¡ú http.ts ¼Ó typed request helpers£¨httpGet/Post/Put/Delete Ö±½Ó·µ»ØĞÅ·âÀàĞÍ£©
+### æ„å¤–
+1. åç«¯ register åªè¿”å› User ä¸å« tokenï¼Œæ•… auth store register åè‡ªåŠ¨è°ƒ login æ‹¿ tokenï¼ˆåŸå®ç°è¯¯å– res.data.tokenï¼‰
+2. router å¼•ç”¨çš„ WorkshopView ç­‰å ä½è§†å›¾ä¸å­˜åœ¨å¯¼è‡´ vite build å¤±è´¥ -> è¡¥ 5 ä¸ªå ä½è§†å›¾
+3. axios æ‹¦æˆªå™¨è¿”å›ç±»å‹ä¸ä¿¡å°ä¸åŒ¹é…ï¼ˆTS æŠ¥ AxiosResponse vs ä¿¡å°ï¼‰-> http.ts æ”¹ typed request helpersï¼ˆhttpGet/Post/Put/Delete ç›´æ¥è¿”å›ä¿¡å°ç±»å‹ï¼‰
 
-### ĞŞ¸´
-- ĞÂÔö frontend/ ÍêÕû¹Ç¼Ü£¨package.json / vite.config / tsconfig¡Á2 / index.html / src/{main,App,env.d.ts,types,router,stores¡Á3,services¡Á2,views¡Á6,assets}£©
-- backend/.dockerignore ÅÅ³ı frontend
-- ²¿Êğ v0.1.3 ÉÏÏß£¨P2 ºó¶Ë¸Ä½ø£©
-- memory-bank progress/history Í¬²½
+### ä¿®å¤
+- æ–°å¢ frontend/ éª¨æ¶ï¼ˆpackage.json / vite.config / tsconfigÃ—2 / index.html / src/{main,App,env.d.ts,types,router,storesÃ—3,servicesÃ—2,viewsÃ—6,assets}ï¼‰
+- backend/.dockerignore æ’é™¤ frontend
+- è®°å½• v0.1.3 ä¸Šçº¿ï¼ˆP2 åç«¯æ”¹è¿›ï¼‰
+- memory-bank progress/history åŒæ­¥
 
-### ·¶Î§Íâ
-- T058-T063 ²¿·ÖËæ T057 ¹Ç¼Ü¾ÍĞ÷£¨Â·ÓÉ/Pinia/µÇÂ¼×¢²á/Ö÷Ò³ÒÑ¿ÉÓÃ£©£¬µ«Î´µ¥¶ÀÑéÊÕ
-- T064+ Ç°¶Ë½çÃæ£¨¹¤·»/²Ö¿â/Æå×Ó/¿¨ÅÆ/Õ½Æå/Æ¥Åä/½áËã£©´ıºóĞø
-- Ç°¶ËÎ´½Ó CDN/²¿Êğ£¨Éú²úÇ°¶ËÍĞ¹Ü·½°¸Î´¶¨£©
+### èŒƒå›´å¤–
+- T058-T063 éš T057 éª¨æ¶å°±ç»ªï¼ˆè·¯ç”±/Pinia/ç™»å½•æ³¨å†Œ/ä¸»é¡µå·²å¯ç”¨ï¼‰ï¼Œä½†æœªå•ç‹¬è®°å½•
+- T064+ å‰ç«¯ç•Œé¢ï¼ˆé‡‡é›†/ä»“åº“/åˆ¶é€ /æ£‹å­/å¯¹æˆ˜/åŒ¹é…/ç»“ç®—ï¼‰å¾…å¼€å‘
+- å‰ç«¯æœªä¸Š CDN/ç‹¬ç«‹æ„å»ºï¼›å‰ç«¯æ„å»ºäº§ç‰©æœªéƒ¨ç½²
 
 
 ---
