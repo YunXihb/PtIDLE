@@ -47,6 +47,9 @@ Dockerfile
 .dockerignore
 docker-compose*.yml
 
+# 10. 前端（backend 镜像不需要；context 默认是 backend/，此规则防御根目录误打包）
+frontend/
+
 # 9. CI 产物
 .nyc_output/
 .eslintcache

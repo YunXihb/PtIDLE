@@ -1,0 +1,72 @@
+/* PtIDLE 全局样式 - 战棋/挂机主题 */
+:root {
+  --bg: #1a1d24;
+  --bg-panel: #242833;
+  --bg-panel-2: #2d3240;
+  --border: #3a4152;
+  --text: #e6e8ee;
+  --text-dim: #9aa1b0;
+  --accent: #4c8dff;
+  --accent-hover: #3a76e0;
+  --success: #3ecf6b;
+  --danger: #e5534b;
+  --warning: #e0a83c;
+  --warrior: #e5534b;
+  --ranger: #3ecf6b;
+  --mage: #7a6bff;
+  font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, -apple-system, sans-serif;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  font-size: 14px;
+}
+
+#app { min-height: 100vh; }
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { color: var(--accent-hover); }
+
+button {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 16px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+button:hover { background: var(--accent-hover); }
+button:disabled { background: var(--border); cursor: not-allowed; }
+button.secondary { background: var(--bg-panel-2); border: 1px solid var(--border); }
+button.secondary:hover { background: var(--border); }
+button.danger { background: var(--danger); }
+button.success { background: var(--success); }
+
+input, select {
+  background: var(--bg-panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 14px;
+  outline: none;
+}
+input:focus, select:focus { border-color: var(--accent); }
+
+.panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.dim { color: var(--text-dim); }
+.mt { margin-top: 8px; }
+.mt2 { margin-top: 16px; }
+.mb { margin-bottom: 8px; }
