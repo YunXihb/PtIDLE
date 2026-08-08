@@ -54,16 +54,21 @@ router.post('/process', authMiddleware, validate(processSchema), async (req: Aut
       return;
     }
 
-    // 单事务 + 行锁：读玩家 -> 校验材料 -> 扣料 + 加产出（防并发把材料扣成负数 / 重复加工）
+    // 单事务 + 行锁：读玩家 -> 校验资源 -> 扣资源 + 加材料产出（防并发把资源扣成负数 / 重复加工）
+    // 字段映射：配方 input（coal/iron_ore/wood/herb）是「资源」存于 players.resources；
+    //          配方 output（iron_ingot/plank/herb_powder）是「材料」存于 players.materials。
+    //   旧实现误把 input 当 materials 校验/扣除 -> 资源永远在 materials 找不到 -> 加工恒失败。
     const result = await withTransaction<{
       playerId: string;
+      updatedResources: Record<string, number>;
       updatedMaterials: Record<string, number>;
     }>(async (client) => {
       const playerRes = await client.query<{
         id: string;
+        resources: Record<string, number>;
         materials: Record<string, number>;
       }>(
-        'SELECT id, materials FROM players WHERE user_id = $1 FOR UPDATE',
+        'SELECT id, resources, materials FROM players WHERE user_id = $1 FOR UPDATE',
         [userId]
       );
       if (playerRes.rows.length === 0) {
@@ -71,34 +76,36 @@ router.post('/process', authMiddleware, validate(processSchema), async (req: Aut
       }
       const player = playerRes.rows[0];
 
-      // 检查输入材料是否足够
-      const currentMaterials = player.materials || {};
-      const inputMaterials = recipe.input;
-      const missingMaterials: string[] = [];
+      // 检查输入资源是否足够（input 为资源键，存于 players.resources）
+      const currentResources = player.resources || {};
+      const inputResources = recipe.input;
+      const missingResources: string[] = [];
 
-      for (const [material, requiredAmount] of Object.entries(inputMaterials)) {
+      for (const [resource, requiredAmount] of Object.entries(inputResources)) {
         const totalRequired = requiredAmount * quantity;
-        const currentAmount = currentMaterials[material] || 0;
+        const currentAmount = currentResources[resource] || 0;
         if (currentAmount < totalRequired) {
-          missingMaterials.push(material);
+          missingResources.push(resource);
         }
       }
 
-      if (missingMaterials.length > 0) {
+      if (missingResources.length > 0) {
         // missing 经 ApiError.extra 附加到响应体，供客户端定位缺料
         throw new ApiError(400, 'Insufficient materials', {
-          extra: { missing: missingMaterials },
+          extra: { missing: missingResources },
         });
       }
 
-      // 扣除输入材料
-      const updatedMaterials = { ...currentMaterials };
-      for (const [material, requiredAmount] of Object.entries(inputMaterials)) {
+      // 扣除输入资源
+      const updatedResources = { ...currentResources };
+      for (const [resource, requiredAmount] of Object.entries(inputResources)) {
         const totalRequired = requiredAmount * quantity;
-        updatedMaterials[material] = (updatedMaterials[material] || 0) - totalRequired;
+        updatedResources[resource] = (updatedResources[resource] || 0) - totalRequired;
       }
 
-      // 添加输出材料（考虑效率）
+      // 添加产出材料（考虑效率）-- output 为材料键，写入 players.materials
+      const currentMaterials = player.materials || {};
+      const updatedMaterials = { ...currentMaterials };
       const outputMaterials = recipe.output;
       for (const [material, baseAmount] of Object.entries(outputMaterials)) {
         const outputAmount = Math.floor(baseAmount * quantity * recipe.efficiency);
@@ -106,11 +113,11 @@ router.post('/process', authMiddleware, validate(processSchema), async (req: Aut
       }
 
       await client.query(
-        'UPDATE players SET materials = $1, updated_at = NOW() WHERE user_id = $2',
-        [JSON.stringify(updatedMaterials), userId]
+        'UPDATE players SET resources = $1, materials = $2, updated_at = NOW() WHERE user_id = $3',
+        [JSON.stringify(updatedResources), JSON.stringify(updatedMaterials), userId]
       );
 
-      return { playerId: player.id, updatedMaterials };
+      return { playerId: player.id, updatedResources, updatedMaterials };
     });
 
     ok(res, {
@@ -123,6 +130,7 @@ router.post('/process', authMiddleware, validate(processSchema), async (req: Aut
       output: Object.fromEntries(
         Object.entries(recipe.output).map(([k, v]) => [k, Math.floor(v * quantity * recipe.efficiency)])
       ),
+      resources: result.updatedResources,
       materials: result.updatedMaterials,
     });
   } catch (error) {
