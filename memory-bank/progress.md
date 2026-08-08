@@ -101,6 +101,8 @@
 | P2 代码改进 批次2 | zod 字段校验 + REST 统一。新增 zod@3 + `middleware/validate.ts`（safeParse 失败 next(ApiError(400,首条msg))，通过替换 req.body）+ `validations/` 6 schema（auth/gathering/crafting/processing/characters/battle，自定义 message 对齐既有契约）；新增 `utils/ApiError.ts`（status+code?+extra?）+ `middleware/errorHandler.ts`（状态感知：ApiError 按 status+展开 extra / ZodError 400 / 其余 500 屏蔽）；路由/控制器 catch 统一 next(error)，ad-hoc `Error&{code}` 收敛为 ApiError（gathering 已活跃/processing 缺料+玩家不存在，缺料 missing 经 extra 回传），catch-all 500 不再各自 console.error+fail；auth/rateLimit 401/429 补 success:false。matchmaking LOSER 兜底保留原结构。tsc 零错；jest 703/703 全绿；10 个集成测试 app 挂载 errorHandler 保持错误信封一致。路由命名审计：现状一致（action 风格 /start /complete /result 等有意为之），无需改名 | 2026-08-07 |
 | v0.1.3 Release | tag v0.1.3(a2514ba) push → Release run 31262817512 success（含 P2 批次1&2 后端改进 + 前端骨架仓库提交，前端不进镜像）→ Deploy run 31262952269 success 自动上线。health-check 连续 5 次 success 验证 VPS 在线。T-FOLLOW-7 部署问题确认已解决 | 2026-08-08 |
 | T057 | 初始化 Vue 3 项目（Vite5 + Vue3 + TS + Router + Pinia + axios + socket.io-client）。含类型定义对齐后端契约、axios 拦截器(JWT+401登出+信封剥离)、3 stores(auth/player/game)、路由守卫、登录/注册/主页+离线收益弹窗、5 占位视图。`npm run build` 通过（vue-tsc+vite）。T058/T059 同步完成（路由+Pinia 随骨架就绪） | 2026-08-08 |
+| T058-T063 | 随 T057 骨架一并完成（代码已实现，此处补登）：T058 路由(router/index.ts 7 路由+懒加载+beforeEach 守卫)/T059 Pinia(auth/player/game 3 store)/T060 登录页/T061 注册页/T062 主界面布局(HomeLayout 顶栏导航)/T063 离线收益弹窗(HomeView modal) | 2026-08-08 |
+| T064 | 采集界面。新增 stores/gathering.ts(skills/efficiency/activeTask+loadAll/start/complete/cancel，complete 成功后刷 player profile)+ components/GatheringPanel.vue(技能列表+活跃任务进度条+领取/取消+2s 轮询检测后端定时器自动完成)+ utils/resources.ts(资源名映射)+ WorkshopView 改 tab 壳(采集/加工/制造，加工/制造占位留 T065/T066)。后端 T013/T014 已就绪无改动。npm run build + typecheck 通过 | 2026-08-08 |
 
 ---
 

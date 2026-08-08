@@ -2395,3 +2395,39 @@ REST 统一：原全局错误中间件硬编码 500，`next(error)` 只能产 50
 - T058-T063 ������ T057 �Ǽܾ�����·��/Pinia/��¼ע��/��ҳ�ѿ��ã�����δ��������
 - T064+ ǰ�˽��棨����/�ֿ�/����/����/ս��/ƥ��/���㣩������
 - ǰ��δ�� CDN/��������ǰ���йܷ���δ����
+
+
+---
+
+## 2026-08-08 - 任务：T064 采集界面
+
+### Prompt
+核实发现 T058 已随 T057 骨架完成（实际 T057-T063 整批均已实现：路由/Pinia/登录/注册/主界面/离线弹窗），WorkshopView 是显式占位「T064-T066 开发中」，T064（采集界面）才是真正下一步。用户确认进行 T064。
+
+### 思考
+- 后端 T013/T014 采集 API 已就绪（POST /gathering/start|complete|cancel、GET /gathering/status|efficiency、GET /skills/gathering），前端 api.ts（gatheringApi/skillApi 全套）+ types（GatheringSkill/GatheringTask/GatheringEfficiency）也已齐备，只差 UI 实现，无需任何后端改动
+- 任务生命周期：duration=60s（测试默认），同一时刻仅 1 个活跃任务（start 400 'Already has active'）；后端定时器每 10s 自动完成到期任务并把资源写入玩家 resources；手动 complete 可到期后立即领取，未到期或已被定时器完成均 400
+- store 设计：complete 成功后调 player.fetchProfile() 刷新资源；错误按文案分支（'Already has active'->静默刷 status / 'not yet completed'或'No active'->刷 status+profile / 'No active' cancel->清空），因 http.ts 拦截器 reject 的是 response.data（{success:false,error}）无 status 码
+- 轮询：活跃任务时组件每 2s 拉 status 更新进度条；检测到 activeTask 由非空变空（被定时器自动完成）-> 停轮询 + 刷 profile + notice 提示
+- 范围决策：不选角色（characterId 留空，base rate 采集；角色派遣+装备加成留后续，efficiency 已暴露 gearBonus 届时接入）；WorkshopView 改 tab 壳为 T065/T066 预留结构
+
+### 意外
+1. history.md 末尾的 T057 条目（上一会话写入）是 mojibake 乱码——`file` 显示文件是 UTF-8，但该条目字节是错误编码产物（疑为非 UTF-8 locale 下 heredoc/echo 写入）。本条目改用 Write 工具写临时文件 + cat 字节级追加，规避 locale 转码。已 flag 给用户待清理。
+2. http.ts 响应拦截器对 4xx/5xx `Promise.reject(error.response?.data)`，丢弃了 HTTP status，store 错误分支只能按 error message 文案匹配，较脆弱（依赖后端文案稳定）。
+
+### 修复
+- 新增 `frontend/src/utils/resources.ts`（RESOURCE_NAMES + resourceName 兜底）
+- 新增 `frontend/src/stores/gathering.ts`（skills/efficiency/activeTask + loadAll/start/complete/cancel + errMsg/isMsg 辅助）
+- 新增 `frontend/src/components/GatheringPanel.vue`（技能列表卡片 + 活跃任务进度条 + 领取/取消 + 2s 轮询 + notice 提示）
+- 改 `frontend/src/views/WorkshopView.vue` 为 tab 壳（采集/加工/制造，加工/制造占位留 T065/T066）
+- memory-bank progress / implementation-plan(T057-T064 勾选) / architecture / history 同步
+
+### 验证
+- `npm run typecheck`（vue-tsc --noEmit）exit 0
+- `npm run build`（vue-tsc -b && vite build）exit 0，146 模块，WorkshopView chunk 5.66kB（含 GatheringPanel+gathering store）
+- 前端无单测框架，运行时 smoke（登录->工坊->开始采集->进度->领取/取消）待用户在后端 :3000 运行时验证
+
+### 范围外
+- 角色派遣 + 装备加成选择（characterId 未传，留后续）
+- 加工界面 T065 / 制造界面 T066
+- 未 commit / 未部署（待用户确认）

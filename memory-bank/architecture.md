@@ -3149,43 +3149,49 @@ deploy.sh åŠ è‡ªåŠ¨å›æ»š â€” health check å¤±è´¥æ—¶è‡ªåŠ¨åˆ‡å›ä¸Šä¸€ä¸ª known-
 
 ---
 
-## Ç°¶Ë (T057, 2026-08-08)
+## å‰ç«¯ (T057-T064, 2026-08-08)
 
-### ¼¼ÊõÕ»
-Vite 5 + Vue 3 (Composition API) + TypeScript + Vue Router 4 + Pinia + axios + socket.io-client
+### æŠ€æœ¯æ ˆ
+Vite 5 + Vue 3 (Composition API, `<script setup>`) + TypeScript + Vue Router 4 + Pinia + axios + socket.io-client
 
-### Ä¿Â¼½á¹¹ (frontend/)
+### ç›®å½•ç»“æ„ (frontend/)
 ```
 frontend/
-©À©¤©¤ package.json / vite.config.ts / tsconfig*.json / index.html
-©¸©¤©¤ src/
-    ©À©¤©¤ main.ts / App.vue / env.d.ts
-    ©À©¤©¤ types/index.ts          # ¶ÔÆëºó¶Ë REST + WS ÆõÔ¼µÄÀàĞÍ¶¨Òå
-    ©À©¤©¤ router/index.ts         # Â·ÓÉ + ¼øÈ¨ÊØÎÀ (guest Ò³ vs µÇÂ¼Ò³)
-    ©À©¤©¤ stores/
-    ©¦   ©À©¤©¤ auth.ts             # token/user ³Ö¾Ã»¯(localStorage) + login/register/logout
-    ©¦   ©À©¤©¤ player.ts           # profile/warehouse/characters/myCards
-    ©¦   ©¸©¤©¤ game.ts             # WS Á¬½Ó + ¶ÔÕ½×´Ì¬»ú(´éºÏ/ÆåÅÌ/ÊÖÅÆ/»ØºÏ/Ê¤¸º)
-    ©À©¤©¤ services/
-    ©¦   ©À©¤©¤ http.ts             # axios ÊµÀı + JWT À¹½ØÆ÷ + 401 µÇ³ö + typed helpers
-    ©¦   ©¸©¤©¤ api.ts              # È«²¿ REST µ÷ÓÃ (authApi/playerApi/gatheringApi/...)
-    ©¸©¤©¤ views/                  # Login/Register/HomeLayout/Home/Workshop/Warehouse/Characters/Cards/Battle
+â”œâ”€â”€ package.json / vite.config.ts / tsconfig*.json / index.html
+â””â”€â”€ src/
+    â”œâ”€â”€ main.ts / App.vue / env.d.ts
+    â”œâ”€â”€ types/index.ts          # å¯¹é½ REST + WS å¥‘çº¦çš„ç±»å‹å®šä¹‰
+    â”œâ”€â”€ router/index.ts         # è·¯ç”± + é‰´æƒå®ˆå« (guest é¡µ vs ç™»å½•é¡µ)
+    â”œâ”€â”€ stores/
+    â”‚   â”œâ”€â”€ auth.ts             # token/user æŒä¹…åŒ–(localStorage) + login/register/logout
+    â”‚   â”œâ”€â”€ player.ts           # profile/warehouse/characters/myCards
+    â”‚   â”œâ”€â”€ game.ts             # WS è¿æ¥ + å¯¹æˆ˜çŠ¶æ€æœº(æ£‹ç›˜/æ‰‹ç‰Œ/å›åˆ/èƒœè´Ÿ)
+    â”‚   â””â”€â”€ gathering.ts        # é‡‡é›†: skills/efficiency/activeTask + start/complete/cancel (T064)
+    â”œâ”€â”€ services/
+    â”‚   â”œâ”€â”€ http.ts             # axios å®ä¾‹ + JWT æ‹¦æˆª + 401 è‡ªåŠ¨ç™»å‡º + typed helpers
+    â”‚   â””â”€â”€ api.ts              # å…¨åŸŸ REST å®¢æˆ·ç«¯ (authApi/playerApi/gatheringApi/...)
+    â”œâ”€â”€ utils/
+    â”‚   â””â”€â”€ resources.ts        # èµ„æº/ææ–™ä¸­æ–‡åæ˜ å°„ (T064)
+    â”œâ”€â”€ components/
+    â”‚   â””â”€â”€ GatheringPanel.vue  # é‡‡é›†é¢æ¿: æŠ€èƒ½åˆ—è¡¨ + è¿›åº¦ + é¢†å–/å–æ¶ˆ + è½®è¯¢ (T064)
+    â””â”€â”€ views/                  # Login/Register/HomeLayout/Home/Workshop(tabå£³)/Warehouse/Characters/Cards/Battle
 ```
 
-### ¹Ø¼üÉè¼Æ
-| Ïî | Ñ¡Ôñ |
+### å…³é”®è®¾è®¡
+| é¡¹ | é€‰æ‹© |
 |----|------|
-| API ²ã | axios À¹½ØÆ÷Í³Ò»¸½ JWT + 401 ×Ô¶¯µÇ³öÌøµÇÂ¼ + °şÀë `{success,data}` ĞÅ·â£»`httpGet/Post/Put/Delete` typed helpers Ö±½Ó·µ»ØĞÅ·âÀàĞÍ |
-| WS | socket.io `io('/', {auth:{token}})` Ä¬ÈÏÃüÃû¿Õ¼ä£»ÎÕÊÖÆÚ JWT ¼øÈ¨£»`connect_error` ´¦Àí¼øÈ¨Ê§°Ü |
-| ¶ÔÕ½×´Ì¬ | game store ¼¯ÖĞ¹ÜÀí board/ownHand/»ØºÏ/Ê¤¸º£¬ÊÂ¼şÇı¶¯¸üĞÂ£»`isMyTurn` ÅÉÉúÆôÓÃ/½ûÓÃ²Ù×÷ |
-| Â·ÓÉÊØÎÀ | Î´µÇÂ¼ ¡ú /login£»guest Ò³(login/register)ÒÑµÇÂ¼ ¡ú /home |
-| ¿ª·¢´úÀí | vite proxy: /api + /socket.io ¡ú localhost:3000 (Ãâ CORS) |
+| API å±‚ | axios å®ä¾‹ç»Ÿä¸€åŠ  JWT + 401 è‡ªåŠ¨ç™»å‡ºé‡å®šå‘ + å‰¥ç¦» `{success,data}` ä¿¡å°ï¼›`httpGet/Post/Put/Delete` typed helpers ç›´æ¥è¿”å›ä¿¡å°ç±»å‹ |
+| WS | socket.io `io('/', {auth:{token}})` é»˜è®¤å‘½åç©ºé—´ï¼›è¿æ¥æ—¶ JWT é‰´æƒï¼Œ`connect_error` å¤„ç†é‰´æƒå¤±è´¥ |
+| å¯¹æˆ˜çŠ¶æ€ | game store è®¢é˜… board/ownHand/å›åˆ/èƒœè´Ÿäº‹ä»¶ï¼Œå“åº”å¼æ›´æ–°ï¼›`isMyTurn` è®¡ç®—å±æ€§é©±åŠ¨æ“ä½œ |
+| è·¯ç”±å®ˆå« | æœªç™»å½• -> /loginï¼›guest é¡µ(login/register)å·²ç™»å½• -> /home |
+| å¼€å‘ä»£ç† | vite proxy: /api + /socket.io -> localhost:3000 (å… CORS) |
+| é‡‡é›† (T064) | gathering store å°è£… start/status/complete/cancel/efficiencyï¼›complete æˆåŠŸååˆ· player profileï¼›ç»„ä»¶ 2s è½®è¯¢ status æ£€æµ‹åç«¯å®šæ—¶å™¨è‡ªåŠ¨å®Œæˆï¼›é”™è¯¯æŒ‰ message æ–‡æ¡ˆåˆ†æ”¯ï¼ˆhttp æ‹¦æˆªå™¨ reject response.data ä¸¢ statusï¼‰ |
 
-### ×´Ì¬
-- T057 Íê³É: ÏîÄ¿¿É `npm run build` (vue-tsc + vite) Í¨¹ı
-- T058(Â·ÓÉ) / T059(Pinia) / T060-T063(µÇÂ¼×¢²á/Ö÷Ò³+ÀëÏßÊÕÒæ) Ëæ¹Ç¼Ü¾ÍĞ÷
-- T064+ (¹¤·»/²Ö¿â/Æå×Ó/¿¨ÅÆ/Õ½Æå/Æ¥Åä/½áËã½çÃæ) ´ı¿ª·¢
-- Ç°¶ËÉú²úÍĞ¹Ü·½°¸Î´¶¨ (Caddy ¾²Ì¬ÍĞ¹Ü / µ¥¶À²¿Êğ / Óëºó¶ËÍ¬Óò)
+### çŠ¶æ€
+- T057(åˆå§‹åŒ–) / T058(è·¯ç”±) / T059(Pinia) / T060-T063(ç™»å½•æ³¨å†Œ/ä¸»ç•Œé¢+ç¦»çº¿å¼¹çª—): éª¨æ¶å®Œæˆ
+- T064(é‡‡é›†ç•Œé¢): å®Œæˆ â€” GatheringPanel + gathering store + resources util + WorkshopView tab å£³ï¼›`npm run build` + `typecheck` é€šè¿‡
+- T065(åŠ å·¥) / T066(åˆ¶é€ ) / T067(ä»“åº“) / T068-T077(æˆ˜æ£‹ç•Œé¢) / T078(åŒ¹é…) / T079-T080: å¾…å¼€å‘
+- å‰ç«¯å°šæœªæœ‰ç‹¬ç«‹æ„å»ºäº§ç‰©éƒ¨ç½² (Caddy é™æ€æ‰˜ç®¡ / èµ„æºç¼“å­˜ / å¢é‡åŒæ­¥ å¾…åš)
 
-*ÎÄµµ°æ±¾£ºv1.51*
-*×îºó¸üĞÂ£º2026-08-08*
+*æ–‡æ¡£ç‰ˆæœ¬ï¼šv1.52*
+*æœ€åæ›´æ–°ï¼š2026-08-08*
