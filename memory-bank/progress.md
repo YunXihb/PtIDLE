@@ -103,6 +103,7 @@
 | T057 | 初始化 Vue 3 项目（Vite5 + Vue3 + TS + Router + Pinia + axios + socket.io-client）。含类型定义对齐后端契约、axios 拦截器(JWT+401登出+信封剥离)、3 stores(auth/player/game)、路由守卫、登录/注册/主页+离线收益弹窗、5 占位视图。`npm run build` 通过（vue-tsc+vite）。T058/T059 同步完成（路由+Pinia 随骨架就绪） | 2026-08-08 |
 | T058-T063 | 随 T057 骨架一并完成（代码已实现，此处补登）：T058 路由(router/index.ts 7 路由+懒加载+beforeEach 守卫)/T059 Pinia(auth/player/game 3 store)/T060 登录页/T061 注册页/T062 主界面布局(HomeLayout 顶栏导航)/T063 离线收益弹窗(HomeView modal) | 2026-08-08 |
 | T064 | 采集界面。新增 stores/gathering.ts(skills/efficiency/activeTask+loadAll/start/complete/cancel，complete 成功后刷 player profile)+ components/GatheringPanel.vue(技能列表+活跃任务进度条+领取/取消+2s 轮询检测后端定时器自动完成)+ utils/resources.ts(资源名映射)+ WorkshopView 改 tab 壳(采集/加工/制造，加工/制造占位留 T065/T066)。后端 T013/T014 已就绪无改动。npm run build + typecheck 通过 | 2026-08-08 |
+| T065 | 加工界面。新增 stores/processing.ts(recipes/loadAll/process，process 成功刷 player profile；400 缺料取 lastMissing+刷 profile)+ components/ProcessingPanel.vue(配方卡 grid + input->output 流 + 数量 1/5/10 + 客户端预算校验 canAfford/missingFor + 缺料禁用按钮 + notice)+ types/index.ts(ProcessResult 加 resources/materials)。WorkshopView 挂载替换占位。后端 T017 processing route 已修(commit 16af1fa: input 走 resources 校验/扣除而非 materials)。typecheck 零错；build 通过(WorkshopView chunk 9.69kB)；API smoke 全过(冶炼/木工/研磨×1+smelting×5+缺料 400 missing 顶层) | 2026-08-12 |
 
 ---
 

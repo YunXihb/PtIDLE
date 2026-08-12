@@ -2431,3 +2431,38 @@ VPS 有改动，重新建立通讯；确认通讯链路正常；记录部署链�
 - 角色派遣 + 装备加成选择（characterId 未传，留后续）
 - 加工界面 T065 / 制造界面 T066
 - 未 commit / 未部署（待用户确认）
+
+---
+
+## 2026-08-12 - 任务：T065 加工界面
+
+### Prompt
+继续 T065（上一会话中断暂停）。后端 processing route 修复已 commit `16af1fa`，前端 store(`stores/processing.ts`)+types(ProcessResult 加 resources/materials) 半成品已就绪，缺 `ProcessingPanel.vue` + WorkshopView 挂载 + build/typecheck + doc 同步 + smoke。
+
+### 思考
+- 后端 `/processing/process` 契约：请求 `{recipeType, quantity}`，响应 `data` 含 `{recipe,type,quantity,input,output,resources,materials}`（input/output 已按 quantity 缩放，output 向下取整含 efficiency）；400 缺料经 `ApiError(400,'Insufficient materials',{extra:{missing:[...]}})` -> errorHandler 展开到响应顶层 `{success:false,error,missing}`。store 已据此捕获 `missing` 写入 `lastMissing`
+- 配方（DB seed）：冶炼(iron_ore×2+coal×1->iron_ingot×1)/木工(wood×2->plank×1)/研磨(herb×2->herb_powder×1)，efficiency 全 1.0，即时加工无 duration
+- 关键映射：input 是资源(players.resources)，output 是材料(players.materials)——这是 `16af1fa` 修的 bug 根因（旧实现误把 input 当 materials）
+- 组件设计镜像 GatheringPanel：配方卡 grid + input->output 流 + 数量 1/5/10 分段（每配方独立 selectedQty）+ 客户端预算校验 canAfford/missingFor（基于 player.profile.resources，负担不起则禁用按钮+内联缺料提示）+ notice 提示。resourceName util 已覆盖所有资源/材料中文名
+- store.process 成功后调 player.fetchProfile() 刷新（resources+materials 同步），400 缺料也刷 profile 保真——组件 afford 校验随之响应式更新
+
+### 修复
+- 新增 `frontend/src/components/ProcessingPanel.vue`（配方卡 + input->output + 数量 1/5/10 + 预算校验 + 缺料禁用 + notice）
+- 改 `frontend/src/views/WorkshopView.vue` 挂载 ProcessingPanel 替换「T065 开发中」占位
+- memory-bank progress / implementation-plan(T065 勾选) / architecture(v1.53) / history 同步
+
+### 验证
+- `npm run typecheck`（vue-tsc --noEmit）exit 0（修 2 处 TS6133：stock 区 v-for 改 Object.keys 避免未用 value 绑定）
+- `npm run build` exit 0，WorkshopView chunk 9.69kB（含 Gathering+Processing 两 Panel）
+- API smoke（dev 栈：ptidle-dev-pg/redis + backend :3000，注入测试玩家资源跳过 60s 采集）：
+  - 冶炼×1: iron_ore-2,coal-1 -> iron_ingot 0->1 ✅
+  - 木工×1: wood-2 -> plank 0->1 ✅
+  - 研磨×1: herb-2 -> herb_powder 0->1 ✅
+  - smelting×5: iron_ore-10,coal-5 -> iron_ingot 1->6 ✅（数量缩放正确）
+  - 缺料 400: smelting×100（资源不足）-> `{success:false,error:'Insufficient materials',missing:['coal','iron_ore']}` ✅（missing 在顶层，store.lastMissing 契约坐实）
+  - 全 0 资源 smelting×1 -> missing 双键 ✅
+
+### 范围外
+- 制造界面 T066 / 仓库 T067
+- 浏览器视觉 smoke（无 headless 浏览器自动化；build+typecheck+API 契约 smoke 已覆盖编译与接线）
+- 未 commit / 未部署（待用户确认）

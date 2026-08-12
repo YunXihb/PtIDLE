@@ -3149,7 +3149,7 @@ deploy.sh 加自动回滚 — health check 失败时自动切回上一个 known-
 
 ---
 
-## 前端 (T057-T064, 2026-08-08)
+## 前端 (T057-T065, 2026-08-12)
 
 ### 技术栈
 Vite 5 + Vue 3 (Composition API, `<script setup>`) + TypeScript + Vue Router 4 + Pinia + axios + socket.io-client
@@ -3166,14 +3166,16 @@ frontend/
     │   ├── auth.ts             # token/user 持久化(localStorage) + login/register/logout
     │   ├── player.ts           # profile/warehouse/characters/myCards
     │   ├── game.ts             # WS 连接 + 对战状态机(棋盘/手牌/回合/胜负)
-    │   └── gathering.ts        # 采集: skills/efficiency/activeTask + start/complete/cancel (T064)
+    │   ├── gathering.ts        # 采集: skills/efficiency/activeTask + start/complete/cancel (T064)
+    │   └── processing.ts      # 加工: recipes/loadAll/process + lastMissing(缺料兜底) (T065)
     ├── services/
     │   ├── http.ts             # axios 实例 + JWT 拦截 + 401 自动登出 + typed helpers
     │   └── api.ts              # 全域 REST 客户端 (authApi/playerApi/gatheringApi/...)
     ├── utils/
     │   └── resources.ts        # 资源/材料中文名映射 (T064)
     ├── components/
-    │   └── GatheringPanel.vue  # 采集面板: 技能列表 + 进度 + 领取/取消 + 轮询 (T064)
+    │   ├── GatheringPanel.vue  # 采集面板: 技能列表 + 进度 + 领取/取消 + 轮询 (T064)
+    │   └── ProcessingPanel.vue # 加工面板: 配方卡 + input->output + 数量1/5/10 + 预算校验 (T065)
     └── views/                  # Login/Register/HomeLayout/Home/Workshop(tab壳)/Warehouse/Characters/Cards/Battle
 ```
 
@@ -3186,12 +3188,14 @@ frontend/
 | 路由守卫 | 未登录 -> /login；guest 页(login/register)已登录 -> /home |
 | 开发代理 | vite proxy: /api + /socket.io -> localhost:3000 (免 CORS) |
 | 采集 (T064) | gathering store 封装 start/status/complete/cancel/efficiency；complete 成功后刷 player profile；组件 2s 轮询 status 检测后端定时器自动完成；错误按 message 文案分支（http 拦截器 reject response.data 丢 status） |
+| 加工 (T065) | processing store 封装 recipes/process；即时加工无 duration，process 成功后刷 player profile（resources+materials 同步）；400 缺料经 errorHandler 把 ApiError.extra.missing 展开到响应顶层，store 捕获写入 lastMissing；组件客户端预算校验 canAfford/missingFor 提前禁用按钮，数量 1/5/10 分段选择；input 为资源(players.resources)/output 为材料(players.materials) |
 
 ### 状态
 - T057(初始化) / T058(路由) / T059(Pinia) / T060-T063(登录注册/主界面+离线弹窗): 骨架完成
 - T064(采集界面): 完成 — GatheringPanel + gathering store + resources util + WorkshopView tab 壳；`npm run build` + `typecheck` 通过
-- T065(加工) / T066(制造) / T067(仓库) / T068-T077(战棋界面) / T078(匹配) / T079-T080: 待开发
+- T065(加工界面): 完成 - ProcessingPanel + processing store + WorkshopView 挂载；`typecheck` 零错；`build` 通过；API smoke 全过（冶炼/木工/研磨×1 + smelting×5 + 缺料 400 missing 顶层）
+- T066(制造) / T067(仓库) / T068-T077(战棋界面) / T078(匹配) / T079-T080: 待开发
 - 前端尚未有独立构建产物部署 (Caddy 静态托管 / 资源缓存 / 增量同步 待做)
 
-*文档版本：v1.52*
-*最后更新：2026-08-08*
+*文档版本：v1.53*
+*最后更新：2026-08-12*

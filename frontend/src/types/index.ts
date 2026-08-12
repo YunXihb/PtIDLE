@@ -77,7 +77,7 @@ export interface GatheringEfficiency {
 // ---------- 加工 / 制造 ----------
 export type ProcessingType = 'smelting' | 'carpentry' | 'grinding';
 export interface ProcessingRecipe { id: string; name: string; type: ProcessingType; input: StringMap; output: StringMap; efficiency: number }
-export interface ProcessResult { recipe: string; type: string; quantity: number; input: StringMap; output: StringMap; materials: StringMap }
+export interface ProcessResult { recipe: string; type: string; quantity: number; input: StringMap; output: StringMap; resources: StringMap; materials: StringMap }
 export type CraftCategory = 'card' | 'gear' | 'consumable';
 export interface CraftingRecipe { id: string; name: string; category: CraftCategory; input: StringMap | StringMap[]; output: Record<string, unknown>; profession_required: string | null }
 export interface CardCraftResult { cardName: string; quantity: number; materialsUsed: StringMap; playerCardId: string }
