@@ -2507,3 +2507,32 @@ VPS 有改动，重新建立通讯；确认通讯链路正常；记录部署链�
 - 仓库 T067 / 战棋界面 T068-T077 / 匹配 T078
 - 浏览器视觉 smoke（无 headless 自动化；build+typecheck+API 契约 smoke 已覆盖编译与接线）
 - 未 commit / 未部署（待用户确认）
+
+## 2026-08-12 - 任务：T067 仓库界面
+
+### Prompt
+继续 T067 仓库界面。依赖后端 T018 仓库 API（GET /warehouse 返回 resources/materials/storageLimits）。前端的 player store 已有 warehouse ref + fetchWarehouse 薄封装，WarehouseView 原是 10 行占位，需替换为完整仓库视图。
+
+### 思考
+- 后端契约（warehouseService）：GET /warehouse 返回 `{resources, materials, storageLimits}`，storageLimits 来自 players.warehouse_limits（分类级总和上限 `{resource:1000, material:500, gear:50}`，非单物品上限）。与 processing/crafting 不同：纯读端点，无校验/无错误分支，401 仅未鉴权
+- 用量条设计：分类级总和 / limit 百分比，颜色阈值 绿(<80%)/黄(<100%)/红(>=100%)；0 值物品 dim 展示（保留可见但弱化）
+- 组件结构：onMount fetchWarehouse + 资源/材料两 section（gear 上限存在但仓库 API 不返回 cards/gear 列表，故只展示资源+材料）+ 物品按数量降序 grid + 刷新按钮；loading/error 本地化（player store 的 fetchWarehouse 是透传，不维护 loading 态）
+- 中途用户打断问「为什么 github 收到 CI all fail」：诊断 16af1fa（processing route input 从 materials 改 resources）未同步集成测试 mock -> 3 suite 红（mock 把 input 放 materials，route 读 resources 空 -> 400；test1 失败留未消费 UPDATE mock 泄漏到 test2 SELECT -> 404 级联）。修 4 行 mock(materials->resources) commit `7afa01f`，CI 回绿。**教训**：改后端 route 必须跑 jest 不只 smoke
+
+### 修复
+- 改 `frontend/src/views/WarehouseView.vue`（替换 10 行占位）：onMount fetchWarehouse + 资源/材料 section + 分类用量条(绿/黄/红) + 物品 grid(降序,0值dim) + 刷新按钮 + 本地 loading/error
+- 改 `backend/src/routes/processing.integration.test.ts`（CI 修复，commit `7afa01f`）：4 行 mock input materials->resources
+- memory-bank progress / implementation-plan(T067 勾选) / architecture(v1.55) / history 同步
+
+### 验证
+- `npm run typecheck`（vue-tsc --noEmit）exit 0
+- `npm run build` exit 0，WarehouseView 0.25kB->3.34kB
+- API smoke（dev 栈 + 注入测试玩家资源/材料）：
+  - GET /warehouse 鉴权: 返回 `{resources:{iron_ore:200,coal:100,wood:150,herb:60,sap:0,mushroom:0}, materials:{iron_ingot:80,plank:60,herb_powder:33}, storageLimits:{resource:1000,material:500,gear:50}}` ✅
+  - 401 未鉴权: `error:'Authentication required'` ✅
+  - UI 用量计算: 资源 510/1000=51%(绿)，材料 173/500=35%(绿) ✅
+
+### 范围外
+- 战棋界面 T068-T077 / 匹配 T078
+- 浏览器视觉 smoke（无 headless 自动化；build+typecheck+API 契约 smoke 已覆盖编译与接线）
+- 未 commit / 未部署（待用户确认）
