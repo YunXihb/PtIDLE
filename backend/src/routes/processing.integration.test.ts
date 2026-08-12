@@ -181,8 +181,8 @@ describe('Processing API Integration Tests', () => {
   describe('POST /api/processing/process', () => {
     it('should process materials successfully', async () => {
       // 事务内 SELECT players FOR UPDATE → 玩家有足够材料
-      mockedQuery.mockResolvedValueOnce([{ id: 'player-1', materials: { iron_ore: 10, coal: 10 } }] as any);
-      // 事务内 UPDATE materials
+      mockedQuery.mockResolvedValueOnce([{ id: 'player-1', resources: { iron_ore: 10, coal: 10 }, materials: {} }] as any);
+      // 事务内 UPDATE resources/materials
       mockedQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
 
       const response = await request(app)
@@ -196,7 +196,7 @@ describe('Processing API Integration Tests', () => {
     });
 
     it('should process with custom quantity', async () => {
-      mockedQuery.mockResolvedValueOnce([{ id: 'player-1', materials: { wood: 10 } }] as any);
+      mockedQuery.mockResolvedValueOnce([{ id: 'player-1', resources: { wood: 10 }, materials: {} }] as any);
       mockedQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
 
       const response = await request(app)
@@ -256,8 +256,8 @@ describe('Processing API Integration Tests', () => {
     });
 
     it('should return 400 for insufficient materials', async () => {
-      // 玩家材料不足（事务内行锁读）
-      mockedQuery.mockResolvedValueOnce([{ id: 'player-1', materials: { iron_ore: 1, coal: 0, iron_ingot: 0 } }] as any);
+      // 玩家 input 资源不足（事务内行锁读；16af1fa: input 走 resources）
+      mockedQuery.mockResolvedValueOnce([{ id: 'player-1', resources: { iron_ore: 1, coal: 0 }, materials: {} }] as any);
 
       const response = await request(app)
         .post('/api/processing/process')
@@ -280,7 +280,7 @@ describe('Processing API Integration Tests', () => {
         efficiency: 1.5,
       });
 
-      mockedQuery.mockResolvedValueOnce([{ id: 'player-1', materials: { iron_ore: 10, coal: 10 } }] as any);
+      mockedQuery.mockResolvedValueOnce([{ id: 'player-1', resources: { iron_ore: 10, coal: 10 }, materials: {} }] as any);
       mockedQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
 
       const response = await request(app)
