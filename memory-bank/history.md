@@ -2466,3 +2466,44 @@ VPS 有改动，重新建立通讯；确认通讯链路正常；记录部署链�
 - 制造界面 T066 / 仓库 T067
 - 浏览器视觉 smoke（无 headless 浏览器自动化；build+typecheck+API 契约 smoke 已覆盖编译与接线）
 - 未 commit / 未部署（待用户确认）
+
+---
+
+## 2026-08-12 - 任务：T066 制造界面
+
+### Prompt
+继续 T066 制造界面（工坊三子页最后一页）。依赖后端 T021/T022/T023 制造 API。前端的 craftingApi + types(CraftingRecipe/CardCraftResult/GearCraftResult/ConsumableCraftResult) 已齐备，只差 UI 实现。
+
+### 思考
+- 后端制造契约（与 processing 显著不同，是本次设计关键）：
+  - **3 端点**按 category 分发：POST `/crafting/{card|gear|consumable}`，请求 `{recipeId, quantity}`，返回不同结构（card: cardName/quantity/materialsUsed/playerCardId；gear: gearName/bonus/materialsUsed 无 quantity；consumable: consumableName/quantity/effect/materialsUsed/playerConsumableId）
+  - **result.success 模式**（非 throw ApiError）：缺料回 400 `'Insufficient materials'`、职业不符回 403 `'Requires X profession'`、卡牌超上限回 400 `'Card quantity would exceed limit (...)'`，**error 仅字符串文案，无 missing 数组**（processing 有 missing，crafting 没有）-> store 不需 lastMissing，靠组件客户端预算校验补足缺料定位 UX
+  - **响应无 materials 快照**（只 materialsUsed）-> store craft 成功+失败都调 fetchProfile 保真
+  - input 为材料(players.materials)，可为**替代料数组**（任一组合满足即可，如回血药 `[{'iron_ingot':1},{'plank':1}]`）；卡牌有 profession_required（查玩家活角色职业）+ max_quantity 上限（默认5）；装备加 production_gear bonus（无 quantity，多次只叠 bonus）
+- store 设计：craft(recipe, qty) 按 recipe.category 分发到三个 craftingApi 方法，返回 CraftResult 联合类型或 null；错误写入 error 文案
+- 组件设计：按 3 分类 section（卡牌/装备/消耗品）+ 配方卡 grid；替代料用「或」连接展示并高亮可负担组合；数量 1/5/10（装备强制1，因多次制造浪费材料只叠单次 bonus）；客户端 canAfford（任一替代组合满足）/missingFor（首选组合缺料）；职业门槛 badge（player.profile.characters 职业集合）不符则禁用+提示
+
+### 修复
+- 新增 `frontend/src/stores/crafting.ts`（recipes/loadAll/craft，craft 按 category 分发，CraftResult 联合类型）
+- 新增 `frontend/src/components/CraftingPanel.vue`（3 分类 section + 替代料 + 数量 + 预算校验 + 职业门槛 + notice）
+- 改 `frontend/src/views/WorkshopView.vue` 挂载 CraftingPanel 替换占位 + 删无用 .placeholder 样式（工坊三子页全完成）
+- memory-bank progress / implementation-plan(T066 勾选) / architecture(v1.54) / history 同步
+
+### 验证
+- `npm run typecheck`（vue-tsc --noEmit）exit 0
+- `npm run build` exit 0，WorkshopView chunk 14.55kB（含 Gathering+Processing+Crafting 三 Panel）
+- API smoke（dev 栈 + 注入测试玩家材料/操控角色 is_alive）：
+  - card 基础移动卡×1: iron_ingot-1 -> 移动×1 ✅
+  - gear 矿镐×1: iron_ingot-5,plank-2 -> bonus 0.5，production_gear.mining_bonus=0.5 ✅
+  - consumable 回血药×1: 替代料选 iron_ingot-1（非 plank）-> 回血药×1 effect={heal:5} ✅
+  - card 弓手精准射击卡×1（ranger 门槛，玩家有 ranger）: success ✅
+  - card 法师火球卡×3（mage 门槛，数量缩放）: iron_ingot-9,herb_powder-3 ✅
+  - 材料数学验证: iron_ingot 100->81(扣1+5+1+3+9=19)，plank 100->97(扣2+1)，herb_powder 100->97(扣3) ✅
+  - 缺料 400: 材料清零后 craft -> `{success:false,error:'Insufficient materials'}`，**无 missing 键** ✅（store 设计坐实）
+  - 职业 403: 杀 mage 角色 -> craft 法师火球卡 -> `error:'Requires mage profession'` ✅
+  - 卡牌上限 400: 已有1张移动卡，craft×10 -> `error:'Card quantity would exceed limit (5). Current: 1, Requested: 10.'` ✅；边界 craft×4(1+4=5==max) -> success ✅
+
+### 范围外
+- 仓库 T067 / 战棋界面 T068-T077 / 匹配 T078
+- 浏览器视觉 smoke（无 headless 自动化；build+typecheck+API 契约 smoke 已覆盖编译与接线）
+- 未 commit / 未部署（待用户确认）

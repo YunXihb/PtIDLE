@@ -2,6 +2,7 @@
 import { ref } from 'vue';
 import GatheringPanel from '@/components/GatheringPanel.vue';
 import ProcessingPanel from '@/components/ProcessingPanel.vue';
+import CraftingPanel from '@/components/CraftingPanel.vue';
 
 // 工坊三子页：采集（T064）/ 加工（T065）/ 制造（T066）
 const tabs = [
@@ -30,9 +31,7 @@ const active = ref<(typeof tabs)[number]['key']>('gathering');
     <div class="tab-content">
       <GatheringPanel v-if="active === 'gathering'" />
       <ProcessingPanel v-else-if="active === 'processing'" />
-      <div v-else class="placeholder dim">
-        制造界面（T066 开发中）
-      </div>
+      <CraftingPanel v-else-if="active === 'crafting'" />
     </div>
   </div>
 </template>
@@ -46,5 +45,4 @@ const active = ref<(typeof tabs)[number]['key']>('gathering');
 }
 .tab:hover { color: var(--text); }
 .tab.active { color: #fff; background: var(--accent); border-color: var(--accent); }
-.placeholder { padding: 40px 0; text-align: center; }
 </style>
