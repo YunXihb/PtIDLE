@@ -2536,3 +2536,35 @@ VPS 有改动，重新建立通讯；确认通讯链路正常；记录部署链�
 - 战棋界面 T068-T077 / 匹配 T078
 - 浏览器视觉 smoke（无 headless 自动化；build+typecheck+API 契约 smoke 已覆盖编译与接线）
 - 未 commit / 未部署（待用户确认）
+
+## 2026-08-12 - 任务：T068 战棋棋盘渲染
+
+### Prompt
+继续 T068 战棋棋盘渲染（战棋界面 5 子任务之首）。依赖后端 T033 棋盘状态（BoardStateEvent 经 WS 推送）。前端 game store(T057 骨架) 已完整含 board/ownHand/myCharacterIds/move/playCard，BattleView 原是 10 行占位。
+
+### 思考
+- 后端契约核实（read battleStateBroadcaster.ts / battleService.ts / battleInitializationService.ts / characterStatusService.ts）：
+  - 棋盘 **9x9**（BOARD_SIZE=9，MAX_COORDINATE=8），坐标 key `"x,y"`，positionToKey/keyToPosition 双向
+  - 基地固定 2 个：`(3,3)` P1 侧 / `(6,6)` P2 侧，初始 neutral，被占领变 p1/p2；`bases` 字段 `{'3,3':Side|'neutral','6,6':...}`
+  - 出生位：P1 `{6,0},{7,0},{8,0}`(y=0 底)，P2 `{0,8},{1,8},{2,8}`(y=8 顶) -> 渲染行 y8 顶->y0 底，列 x0 左->x8 右
+  - **CharacterStatus 无 side 字段**：客户端靠 ownHand 的 key（己方 characterId）区分敌我，非靠 position
+  - 棋盘无 REST 状态端点（实时走 WS `battle:state:board`/`:full`，T073 接入），故 T068 无 API smoke，契约靠编译期对齐 BoardStateEvent
+- 渲染技术决策：**CSS Grid**（非计划文档的 Canvas/SVG）。理由：9x9 离散格子天然适配 grid；后续 T071 点击交互 @click on cell 即可；CSS 变量主题一致（--accent/--danger/职业色）；可访问性 DOM 优于 Canvas。计划「Canvas/SVG」为建议，CSS Grid 是更优工程选择
+- 组件设计：BattleBoard 纯展示组件（prop: board: BoardStateEvent，emit: cell-click {x,y} 供 T071），不直接依赖 store；BattleView 容器接 game.board 传入。WS 未接前 board 恒 null，加「预览棋盘」mock 开关供视觉验证（T073 落地后移除）
+- 基地染色：bases['3,3']/['6,6'] 值 p1->蓝(--accent)/p2->红(--danger)/neutral->虚线灰；★ 标记
+
+### 修复
+- 新增 `frontend/src/components/BattleBoard.vue`：状态条(round/step/phase/stars) + 9x9 grid + 基地染色 + 坐标轴 + cell-click
+- 改 `frontend/src/views/BattleView.vue`（替换占位）：接 game store.board + 预览 mock + cell-click 占位
+- memory-bank progress / implementation-plan(T068 勾选) / architecture(v1.56) / history 同步
+
+### 验证
+- `npm run typecheck`（vue-tsc --noEmit）exit 0
+- `npm run build` exit 0，BattleView chunk 3.28kB（含 BattleBoard）
+- 契约对齐：BoardStateEvent shape 与后端 battleStateBroadcaster.ts buildBoardState 一致（characters/p1Stars/p2Stars/bases/currentRound/currentStep/currentPhase/currentActorId）
+- base 渲染逻辑核对：mock `bases{'3,3':'p1','6,6':'p2'}` -> (3,3) 蓝 + ★ / (6,6) 红 + ★；行 y8 顶->y0 底
+
+### 范围外
+- T069 棋子渲染 / T070 手牌 / T071 移动交互 / T072 打牌 / T073 WS 连接 / T077 匹配队列
+- 浏览器视觉 smoke（无 headless 自动化；预览模式供用户手动视觉验证）
+- 未 commit / 未部署（待用户确认）

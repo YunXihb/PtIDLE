@@ -3149,7 +3149,7 @@ deploy.sh 加自动回滚 — health check 失败时自动切回上一个 known-
 
 ---
 
-## 前端 (T057-T067, 2026-08-12)
+## 前端 (T057-T068, 2026-08-12)
 
 ### 技术栈
 Vite 5 + Vue 3 (Composition API, `<script setup>`) + TypeScript + Vue Router 4 + Pinia + axios + socket.io-client
@@ -3178,7 +3178,8 @@ frontend/
     │   ├── GatheringPanel.vue  # 采集面板: 技能列表 + 进度 + 领取/取消 + 轮询 (T064)
     │   ├── ProcessingPanel.vue # 加工面板: 配方卡 + input->output + 数量1/5/10 + 预算校验 (T065)
     │   └── CraftingPanel.vue  # 制造面板: 3分类(卡牌/装备/消耗品) + 替代料 + 职业门槛 + 预算校验 (T066)
-    └── views/                  # Login/Register/HomeLayout/Home/Workshop(tab壳)/Warehouse(T067实现)/Characters/Cards/Battle
+    │   └── BattleBoard.vue   # 战棋棋盘: 9x9 CSS Grid + 基地(3,3/6,6) + 状态条 + cell-click事件 (T068)
+    └── views/                  # Login/Register/HomeLayout/Home/Workshop(tab壳)/Warehouse/Characters/Cards/Battle(T068实现)
 ```
 
 ### 关键设计
@@ -3199,8 +3200,9 @@ frontend/
 - T065(加工界面): 完成 - ProcessingPanel + processing store + WorkshopView 挂载；`typecheck` 零错；`build` 通过；API smoke 全过（冶炼/木工/研磨×1 + smelting×5 + 缺料 400 missing 顶层）
 - T066(制造界面): 完成 - CraftingPanel + crafting store + WorkshopView 挂载（工坊三子页全完成）；`typecheck` 零错；`build` 通过（WorkshopView chunk 14.55kB）；API smoke 全过（card/gear/consumable×1 + 法师火球卡×3缩放 + 职业卡 + 回血药替代料 + 缺料400无missing + 职业403 + 卡牌上限400边界）
 - T067(仓库界面): 完成 - WarehouseView 实现（onMount fetchWarehouse + 资源/材料 section + 分类用量条 + 物品 grid）；`typecheck` 零错；`build` 通过（WarehouseView 0.25kB->3.34kB）；API smoke 全过（GET /warehouse 字段+数据正确 + 401 + 用量计算）
-- T068-T077(战棋界面) / T078(匹配) / T079-T080: 待开发
+- T068(棋盘渲染): 完成 - BattleBoard.vue（9x9 CSS Grid + 基地(3,3/6,6)染色 + 状态条 round/step/phase/stars + 坐标轴 + cell-click 事件）+ BattleView 容器（接 game store.board，预览 mock 供 WS 未接前验证）；`typecheck` 零错；`build` 通过（BattleView 3.28kB）。**渲染技术 CSS Grid（非计划 Canvas/SVG）**：离散格子 + 后续点击交互(T071) + 主题一致。棋盘无 REST 状态端点（实时走 WS T073），契约靠编译期对齐 BoardStateEvent（与后端 battleStateBroadcaster 核实一致）
+- T069-T077(战棋界面: 棋子/手牌/移动/打牌/WS) / T078(匹配) / T079-T080: 待开发
 - 前端尚未有独立构建产物部署 (Caddy 静态托管 / 资源缓存 / 增量同步 待做)
 
-*文档版本：v1.55*
+*文档版本：v1.56*
 *最后更新：2026-08-12*
