@@ -2605,3 +2605,25 @@ T068/T069 落地后用户视觉验证发现 P1 基地 (3,3) 与 P2 基地 (6,6) 
 - **architecture.md en-dash 坑**：据点配置行 `-- 9x9 棋盘对角线` 的 `--` 实为两个 U+2013（EN DASH, e2 80 94），非 ASCII 连字符，Edit 匹配失败（连 `\uXXXX` 交换也不中）。解法：改用 `sed -i '2080s/.*/.../'` 按行号整行替换绕过字符匹配。教训：architecture.md 历史条目常用 en-dash，Edit 失败时优先 sed 按行号。
 - **预存测试失败非本次引入**：全量 jest 跑出 3 suite/28 test 失败（authController/wsValidation.integration/socketServer），但 `git stash` 后在干净树跑同样 28 失败 -- 确认是环境问题（容器/端口）非本次改动。本次涉及的 3 个战棋 suite（battleOutcomeService/battleStateBroadcaster/battleActionService）81/81 全绿。
 - 范围外：浏览器视觉 smoke（预览模式供手动验证对称布局）/ T070 手牌 / T071 移动 / 未 commit 未部署（待用户确认）。前端进度仍 T057-T069，战棋界面 2/5，下一个 T070。
+
+## 2026-08-13 - 任务：T070 战棋手牌渲染
+
+### Prompt
+继续进行本地 PtIDLE 的开发。当前 HEAD 在 611b7e5（据点对称调整），战棋界面 5 子任务完成 2/5，下一个 T070 手牌渲染。
+
+### 思考
+T070 与 T068/T069 同模式（presentational 组件 + BattleView 集成 + 预览 mock 验证）。手牌数据来自 game store 的 `ownHand: Record<string, HandCard[]>`（WS battle:state:full/hand 推送，T073 接入）。后端契约核实：
+- HandCard 运行时结构 `deck_id/card_id/name/type/cost/effect/template_no/source`，**不含 description**（卡牌模板的 description 在运行时精简掉了）-> 需由 effect JSONB 派生中文摘要。
+- 后端 7+1 卡 effect：轻击{damage:2}/重击{damage:4}/精准射击{damage:3,range:3}/火球术{damage:3,aoe:true}/防御{shield:3}/治疗{heal:3}/移动{movement:1}/挑战{type:taunt,range:3,duration:1,target:single_enemy}。
+- 打牌流程（battleActionService.executePlayCard）：仅当前 actor 在 play 阶段可打，扣能量 cost，attack(tactical+taunt) 需 targetId（T072 接入）。game store playCard(characterId, handCard, targetId?) 已就绪。
+
+设计决策：
+1. **新建 utils/cards.ts**：`CARD_TYPE_META`(attack红/defense蓝/tactical绿) + `effectSummary(effect)` 按 effect 字段派生摘要（taunt 优先判定，再 damage/aoe/range/shield/heal/movement，兜底 JSON）。
+2. **新建 BattleHand.vue**（presentational）：角色头标（职业字+名+能量+行动中标签）+ 手牌横排卡牌（类型色边框 + ⚡费用徽章 + 来源徽章 牌库/公共池[warning色] + 卡名 + 类型标签 + 效果摘要）+ 可出牌判定 `isCurrentActor&&isPlayPhase&&cost<=currentEnergy`（否则 dim/禁用，能量不足卡 unaffordable 半透明）+ card-click emit {characterId,card} 供 T072。匹配 BattlePiece/BattleBoard 主题与 CSS 变量。
+3. **改 BattleView.vue**：板下手牌区 panel，每个 own 角色一组（从 board.characters 取 name/profession/energy，handGroups computed 合并 displayHand）；预览 mock ownHand 3 角色 8 卡型全覆盖（含 public_pool 轻击验证来源徽章 + 能量不足战士重击 cost2>energy1 验证 unaffordable）；预览阶段切换 move<->play 按钮验证可点击态（mockBoard 改 computed 用 previewPhase ref）；card-click 占位 console.log。
+4. **渲染所有 own 角色手牌**（非仅当前 actor）：当前行动者组 accent 高亮，其余 dim，便于规划。
+
+### 意外
+- 无明显坑。typecheck 零错；build 通过（BattleView 7.71kB->12.04kB，CSS 5.26kB->7.99kB）；dev server HTTP 200（root/BattleHand.vue/BattleView.vue/cards.ts transform 全 200）。
+- `pkill -f "vite"` 后 `pgrep -f "vite"` 误报 still running -- 实为 pgrep 匹配自身命令行（含 "vite" 字串），`ps aux | grep '[v]ite'` 确认无 node vite 进程。
+- 范围外：浏览器视觉 smoke（预览模式供手动验证，mock 覆盖 8 卡型+两来源+能量不足+当前 actor 高亮+move/play 阶段切换）/ T071 移动 / T072 打牌交互（接入选目标+game.playCard WS）/ T073 WS。前端进度 T057-T070，战棋界面 5 子任务完成 3/5，下一个 T071 移动交互。

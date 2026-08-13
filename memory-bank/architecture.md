@@ -3149,7 +3149,7 @@ deploy.sh 加自动回滚 — health check 失败时自动切回上一个 known-
 
 ---
 
-## 前端 (T057-T068, 2026-08-12)
+## 前端 (T057-T070, 2026-08-13)
 
 ### 技术栈
 Vite 5 + Vue 3 (Composition API, `<script setup>`) + TypeScript + Vue Router 4 + Pinia + axios + socket.io-client
@@ -3173,14 +3173,16 @@ frontend/
     │   ├── http.ts             # axios 实例 + JWT 拦截 + 401 自动登出 + typed helpers
     │   └── api.ts              # 全域 REST 客户端 (authApi/playerApi/gatheringApi/...)
     ├── utils/
-    │   └── resources.ts        # 资源/材料中文名映射 (T064)
+    │   ├── resources.ts        # 资源/材料中文名映射 (T064)
+    │   └── cards.ts            # 卡牌 effect 中文摘要 + CARD_TYPE_META 类型元数据 (T070)
     ├── components/
     │   ├── GatheringPanel.vue  # 采集面板: 技能列表 + 进度 + 领取/取消 + 轮询 (T064)
     │   ├── ProcessingPanel.vue # 加工面板: 配方卡 + input->output + 数量1/5/10 + 预算校验 (T065)
     │   ├── CraftingPanel.vue  # 制造面板: 3分类(卡牌/装备/消耗品) + 替代料 + 职业门槛 + 预算校验 (T066)
     │   ├── BattleBoard.vue   # 战棋棋盘: 9x9 CSS Grid + 基地(2,2/6,6) + 状态条 + cell-click + 格子内渲染 BattlePiece (T068/T069)
-    │   └── BattlePiece.vue   # 战棋棋子: 职业字+血量条(护盾)+能量pips+效果点+当前行动者环+敌我边框 (T069)
-    └── views/                  # Login/Register/HomeLayout/Home/Workshop(tab壳)/Warehouse/Characters/Cards/Battle(T068实现)
+    │   ├── BattlePiece.vue   # 战棋棋子: 职业字+血量条(护盾)+能量pips+效果点+当前行动者环+敌我边框 (T069)
+    │   └── BattleHand.vue    # 战棋手牌: 角色头标+卡牌横排(类型色/费用/来源/效果摘要)+可出牌判定+card-click (T070)
+    └── views/                  # Login/Register/HomeLayout/Home/Workshop(tab壳)/Warehouse/Characters/Cards/Battle(T068-T070实现)
 ```
 
 ### 关键设计
@@ -3194,6 +3196,7 @@ frontend/
 | 采集 (T064) | gathering store 封装 start/status/complete/cancel/efficiency；complete 成功后刷 player profile；组件 2s 轮询 status 检测后端定时器自动完成；错误按 message 文案分支（http 拦截器 reject response.data 丢 status） |
 | 加工 (T065) | processing store 封装 recipes/process；即时加工无 duration，process 成功后刷 player profile（resources+materials 同步）；400 缺料经 errorHandler 把 ApiError.extra.missing 展开到响应顶层，store 捕获写入 lastMissing；组件客户端预算校验 canAfford/missingFor 提前禁用按钮，数量 1/5/10 分段选择；input 为资源(players.resources)/output 为材料(players.materials) |
 | 制造 (T066) | crafting store 封装 recipes/craft，craft 按 recipe.category 分发到 card/gear/consumable 三端点（后端 result.success 模式非 throw，缺料/职业/超上限经 fail() 回 400/403，**无 missing 数组**仅 error 文案）；响应只含 materialsUsed 无 materials 快照 -> 成功+失败都刷 profile；input 为材料(players.materials)，input 可为替代料数组(任一组合满足即可，如回血药 iron_ingot 或 plank)；卡牌有 profession_required(查活角色职业)+max_quantity 上限；装备加 production_gear bonus(无 quantity，多次只叠 bonus)；组件按 3 分类 section 展示，替代料「或」连接，数量 1/5/10(装备强制1)，客户端预算校验+职业门槛 badge 禁用 |
+| 手牌 (T070) | BattleHand 组件按 ownHand(Record<characterId, HandCard[]>) 每个 own 角色一组渲染；HandCard 运行时无 description，由 utils/cards.ts 的 effectSummary 把 effect JSONB 派生中文摘要（damage/aoe/range/shield/heal/movement/taunt）；可出牌判定 isCurrentActor&&isPlayPhase&&cost<=currentEnergy，当前行动者组高亮(accent 环)，能量不足卡 unaffordable 半透明，非行动组 dim；card-click emit {characterId,card} 供 T072 接入目标选择+WS(game.playCard)；ownHand 经 battle:state:full/hand WS 推送(T073 接入)，WS 未接前预览 mock 覆盖 8 卡型+public_pool 来源+能量不足分支 |
 
 ### 状态
 - T057(初始化) / T058(路由) / T059(Pinia) / T060-T063(登录注册/主界面+离线弹窗): 骨架完成
@@ -3204,8 +3207,9 @@ frontend/
 - T068(棋盘渲染): 完成 - BattleBoard.vue（9x9 CSS Grid + 基地(2,2/6,6)染色 + 状态条 round/step/phase/stars + 坐标轴 + cell-click 事件）+ BattleView 容器（接 game store.board，预览 mock 供 WS 未接前验证）；`typecheck` 零错；`build` 通过（BattleView 3.28kB）。**渲染技术 CSS Grid（非计划 Canvas/SVG）**：离散格子 + 后续点击交互(T071) + 主题一致。棋盘无 REST 状态端点（实时走 WS T073），契约靠编译期对齐 BoardStateEvent（与后端 battleStateBroadcaster 核实一致）
 - T069(棋子渲染): 完成 - BattlePiece.vue（职业单字 战/弓/法 + 职业色 + 血量条按比例绿/黄/红 + 护盾段拼接+🛡N 徽章 + 能量 pips + 状态效果点 boost/mark/burn/taunt + 当前行动者发光环 + 敌我边框 own蓝/enemy红 + click emit 供 T071）+ BattleBoard 加 ownCharacterIds prop + pieceMap 位置->棋子映射 + 格子内渲染 + piece-click emit + BattleView 传 ownIds(preview?mock:store) + 充实 mock 6 棋子(含受损/护盾/被嘲讽/burn/mark/当前行动者验证各分支)；`typecheck` 零错；`build` 通过（BattleView 3.28kB->7.71kB，CSS 5.26kB）；dev server HTTP 200。**敌我区分**：CharacterStatus 无 side 字段，靠 myCharacterIds（ownHand keys）判定
 - 据点对称调整 (T068/T069 后续): P1 基地 (3,3)->(2,2)，P2 基地保持 (6,6)，关于棋盘中心 (4,4) 对称。全栈改动 -- 后端 battleOutcomeService(BASES 数组+默认 bases JSON)/battleInitializationService/battleStateBroadcaster(类型+默认+广播参数) + 3 测试文件(battleOutcomeService 5 占领场景+BASES+beforeEach / battleStateBroadcaster 7 处 / battleActionService mock bases) + 前端 types/BattleBoard(isBase+baseSideAt)/BattleView mock。两据点 Chebyshev 半径 2 范围仅 (4,4) 单格重叠。jest 81/81 战棋套件全绿 + tsc 零错 + 前端 typecheck/build 通过
-- T070-T077(战棋界面: 手牌/移动/打牌/WS) / T078(匹配) / T079-T080: 待开发
+- T070(手牌渲染): 完成 - utils/cards.ts(CARD_TYPE_META + effectSummary 派生中文摘要) + BattleHand.vue(角色头标+卡牌横排 类型色/⚡费用/来源徽章 牌库-公共池/效果摘要 + 可出牌判定 isCurrentActor&&isPlayPhase&&cost<=energy + card-click emit) + BattleView 手牌区(每 own 角色一组 + 预览 mock 8 卡型全覆盖 + 阶段切换 move<->play 验证可点击态)；`typecheck` 零错；`build` 通过（BattleView 7.71kB->12.04kB，CSS 5.26kB->7.99kB）；dev server HTTP 200。**手牌数据源**: game.ownHand(WS battle:state:full/hand，T073 接入)，HandCard 运行时无 description 由 effect 派生
+- T071-T077(战棋界面: 移动/打牌交互/WS) / T078(匹配) / T079-T080: 待开发
 - 前端尚未有独立构建产物部署 (Caddy 静态托管 / 资源缓存 / 增量同步 待做)
 
-*文档版本：v1.58*
+*文档版本：v1.59*
 *最后更新：2026-08-13*
