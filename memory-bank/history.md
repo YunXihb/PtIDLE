@@ -2627,3 +2627,29 @@ T070 与 T068/T069 同模式（presentational 组件 + BattleView 集成 + 预�
 - 无明显坑。typecheck 零错；build 通过（BattleView 7.71kB->12.04kB，CSS 5.26kB->7.99kB）；dev server HTTP 200（root/BattleHand.vue/BattleView.vue/cards.ts transform 全 200）。
 - `pkill -f "vite"` 后 `pgrep -f "vite"` 误报 still running -- 实为 pgrep 匹配自身命令行（含 "vite" 字串），`ps aux | grep '[v]ite'` 确认无 node vite 进程。
 - 范围外：浏览器视觉 smoke（预览模式供手动验证，mock 覆盖 8 卡型+两来源+能量不足+当前 actor 高亮+move/play 阶段切换）/ T071 移动 / T072 打牌交互（接入选目标+game.playCard WS）/ T073 WS。前端进度 T057-T070，战棋界面 5 子任务完成 3/5，下一个 T071 移动交互。
+
+## 2026-08-14 - 任务：T071 战棋移动交互
+
+### Prompt
+检查本地 PtIDLE 状态并继续开发。发现工作树有 T071 未提交改动（上一会话实现代码+更新文档但未 commit、未写 history）。
+
+### 思考
+T071 是战棋界面 4/5（移动交互）。后端核实：`characterStatusService.getCharacterStatus` 之前 SELECT 了 name/profession/health/max_health/energy/max_energy/is_alive/player_id 但**漏了 movement**，而 `characters` 表 movement 列早已存在（migration 001 line 61 `movement INTEGER DEFAULT 2`，professions.base_movement 也早有），Redis piece 里也有 movement —— 只是没广播给前端，前端无法算移动范围。故后端改动极小：CharacterStatus interface + baseInfo + DB SELECT + return 各加 movement 一处，测试 mockPiece 加 movement:2 + 断言。
+
+前端契约核实：
+- 后端 `battleService.bfsFindReachablePositions`：4 方向（上下左右无对角），maxDistance=movement，阻塞=`getAllBoardPositions`（含死棋——死亡不移除位置故仍阻塞），起点穿透，返回可达格不含起点。
+- `getCharacterStatus.position` 即从 `getAllBoardPositions` hash 派生，故前端 occupied 取 `board.characters` 中 `position!=null` 即与后端同源。
+- 客户端范围仅 UX 提示，服务端 `validateMovement` 再校验，不匹配回 `battle:move:error` 优雅降级（无需前端绝对精确）。
+
+设计决策：
+1. **后端** characterStatusService.ts：CharacterStatus 加 movement（interface+baseInfo 类型+DB SELECT+两处 return），test mockPiece 加 movement:2 + `expect(status!.movement).toBe(2)`。
+2. **新建 utils/movement.ts**：`computeReachableCells(occupied, start, movement)` BFS 复刻后端（4 方向、inBounds、occupied 阻塞、起点 dist=0 不入 reachable、dist>=movement 不扩展），返回 "x,y" key Set。
+3. **改 BattleBoard.vue**：加 selectedCharacterId + movableCells prop，cellClass 加 `movable` 高亮（success 色 box-shadow + ::after 中心点），BattlePiece 传 is-selected。
+4. **改 BattlePiece.vue**：加 isSelected prop + `.selected` 虚线脉冲环 animation（z-index:3）。
+5. **改 BattleView.vue**：选中状态机——`canSelectActor`(move 阶段+当前 actor 己方) → `onPieceClick` toggle 选中当前 actor（点其他取消）→ `movableCells` computed BFS 算可达 → `onCellClick` 点高亮格执行移动（preview 本地更新 mockPositions reactive / real 调 `game.move`）/点非可达格取消 → `watch` actor|phase 字符串变化清选中（避免 board 对象刷新误清）；mock 棋子改 `Omit<...,position>` defs + mockPositions ref（支持预览交互移动），mock 加 movement(warrior2/ranger3/mage2 对齐 professions.base_movement)。
+
+### 意外
+- **本会话发现 T071 代码+文档已就绪但未提交未写 history**（上一会话遗留）：核验后直接补 history + commit。验证全过：前端 typecheck 零错；build 通过（BattleView 12.04kB->13.99kB，CSS 7.99kB->9.04kB）；后端 tsc 零错；jest characterStatusService+battle 5 suite 119/119 全绿；movement 列 migration 001 已存在故真库路径安全。
+- **architecture 文档版本漏 bump**：上一会话 T071 doc 留在 v1.59（应 v1.60），本会话补修。
+- **dev 容器名变化**：内存记的是 `ptidle-dev-pg`(host 5433)/`ptidle-dev-redis`(host 6379) 独立容器，但当前跑的是 docker-compose 栈 `ptidle-postgres-1/redis-1/backend-1`（**不发布 host 端口**，仅内部网络）。host 无 5433/5432/6379 监听 -> 集成测试（需真库）会 ECONNREFUSED，但 T071 相关 5 suite 全是 mock 单测不受影响。
+- 范围外：浏览器视觉 smoke（预览模式 mock 6 棋子可选中当前 actor 看 BFS 高亮+点击移动+mockPositions 更新，供手动验证）/ T072 打牌交互 / T073 WS / T078 匹配。前端进度 T057-T071，战棋界面 5 子任务完成 4/5，下一个 T072 打牌交互。

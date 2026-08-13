@@ -10,6 +10,7 @@ const props = defineProps<{
   character: CharacterStatus;
   isOwn: boolean;
   isCurrentActor: boolean;
+  isSelected?: boolean;
 }>();
 const emit = defineEmits<{ (e: 'click'): void }>();
 
@@ -85,7 +86,7 @@ function onClick() {
 <template>
   <div
     class="piece"
-    :class="[`prof-${character.profession}`, { own: isOwn, enemy: !isOwn, actor: isCurrentActor }]"
+    :class="[`prof-${character.profession}`, { own: isOwn, enemy: !isOwn, actor: isCurrentActor, selected: isSelected }]"
     :title="titleText"
     @click.stop="onClick"
   >
@@ -157,6 +158,17 @@ function onClick() {
 }
 .piece.enemy.actor {
   box-shadow: 0 0 0 2px var(--danger), 0 0 8px 2px var(--danger);
+}
+
+/* T071 选中(待移动): 虚线脉冲环 */
+.piece.selected {
+  box-shadow: 0 0 0 2px var(--success), 0 0 10px 3px color-mix(in srgb, var(--success) 60%, transparent);
+  z-index: 3;
+  animation: pulse 1.1s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% { box-shadow: 0 0 0 2px var(--success), 0 0 8px 2px color-mix(in srgb, var(--success) 50%, transparent); }
+  50% { box-shadow: 0 0 0 2px var(--success), 0 0 14px 4px color-mix(in srgb, var(--success) 75%, transparent); }
 }
 
 .glyph {

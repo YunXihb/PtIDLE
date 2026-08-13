@@ -29,6 +29,7 @@ describe('characterStatusService', () => {
     max_health: 20,
     energy: 2,
     max_energy: 3,
+    movement: 2,
     is_alive: true,
     player_id: 'p-1',
   };
@@ -54,6 +55,7 @@ describe('characterStatusService', () => {
     expect(status!.maxHealth).toBe(20);
     expect(status!.energy).toBe(2);
     expect(status!.maxEnergy).toBe(3);
+    expect(status!.movement).toBe(2);
     expect(status!.isAlive).toBe(true);
   });
 

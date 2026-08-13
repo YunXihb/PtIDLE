@@ -13,6 +13,10 @@ const props = defineProps<{
   board: BoardStateEvent;
   /** 自己的 characterId 列表 (来自 game store myCharacterIds), 用于区分敌我染色 */
   ownCharacterIds?: string[];
+  /** 当前选中(待移动)的棋子 id, 用于高亮 */
+  selectedCharacterId?: string | null;
+  /** 可移动格 "x,y" key 集合, 用于高亮(T071) */
+  movableCells?: Set<string>;
 }>();
 const emit = defineEmits<{
   (e: 'cell-click', payload: { x: number; y: number }): void;
@@ -20,6 +24,7 @@ const emit = defineEmits<{
 }>();
 
 const ownSet = computed<Set<string>>(() => new Set(props.ownCharacterIds ?? []));
+const movableSet = computed<Set<string>>(() => props.movableCells ?? new Set());
 
 // 位置 -> 棋子 映射 (仅 alive 且有位置)
 const pieceMap = computed<Map<string, CharacterStatus>>(() => {
@@ -81,6 +86,7 @@ function cellClass(x: number, y: number): string {
   if (side === 'p1') cls.push('base-p1');
   else if (side === 'p2') cls.push('base-p2');
   else if (isBase(x, y)) cls.push('base-neutral');
+  if (movableSet.value.has(`${x},${y}`)) cls.push('movable');
   return cls.join(' ');
 }
 
@@ -126,6 +132,7 @@ function onClick(x: number, y: number) {
               :character="pieceAt(x, y)!"
               :is-own="ownSet.has(pieceAt(x, y)!.characterId)"
               :is-current-actor="board.currentActorId === pieceAt(x, y)!.characterId"
+              :is-selected="selectedCharacterId === pieceAt(x, y)!.characterId"
               @click="onPieceClick(pieceAt(x, y)!)"
             />
           </div>
@@ -205,6 +212,7 @@ function onClick(x: number, y: number) {
   padding: 2px;
 }
 .cell {
+  position: relative;
   background: var(--bg-panel-2);
   border-radius: 3px;
   display: flex; align-items: center; justify-content: center;
@@ -213,6 +221,29 @@ function onClick(x: number, y: number) {
   min-height: 0; min-width: 0;
 }
 .cell:hover { background: var(--border); }
+
+/* T071 可移动格高亮 */
+.cell.movable {
+  background: color-mix(in srgb, var(--success) 30%, var(--bg-panel-2));
+  box-shadow: inset 0 0 0 2px var(--success);
+  cursor: pointer;
+}
+.cell.movable:hover {
+  background: color-mix(in srgb, var(--success) 50%, var(--bg-panel-2));
+}
+/* 可移动格上的中心点提示(无棋子时) */
+.cell.movable::after {
+  content: '';
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--success);
+  opacity: 0.7;
+  pointer-events: none;
+}
 
 /* 基地格子 */
 .cell.base-neutral { background: var(--bg-panel); border: 1px dashed var(--text-dim); }

@@ -124,6 +124,7 @@ export interface CharacterStatus {
   characterId: string; name: string;
   profession: 'warrior' | 'ranger' | 'mage';
   health: number; maxHealth: number; energy: number; maxEnergy: number;
+  movement: number;
   position: { x: number; y: number } | null;
   isAlive: boolean;
   effects: StatusEffect[]; totalShield: number;

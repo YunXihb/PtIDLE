@@ -1,61 +1,39 @@
 <script setup lang="ts">
-// T068 战棋对战界面 -- 棋盘渲染 + T069 棋子渲染 + T070 手牌渲染
-// 实时棋盘状态来自 game store (WS 推送, T073 接入); WS 未接前用预览 mock 验证渲染
-// 后续 T071(移动)/T072(打牌交互)/T073(WS)/T077(匹配) 在此扩展
-import { ref, computed } from 'vue';
+// T068 战棋对战界面 -- 棋盘渲染 + T069 棋子渲染 + T070 手牌渲染 + T071 移动交互
+// 实时棋盘状态来自 game store (WS 推送, T073 接入); WS 未接前用预览 mock 验证渲染+交互
+// 后续 T072(打牌交互)/T073(WS)/T077(匹配) 在此扩展
+import { ref, computed, watch } from 'vue';
 import { useGameStore } from '@/stores/game';
 import BattleBoard from '@/components/BattleBoard.vue';
 import BattleHand from '@/components/BattleHand.vue';
+import { computeReachableCells } from '@/utils/movement';
 import type { BoardStateEvent, CharacterStatus, BattlePhase, HandCard } from '@/types';
 
 const game = useGameStore();
 
-// 开发预览: WS(T073) 未接前用 mock BoardStateEvent + ownHand 验证棋盘+棋子+手牌渲染, T073 落地后移除
+// 开发预览: WS(T073) 未接前用 mock BoardStateEvent + ownHand 验证棋盘+棋子+手牌+移动交互, T073 落地后移除
 const previewMode = ref(false);
 // 预览阶段切换: move(默认, 对齐 T068/T069) / play(验证手牌可点击态)
 const previewPhase = ref<BattlePhase>('move');
 
-// mock 棋子: own 3 (P1 底 y=0 默认位) + enemy 3 (P2 顶 y=8 默认位)
+// mock 棋子定义(不含 position, position 由 mockPositions 注入以支持预览交互移动)
+// own 3 (P1 底 y=0) + enemy 3 (P2 顶 y=8); movement: warrior2/ranger3/mage2(对齐后端 professions.base_movement)
 // 含一受损(ranger 3/8) + 一护盾(warrior 🛡2) + 当前行动者=own warrior, 验证各渲染分支
-const mockOwnWarrior: CharacterStatus = {
-  characterId: 'ow', name: '我的战士', profession: 'warrior',
-  health: 12, maxHealth: 12, energy: 1, maxEnergy: 3,
-  position: { x: 6, y: 0 }, isAlive: true,
-  effects: [], totalShield: 2, isTaunted: false, taunting: [],
-};
-const mockOwnRanger: CharacterStatus = {
-  characterId: 'or', name: '我的弓手', profession: 'ranger',
-  health: 8, maxHealth: 8, energy: 2, maxEnergy: 3,
-  position: { x: 7, y: 0 }, isAlive: true,
-  effects: [], totalShield: 0, isTaunted: false, taunting: [],
-};
-const mockOwnMage: CharacterStatus = {
-  characterId: 'om', name: '我的法师', profession: 'mage',
-  health: 6, maxHealth: 6, energy: 3, maxEnergy: 3,
-  position: { x: 8, y: 0 }, isAlive: true,
-  effects: [], totalShield: 0, isTaunted: false, taunting: [],
-};
-const mockEnemyWarrior: CharacterStatus = {
-  characterId: 'ew', name: '敌方战士', profession: 'warrior',
-  health: 10, maxHealth: 12, energy: 1, maxEnergy: 3,
-  position: { x: 0, y: 8 }, isAlive: true,
-  effects: [], totalShield: 0, isTaunted: true, taunting: [],
-};
-const mockEnemyRanger: CharacterStatus = {
-  characterId: 'er', name: '敌方弓手', profession: 'ranger',
-  health: 3, maxHealth: 8, energy: 0, maxEnergy: 3,
-  position: { x: 1, y: 8 }, isAlive: true,
-  effects: [{ type: 'burn', value: 1, duration_rounds: 2, expire_round: 999, created_round: 1, effect_id: 'e1' }],
-  totalShield: 0, isTaunted: false, taunting: [],
-};
-const mockEnemyMage: CharacterStatus = {
-  characterId: 'em', name: '敌方法师', profession: 'mage',
-  health: 6, maxHealth: 6, energy: 2, maxEnergy: 3,
-  position: { x: 2, y: 8 }, isAlive: true,
-  effects: [{ type: 'mark_fire', duration_rounds: 99999, expire_round: 99999, created_round: 1, effect_id: 'e2' }],
-  totalShield: 0, isTaunted: false, taunting: [],
-};
-const mockOwnIds = [mockOwnWarrior.characterId, mockOwnRanger.characterId, mockOwnMage.characterId];
+const mockCharDefs: Omit<CharacterStatus, 'position'>[] = [
+  { characterId: 'ow', name: '我的战士', profession: 'warrior', health: 12, maxHealth: 12, energy: 1, maxEnergy: 3, movement: 2, isAlive: true, effects: [], totalShield: 2, isTaunted: false, taunting: [] },
+  { characterId: 'or', name: '我的弓手', profession: 'ranger', health: 8, maxHealth: 8, energy: 2, maxEnergy: 3, movement: 3, isAlive: true, effects: [], totalShield: 0, isTaunted: false, taunting: [] },
+  { characterId: 'om', name: '我的法师', profession: 'mage', health: 6, maxHealth: 6, energy: 3, maxEnergy: 3, movement: 2, isAlive: true, effects: [], totalShield: 0, isTaunted: false, taunting: [] },
+  { characterId: 'ew', name: '敌方战士', profession: 'warrior', health: 10, maxHealth: 12, energy: 1, maxEnergy: 3, movement: 2, isAlive: true, effects: [], totalShield: 0, isTaunted: true, taunting: [] },
+  { characterId: 'er', name: '敌方弓手', profession: 'ranger', health: 3, maxHealth: 8, energy: 0, maxEnergy: 3, movement: 3, isAlive: true, effects: [{ type: 'burn', value: 1, duration_rounds: 2, expire_round: 999, created_round: 1, effect_id: 'e1' }], totalShield: 0, isTaunted: false, taunting: [] },
+  { characterId: 'em', name: '敌方法师', profession: 'mage', health: 6, maxHealth: 6, energy: 2, maxEnergy: 3, movement: 2, isAlive: true, effects: [{ type: 'mark_fire', duration_rounds: 99999, expire_round: 99999, created_round: 1, effect_id: 'e2' }], totalShield: 0, isTaunted: false, taunting: [] },
+];
+const mockOwnIds = ['ow', 'or', 'om'];
+
+// 预览棋子位置(reactive, 支持交互移动后更新)
+const mockPositions = ref<Record<string, { x: number; y: number }>>({
+  ow: { x: 6, y: 0 }, or: { x: 7, y: 0 }, om: { x: 8, y: 0 },
+  ew: { x: 0, y: 8 }, er: { x: 1, y: 8 }, em: { x: 2, y: 8 },
+});
 
 // mock 手牌: 3 own 角色各含 attack/defense/tactical + 公共池卡(轻击)验证来源徽章 + 能量不足(战士 energy1 vs 重击 cost2)
 const mockOwnHand: Record<string, HandCard[]> = {
@@ -80,8 +58,8 @@ const mockBoard = computed<BoardStateEvent>(() => ({
   currentRound: 1,
   currentStep: 1,
   currentPhase: previewPhase.value,
-  currentActorId: mockOwnWarrior.characterId,
-  characters: [mockOwnWarrior, mockOwnRanger, mockOwnMage, mockEnemyWarrior, mockEnemyRanger, mockEnemyMage],
+  currentActorId: 'ow',
+  characters: mockCharDefs.map((c) => ({ ...c, position: mockPositions.value[c.characterId] ?? null })),
   p1Stars: 0,
   p2Stars: 0,
   bases: { '2,2': 'p1', '6,6': 'p2' },
@@ -116,16 +94,70 @@ const handGroups = computed(() => {
   });
 });
 
-function onCellClick(p: { x: number; y: number }) {
-  // T071 移动交互将接入: 点击格子移动选中棋子
-  // eslint-disable-next-line no-console
-  console.log('[T068] cell click', p);
-}
+// ---------- T071 移动交互 ----------
+// 选中(待移动)的棋子 id; 仅当前行动者(自己)+move 阶段可选中
+const selectedCharacterId = ref<string | null>(null);
+
+const isMovePhase = computed(() => displayBoard.value?.currentPhase === 'move');
+// 当前行动者是否可被自己选中(移动阶段 + 当前 actor 是己方)
+const canSelectActor = computed(() => {
+  const board = displayBoard.value;
+  if (!board || !isMovePhase.value || !board.currentActorId) return false;
+  return ownIds.value.includes(board.currentActorId);
+});
+
+// 可移动格集合: 选中当前 actor 时, BFS 计算其移动力内可达格
+const movableCells = computed<Set<string>>(() => {
+  const board = displayBoard.value;
+  const sel = selectedCharacterId.value;
+  if (!board || !sel || !canSelectActor.value || sel !== board.currentActorId) return new Set();
+  const actor = board.characters.find((c) => c.characterId === sel);
+  if (!actor || !actor.position) return new Set();
+  // occupied = 所有有位置的棋子(与后端 getAllBoardPositions 同源, 含死棋)
+  const occupied = new Set<string>();
+  for (const c of board.characters) {
+    if (c.position) occupied.add(`${c.position.x},${c.position.y}`);
+  }
+  return computeReachableCells(occupied, actor.position, actor.movement);
+});
+
+// actor/phase 变化时清空选中(移动后 phase->play 或 回合切换)
+// 用原始字符串 key 比较, 仅 actor/phase 真变化才触发(避免 board 对象刷新误清)
+watch(
+  () => `${displayBoard.value?.currentActorId ?? ''}|${displayBoard.value?.currentPhase ?? ''}`,
+  () => { selectedCharacterId.value = null; },
+);
+
 function onPieceClick(p: { characterId: string; x: number; y: number }) {
-  // T071 移动交互将接入: 点击棋子选中, 显示可移动范围
-  // eslint-disable-next-line no-console
-  console.log('[T069] piece click', p);
+  // 仅当前行动者(己方)+移动阶段可选中, 再次点击取消
+  if (canSelectActor.value && p.characterId === displayBoard.value?.currentActorId) {
+    selectedCharacterId.value = selectedCharacterId.value === p.characterId ? null : p.characterId;
+  } else {
+    // 点其他棋子取消选中
+    selectedCharacterId.value = null;
+  }
 }
+
+function onCellClick(p: { x: number; y: number }) {
+  const sel = selectedCharacterId.value;
+  if (!sel) return;
+  const key = `${p.x},${p.y}`;
+  if (!movableCells.value.has(key)) {
+    // 点非可移动格取消选中
+    selectedCharacterId.value = null;
+    return;
+  }
+  // 执行移动
+  if (previewMode.value) {
+    // 预览: 本地更新位置(无 WS), 清选中, 保持 move 阶段供反复测试
+    mockPositions.value = { ...mockPositions.value, [sel]: { x: p.x, y: p.y } };
+    selectedCharacterId.value = null;
+  } else {
+    game.move(sel, p.x, p.y);
+    selectedCharacterId.value = null;
+  }
+}
+
 function onCardClick(p: { characterId: string; card: HandCard }) {
   // T072 打牌交互将接入: 选目标 -> game.playCard(characterId, card, targetId)
   // eslint-disable-next-line no-console
@@ -134,6 +166,7 @@ function onCardClick(p: { characterId: string; card: HandCard }) {
 
 function togglePreviewPhase() {
   previewPhase.value = previewPhase.value === 'play' ? 'move' : 'play';
+  selectedCharacterId.value = null;
 }
 </script>
 
@@ -145,9 +178,17 @@ function togglePreviewPhase() {
       v-if="displayBoard"
       :board="displayBoard"
       :own-character-ids="ownIds"
+      :selected-character-id="selectedCharacterId"
+      :movable-cells="movableCells"
       @cell-click="onCellClick"
       @piece-click="onPieceClick"
     />
+
+    <!-- T071 移动提示 -->
+    <p v-if="canSelectActor" class="hint dim">
+      移动阶段：点击你的当前行动棋子查看可移动范围，再点击高亮格移动。
+    </p>
+    <p v-if="!previewMode && game.lastError" class="error-msg">{{ game.lastError }}</p>
 
     <!-- T070 手牌区: 每个 own 角色一组, 当前行动者高亮 -->
     <div v-if="displayBoard && handGroups.length" class="hand-section panel">
@@ -196,4 +237,6 @@ function togglePreviewPhase() {
 .preview-note { font-size: 12px; }
 .hand-section { margin-top: 12px; display: flex; flex-direction: column; gap: 10px; }
 .section-title { margin: 0; font-size: 15px; }
+.hint { font-size: 12px; margin: 6px 2px; }
+.error-msg { font-size: 12px; color: var(--danger); margin: 6px 2px; }
 </style>

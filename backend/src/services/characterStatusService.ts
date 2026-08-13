@@ -30,6 +30,7 @@ export interface CharacterStatus {
   maxHealth: number;
   energy: number;
   maxEnergy: number;
+  movement: number;
   position: { x: number; y: number } | null;
   isAlive: boolean;
   // 状态效果
@@ -65,6 +66,7 @@ export async function getCharacterStatus(
     max_health: number;
     energy: number;
     max_energy: number;
+    movement: number;
     is_alive: boolean;
     player_id: string;
   } | null = null;
@@ -79,6 +81,7 @@ export async function getCharacterStatus(
         max_health: parsed.max_health,
         energy: parsed.energy,
         max_energy: parsed.max_energy,
+        movement: parsed.movement,
         is_alive: parsed.is_alive,
         player_id: parsed.player_id,
       };
@@ -96,10 +99,11 @@ export async function getCharacterStatus(
       max_health: number;
       energy: number;
       max_energy: number;
+      movement: number;
       is_alive: boolean;
       player_id: string;
     }>(
-      `SELECT name, profession, health, max_health, energy, max_energy, is_alive, player_id
+      `SELECT name, profession, health, max_health, energy, max_energy, movement, is_alive, player_id
        FROM characters WHERE id = $1`,
       [characterId]
     );
@@ -117,6 +121,7 @@ export async function getCharacterStatus(
       max_health: row.max_health,
       energy: row.energy,
       max_energy: row.max_energy,
+      movement: row.movement,
       is_alive: row.is_alive,
       player_id: row.player_id,
     };
@@ -165,6 +170,7 @@ export async function getCharacterStatus(
     maxHealth: baseInfo.max_health,
     energy: baseInfo.energy,
     maxEnergy: baseInfo.max_energy,
+    movement: baseInfo.movement,
     position,
     isAlive: baseInfo.is_alive,
     effects,
