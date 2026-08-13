@@ -6,7 +6,7 @@
 // 点击 emit card-click {characterId, card} 供 T072(打牌交互) 接入目标选择 + WS
 import { computed } from 'vue';
 import type { HandCard, CardType } from '@/types';
-import { CARD_TYPE_META, effectSummary } from '@/utils/cards';
+import { CARD_TYPE_META, effectSummary, cardSupported } from '@/utils/cards';
 
 const props = defineProps<{
   hand: HandCard[];
@@ -16,6 +16,8 @@ const props = defineProps<{
   isCurrentActor: boolean;
   isPlayPhase: boolean;
   currentEnergy: number;
+  /** T072: 当前待选目标的卡牌 deck_id (高亮选中态) */
+  selectedCardDeckId?: string | null;
 }>();
 const emit = defineEmits<{
   (e: 'card-click', payload: { characterId: string; card: HandCard }): void;
@@ -36,8 +38,13 @@ const headerText = computed(() => {
 // 整组手牌是否可操作(当前 actor + 出牌阶段); 否则全 dim
 const groupActive = computed(() => props.isCurrentActor && props.isPlayPhase);
 
+// T072: 后端 T050 不支持的卡(defense/heal/movement)不可出
+function isUnsupported(card: HandCard): boolean {
+  return !cardSupported(card);
+}
+
 function canPlay(card: HandCard): boolean {
-  return groupActive.value && card.cost <= props.currentEnergy;
+  return groupActive.value && card.cost <= props.currentEnergy && !isUnsupported(card);
 }
 
 function cardTypeClass(t: CardType): string {
@@ -70,9 +77,9 @@ function sourceLabel(card: HandCard): string {
         :key="card.deck_id"
         type="button"
         class="card"
-        :class="[cardTypeClass(card.type), { playable: canPlay(card), unaffordable: groupActive && !canPlay(card) }]"
+        :class="[cardTypeClass(card.type), { playable: canPlay(card), unaffordable: groupActive && !isUnsupported(card) && !canPlay(card), unsupported: isUnsupported(card), selected: selectedCardDeckId === card.deck_id }]"
         :disabled="!canPlay(card)"
-        :title="`${card.name} · ${CARD_TYPE_META[card.type].label} · 费用 ${card.cost}`"
+        :title="`${card.name} · ${CARD_TYPE_META[card.type].label} · 费用 ${card.cost}${isUnsupported(card) ? ' · 暂不可用' : ''}`"
         @click="onClick(card)"
       >
         <!-- 费用徽章 -->
@@ -85,6 +92,8 @@ function sourceLabel(card: HandCard): string {
         <span class="type-tag" :class="cardTypeClass(card.type)">{{ CARD_TYPE_META[card.type].label }}</span>
         <!-- 效果摘要 -->
         <span class="effect">{{ effectSummary(card.effect) }}</span>
+        <!-- T072 暂不可用标记 -->
+        <span v-if="isUnsupported(card)" class="unsupported-tag">暂不可用</span>
       </button>
     </div>
 
@@ -171,7 +180,31 @@ function sourceLabel(card: HandCard): string {
   opacity: 0.5;
   cursor: not-allowed;
 }
+/* T072: 后端暂不支持的卡 */
+.card.unsupported {
+  opacity: 0.45;
+  cursor: not-allowed;
+  filter: grayscale(0.6);
+}
+/* T072: 选中(待选目标) */
+.card.selected {
+  border-color: var(--warning);
+  box-shadow: 0 0 0 2px var(--warning), 0 0 10px 2px color-mix(in srgb, var(--warning) 50%, transparent);
+  transform: translateY(-3px);
+}
 .card:disabled { cursor: not-allowed; }
+
+/* 暂不可用标记 */
+.unsupported-tag {
+  position: absolute;
+  bottom: 3px;
+  font-size: 9px;
+  line-height: 1;
+  color: var(--text-dim);
+  background: rgba(0, 0, 0, 0.5);
+  border-radius: 3px;
+  padding: 1px 4px;
+}
 
 /* 费用徽章: 左上角 */
 .cost {

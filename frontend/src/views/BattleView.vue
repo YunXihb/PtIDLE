@@ -1,12 +1,13 @@
 <script setup lang="ts">
-// T068 战棋对战界面 -- 棋盘渲染 + T069 棋子渲染 + T070 手牌渲染 + T071 移动交互
+// T068 战棋对战界面 -- 棋盘渲染 + T069 棋子渲染 + T070 手牌渲染 + T071 移动交互 + T072 打牌交互
 // 实时棋盘状态来自 game store (WS 推送, T073 接入); WS 未接前用预览 mock 验证渲染+交互
-// 后续 T072(打牌交互)/T073(WS)/T077(匹配) 在此扩展
+// 后续 T073(WS)/T077(匹配) 在此扩展
 import { ref, computed, watch } from 'vue';
 import { useGameStore } from '@/stores/game';
 import BattleBoard from '@/components/BattleBoard.vue';
 import BattleHand from '@/components/BattleHand.vue';
 import { computeReachableCells } from '@/utils/movement';
+import { cardNeedsTarget, cardIsAOE, computeCardTargets } from '@/utils/cards';
 import type { BoardStateEvent, CharacterStatus, BattlePhase, HandCard } from '@/types';
 
 const game = useGameStore();
@@ -121,15 +122,74 @@ const movableCells = computed<Set<string>>(() => {
   return computeReachableCells(occupied, actor.position, actor.movement);
 });
 
+// ---------- T072 打牌交互 ----------
+// 出牌阶段 + 当前 actor 是己方时, 可打牌/跳过
+const canPlayCards = computed(() => {
+  const board = displayBoard.value;
+  if (!board || !isPlayPhase.value || !board.currentActorId) return false;
+  return ownIds.value.includes(board.currentActorId);
+});
+
+// 待选目标的卡牌 (进入目标选择模式后非空)
+const selectedCard = ref<{ characterId: string; card: HandCard } | null>(null);
+// 预览模式打牌反馈
+const previewNotice = ref<string | null>(null);
+
+// 可目标集合: selectedCard 为 needsTarget 卡时, 计算敌方+存活+射程内目标
+const targetableIds = computed<Set<string>>(() => {
+  const sel = selectedCard.value;
+  const board = displayBoard.value;
+  if (!sel || !board || !canPlayCards.value) return new Set();
+  const actor = board.characters.find((c) => c.characterId === sel.characterId);
+  if (!actor) return new Set();
+  return new Set(computeCardTargets(actor, board.characters, ownIds.value, sel.card));
+});
+
+const selectedCardDeckId = computed(() => selectedCard.value?.card.deck_id ?? null);
+
+// 实际打牌 (preview 仅提示, real 走 WS)
+function playCard(characterId: string, card: HandCard, targetId?: string) {
+  if (previewMode.value) {
+    const tgt = targetId ? ` → 目标 ${targetId}` : '';
+    previewNotice.value = `已打出「${card.name}」${tgt}（预览模式，无实际效果）`;
+  } else {
+    game.playCard(characterId, card, targetId);
+  }
+  selectedCard.value = null;
+}
+
+function onSkipPlay() {
+  if (!canPlayCards.value) return;
+  if (previewMode.value) {
+    previewNotice.value = '已跳过出牌（预览模式）';
+  } else {
+    game.skipPlay();
+  }
+  selectedCard.value = null;
+}
+
 // actor/phase 变化时清空选中(移动后 phase->play 或 回合切换)
 // 用原始字符串 key 比较, 仅 actor/phase 真变化才触发(避免 board 对象刷新误清)
 watch(
   () => `${displayBoard.value?.currentActorId ?? ''}|${displayBoard.value?.currentPhase ?? ''}`,
-  () => { selectedCharacterId.value = null; },
+  () => {
+    selectedCharacterId.value = null;
+    selectedCard.value = null;
+    previewNotice.value = null;
+  },
 );
 
 function onPieceClick(p: { characterId: string; x: number; y: number }) {
-  // 仅当前行动者(己方)+移动阶段可选中, 再次点击取消
+  // T072: 目标选择模式优先 -- 点可目标棋子打出, 点其他取消
+  if (selectedCard.value) {
+    if (targetableIds.value.has(p.characterId)) {
+      playCard(selectedCard.value.characterId, selectedCard.value.card, p.characterId);
+    } else {
+      selectedCard.value = null;
+    }
+    return;
+  }
+  // T071: 移动选择 -- 仅当前行动者(己方)+移动阶段可选中, 再次点击取消
   if (canSelectActor.value && p.characterId === displayBoard.value?.currentActorId) {
     selectedCharacterId.value = selectedCharacterId.value === p.characterId ? null : p.characterId;
   } else {
@@ -139,6 +199,12 @@ function onPieceClick(p: { characterId: string; x: number; y: number }) {
 }
 
 function onCellClick(p: { x: number; y: number }) {
+  // T072: 目标选择模式下点空格取消
+  if (selectedCard.value) {
+    selectedCard.value = null;
+    return;
+  }
+  // T071: 移动
   const sel = selectedCharacterId.value;
   if (!sel) return;
   const key = `${p.x},${p.y}`;
@@ -159,14 +225,31 @@ function onCellClick(p: { x: number; y: number }) {
 }
 
 function onCardClick(p: { characterId: string; card: HandCard }) {
-  // T072 打牌交互将接入: 选目标 -> game.playCard(characterId, card, targetId)
-  // eslint-disable-next-line no-console
-  console.log('[T070] card click', p.characterId, p.card.name);
+  if (!canPlayCards.value) return;
+  // 仅当前 actor 可打牌
+  if (p.characterId !== displayBoard.value?.currentActorId) return;
+  previewNotice.value = null;
+  const card = p.card;
+  if (cardIsAOE(card)) {
+    // AOE 无需选目标, 直接打出
+    playCard(p.characterId, card, undefined);
+  } else if (cardNeedsTarget(card)) {
+    // 进入目标选择模式; 再次点同一卡取消
+    const cur = selectedCard.value;
+    if (cur && cur.characterId === p.characterId && cur.card.deck_id === card.deck_id) {
+      selectedCard.value = null;
+    } else {
+      selectedCard.value = { characterId: p.characterId, card };
+    }
+  }
+  // unsupported 卡 BattleHand 已禁用, 不会到达此分支
 }
 
 function togglePreviewPhase() {
   previewPhase.value = previewPhase.value === 'play' ? 'move' : 'play';
   selectedCharacterId.value = null;
+  selectedCard.value = null;
+  previewNotice.value = null;
 }
 </script>
 
@@ -180,19 +263,31 @@ function togglePreviewPhase() {
       :own-character-ids="ownIds"
       :selected-character-id="selectedCharacterId"
       :movable-cells="movableCells"
+      :targetable-character-ids="targetableIds"
       @cell-click="onCellClick"
       @piece-click="onPieceClick"
     />
 
-    <!-- T071 移动提示 -->
-    <p v-if="canSelectActor" class="hint dim">
+    <!-- T071/T072 交互提示 -->
+    <p v-if="selectedCard" class="hint">
+      选择高亮敌方棋子打出「{{ selectedCard.card.name }}」，或点击空白/其他处取消。
+      <span v-if="!targetableIds.size" class="error-msg">（射程内无有效目标）</span>
+    </p>
+    <p v-else-if="canSelectActor" class="hint dim">
       移动阶段：点击你的当前行动棋子查看可移动范围，再点击高亮格移动。
     </p>
+    <p v-else-if="canPlayCards" class="hint dim">
+      出牌阶段：点击手牌打出（需选目标的卡会高亮敌方），或跳过出牌。
+    </p>
+    <p v-if="previewNotice" class="notice">{{ previewNotice }}</p>
     <p v-if="!previewMode && game.lastError" class="error-msg">{{ game.lastError }}</p>
 
     <!-- T070 手牌区: 每个 own 角色一组, 当前行动者高亮 -->
     <div v-if="displayBoard && handGroups.length" class="hand-section panel">
-      <h3 class="section-title">手牌</h3>
+      <div class="hand-head">
+        <h3 class="section-title">手牌</h3>
+        <button v-if="canPlayCards" type="button" class="secondary small" @click="onSkipPlay">跳过出牌</button>
+      </div>
       <BattleHand
         v-for="g in handGroups"
         :key="g.characterId"
@@ -203,6 +298,7 @@ function togglePreviewPhase() {
         :is-current-actor="g.isCurrentActor"
         :is-play-phase="isPlayPhase"
         :current-energy="g.energy"
+        :selected-card-deck-id="selectedCardDeckId"
         @card-click="onCardClick"
       />
     </div>
@@ -236,7 +332,10 @@ function togglePreviewPhase() {
 .actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .preview-note { font-size: 12px; }
 .hand-section { margin-top: 12px; display: flex; flex-direction: column; gap: 10px; }
+.hand-head { display: flex; align-items: center; justify-content: space-between; }
 .section-title { margin: 0; font-size: 15px; }
+.small { font-size: 12px; padding: 3px 10px; }
 .hint { font-size: 12px; margin: 6px 2px; }
+.notice { font-size: 12px; color: var(--accent); margin: 6px 2px; }
 .error-msg { font-size: 12px; color: var(--danger); margin: 6px 2px; }
 </style>

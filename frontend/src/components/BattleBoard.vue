@@ -17,6 +17,8 @@ const props = defineProps<{
   selectedCharacterId?: string | null;
   /** 可移动格 "x,y" key 集合, 用于高亮(T071) */
   movableCells?: Set<string>;
+  /** T072: 可选为打牌目标的 characterId 集合, 用于高亮 */
+  targetableCharacterIds?: Set<string>;
 }>();
 const emit = defineEmits<{
   (e: 'cell-click', payload: { x: number; y: number }): void;
@@ -25,6 +27,7 @@ const emit = defineEmits<{
 
 const ownSet = computed<Set<string>>(() => new Set(props.ownCharacterIds ?? []));
 const movableSet = computed<Set<string>>(() => props.movableCells ?? new Set());
+const targetableSet = computed<Set<string>>(() => props.targetableCharacterIds ?? new Set());
 
 // 位置 -> 棋子 映射 (仅 alive 且有位置)
 const pieceMap = computed<Map<string, CharacterStatus>>(() => {
@@ -133,6 +136,7 @@ function onClick(x: number, y: number) {
               :is-own="ownSet.has(pieceAt(x, y)!.characterId)"
               :is-current-actor="board.currentActorId === pieceAt(x, y)!.characterId"
               :is-selected="selectedCharacterId === pieceAt(x, y)!.characterId"
+              :is-targetable="targetableSet.has(pieceAt(x, y)!.characterId)"
               @click="onPieceClick(pieceAt(x, y)!)"
             />
           </div>

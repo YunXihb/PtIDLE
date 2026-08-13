@@ -11,6 +11,8 @@ const props = defineProps<{
   isOwn: boolean;
   isCurrentActor: boolean;
   isSelected?: boolean;
+  /** T072: 可选为打牌目标, 高亮提示 */
+  isTargetable?: boolean;
 }>();
 const emit = defineEmits<{ (e: 'click'): void }>();
 
@@ -86,7 +88,7 @@ function onClick() {
 <template>
   <div
     class="piece"
-    :class="[`prof-${character.profession}`, { own: isOwn, enemy: !isOwn, actor: isCurrentActor, selected: isSelected }]"
+    :class="[`prof-${character.profession}`, { own: isOwn, enemy: !isOwn, actor: isCurrentActor, selected: isSelected, targetable: isTargetable }]"
     :title="titleText"
     @click.stop="onClick"
   >
@@ -169,6 +171,18 @@ function onClick() {
 @keyframes pulse {
   0%, 100% { box-shadow: 0 0 0 2px var(--success), 0 0 8px 2px color-mix(in srgb, var(--success) 50%, transparent); }
   50% { box-shadow: 0 0 0 2px var(--success), 0 0 14px 4px color-mix(in srgb, var(--success) 75%, transparent); }
+}
+
+/* T072 可目标(打牌目标): danger 脉冲环 + 准星, 提示可攻击 */
+.piece.targetable {
+  cursor: crosshair;
+  box-shadow: 0 0 0 2px var(--danger), 0 0 12px 3px color-mix(in srgb, var(--danger) 55%, transparent);
+  z-index: 4;
+  animation: target-pulse 0.9s ease-in-out infinite;
+}
+@keyframes target-pulse {
+  0%, 100% { box-shadow: 0 0 0 2px var(--danger), 0 0 8px 2px color-mix(in srgb, var(--danger) 45%, transparent); }
+  50% { box-shadow: 0 0 0 2px var(--danger), 0 0 16px 5px color-mix(in srgb, var(--danger) 75%, transparent); }
 }
 
 .glyph {

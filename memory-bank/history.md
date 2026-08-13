@@ -2653,3 +2653,29 @@ T071 是战棋界面 4/5（移动交互）。后端核实：`characterStatusServ
 - **architecture 文档版本漏 bump**：上一会话 T071 doc 留在 v1.59（应 v1.60），本会话补修。
 - **dev 容器名变化**：内存记的是 `ptidle-dev-pg`(host 5433)/`ptidle-dev-redis`(host 6379) 独立容器，但当前跑的是 docker-compose 栈 `ptidle-postgres-1/redis-1/backend-1`（**不发布 host 端口**，仅内部网络）。host 无 5433/5432/6379 监听 -> 集成测试（需真库）会 ECONNREFUSED，但 T071 相关 5 suite 全是 mock 单测不受影响。
 - 范围外：浏览器视觉 smoke（预览模式 mock 6 棋子可选中当前 actor 看 BFS 高亮+点击移动+mockPositions 更新，供手动验证）/ T072 打牌交互 / T073 WS / T078 匹配。前端进度 T057-T071，战棋界面 5 子任务完成 4/5，下一个 T072 打牌交互。
+
+## 2026-08-14 - 任务：T072 战棋打牌交互
+
+### Prompt
+检查本地 PtIDLE 状态并继续开发。先发现并提交了上一会话遗留的 T071 未提交改动（补 history），随后继续 T072 打牌交互。
+
+### 思考
+T072 是战棋界面 5/5（打牌交互）。后端 executePlayCard（battleActionService T050）dispatch 契约核实：
+- `attack + effect.aoe` -> validateAOEAttack（**无需 targetId**，自动命中射程内全部敌方）
+- `attack`（无 aoe）-> validateAttack（**需 targetId**）
+- `tactical + effect.type==='taunt'` -> validateTauntCard（**需 targetId**，warrior 专用）
+- 其余（defense/heal/movement）-> `unsupported_card_type`（T050 暂不支持）
+
+射程规则（validateAttack/validateTauntCard）：近战（无 range 或 range===1）欧氏≤1.5；远程≤effect.range；嘲讽≤effect.range ?? 3。阵营=敌方（player_id 不同）+存活。嘲讽强制目标由 getTauntRedirect 服务端强制（读 target 的 taunt effect，target_id=warrior，攻击被嘲讽目标会被重定向到 warrior）--**客户端不建模**，沿用 T071「客户端 UX 提示，服务端 source of truth，不匹配回 error 优雅降级」哲学。game store playCard(characterId, handCard, targetId?) + skipPlay() 已就绪，battle:play_card:error 回 lastError。
+
+设计决策：
+1. **扩 utils/cards.ts**：cardNeedsTarget（单体攻击/嘲讽）/ cardIsAOE / cardSupported（后端 T050 支持=needsTarget||isAOE）+ computeCardTargets(actor, characters, ownIds, card) 返回敌方+存活+射程内 characterId。
+2. **改 BattleHand.vue**：加 selectedCardDeckId prop（选中卡 warning 高亮）；unsupported 卡（defense/heal/movement）canPlay 返回 false + 灰度「暂不可用」标（之前 T070 把它们当可出，会触发服务端 unsupported_card_type，现在前端诚实禁用）。
+3. **改 BattleBoard.vue + BattlePiece.vue**：加 targetableCharacterIds/isTargetable prop + .targetable danger 准星脉冲环（target-pulse animation，cursor crosshair）。
+4. **改 BattleView.vue**：打牌状态机--canPlayCards(play 阶段+当前 actor 己方) -> onCardClick: AOE 直接 playCard / needsTarget 进目标选择模式(再点同卡取消) -> targetableIds computed 高亮可目标敌方 -> onPieceClick 目标模式优先(点可目标 playCard+targetId / 点其他取消) -> onCellClick 目标模式点空取消 -> 跳过出牌 game.skipPlay -> watch actor|phase 清 selectedCard/selectedCharacterId/previewNotice；预览 previewNotice 反馈（无 WS 不改状态）；提示文案随模式切换（目标选择/移动/出牌）。
+
+### 意外
+- 无明显坑。typecheck 零错；build 通过（BattleView 13.99kB->16.57kB，CSS 9.04->10.15kB）；dev server HTTP 200（root/BattleView.vue/cards.ts transform 全 200）。
+- **预览 mock 射程问题**：mock 棋子 own 在 y=0 底、enemy 在 y=8 顶（真实开局位），当前 actor=warrior(6,0) 与敌方距离~9-10，射程内无目标。故预览模式打牌目标高亮需先「移动阶段把棋子移近敌方」再「出牌阶段打出」才能看到目标高亮（move-then-play 集成测试 T071+T072）。未改 mock 位置以保留 T068-T071 已视觉验证的布局。
+- **AOE 与 unsupported 的处理**：AOE（火球术）无需选目标直接打出；defense/heal/movement 前端禁用（后端 T050 不支持）。这是 T072 相对 T070 的行为细化（T070 把这些卡当可出）。
+- 范围外：浏览器视觉 smoke（预览模式 move-then-play 流程供手动验证）/ T073 WS（接入后实战打牌生效）/ T078 匹配。**前端进度 T057-T072，战棋界面 5 子任务完成 5/5，战棋界面完结，下一个 T073 WebSocket 对战连接**。

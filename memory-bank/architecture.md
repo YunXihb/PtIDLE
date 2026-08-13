@@ -3174,16 +3174,16 @@ frontend/
     │   └── api.ts              # 全域 REST 客户端 (authApi/playerApi/gatheringApi/...)
     ├── utils/
     │   ├── resources.ts        # 资源/材料中文名映射 (T064)
-    │   ├── cards.ts            # 卡牌 effect 中文摘要 + CARD_TYPE_META 类型元数据 (T070)
+    │   ├── cards.ts            # 卡牌 effect 中文摘要 + CARD_TYPE_META + 打牌目标计算 (cardNeedsTarget/isAOE/computeCardTargets, T070/T072)
     │   └── movement.ts         # 移动范围 BFS (computeReachableCells, 对齐后端, T071)
     ├── components/
     │   ├── GatheringPanel.vue  # 采集面板: 技能列表 + 进度 + 领取/取消 + 轮询 (T064)
     │   ├── ProcessingPanel.vue # 加工面板: 配方卡 + input->output + 数量1/5/10 + 预算校验 (T065)
     │   ├── CraftingPanel.vue  # 制造面板: 3分类(卡牌/装备/消耗品) + 替代料 + 职业门槛 + 预算校验 (T066)
-    │   ├── BattleBoard.vue   # 战棋棋盘: 9x9 CSS Grid + 基地(2,2/6,6) + 状态条 + cell-click + 格子内渲染 BattlePiece + 可移动格高亮 (T068/T069/T071)
-    │   ├── BattlePiece.vue   # 战棋棋子: 职业字+血量条(护盾)+能量pips+效果点+当前行动者环+敌我边框+选中脉冲环 (T069/T071)
+    │   ├── BattleBoard.vue   # 战棋棋盘: 9x9 CSS Grid + 基地(2,2/6,6) + 状态条 + cell-click + 格子内渲染 BattlePiece + 可移动格/可目标高亮 (T068/T069/T071/T072)
+    │   ├── BattlePiece.vue   # 战棋棋子: 职业字+血量条(护盾)+能量pips+效果点+当前行动者环+敌我边框+选中脉冲环+可目标准星环 (T069/T071/T072)
     │   └── BattleHand.vue    # 战棋手牌: 角色头标+卡牌横排(类型色/费用/来源/效果摘要)+可出牌判定+card-click (T070)
-    └── views/                  # Login/Register/HomeLayout/Home/Workshop(tab壳)/Warehouse/Characters/Cards/Battle(T068-T071实现)
+    └── views/                  # Login/Register/HomeLayout/Home/Workshop(tab壳)/Warehouse/Characters/Cards/Battle(T068-T072实现)
 ```
 
 ### 关键设计
@@ -3199,6 +3199,7 @@ frontend/
 | 制造 (T066) | crafting store 封装 recipes/craft，craft 按 recipe.category 分发到 card/gear/consumable 三端点（后端 result.success 模式非 throw，缺料/职业/超上限经 fail() 回 400/403，**无 missing 数组**仅 error 文案）；响应只含 materialsUsed 无 materials 快照 -> 成功+失败都刷 profile；input 为材料(players.materials)，input 可为替代料数组(任一组合满足即可，如回血药 iron_ingot 或 plank)；卡牌有 profession_required(查活角色职业)+max_quantity 上限；装备加 production_gear bonus(无 quantity，多次只叠 bonus)；组件按 3 分类 section 展示，替代料「或」连接，数量 1/5/10(装备强制1)，客户端预算校验+职业门槛 badge 禁用 |
 | 手牌 (T070) | BattleHand 组件按 ownHand(Record<characterId, HandCard[]>) 每个 own 角色一组渲染；HandCard 运行时无 description，由 utils/cards.ts 的 effectSummary 把 effect JSONB 派生中文摘要（damage/aoe/range/shield/heal/movement/taunt）；可出牌判定 isCurrentActor&&isPlayPhase&&cost<=currentEnergy，当前行动者组高亮(accent 环)，能量不足卡 unaffordable 半透明，非行动组 dim；card-click emit {characterId,card} 供 T072 接入目标选择+WS(game.playCard)；ownHand 经 battle:state:full/hand WS 推送(T073 接入)，WS 未接前预览 mock 覆盖 8 卡型+public_pool 来源+能量不足分支 |
 | 移动交互 (T071) | **后端 CharacterStatus 加 movement 字段**（characterStatusService: interface+baseInfo+DB SELECT，piece.movement 已在 Redis/DB 之前未广播）使前端可算范围。前端 utils/movement.ts computeReachableCells 复刻后端 bfsFindReachablePositions（4 方向无对角，maxDistance=movement，阻塞=occupied，起点穿透）；occupied 取 board.characters 中 position!=null（与后端 getAllBoardPositions 同源--getCharacterStatus.position 即派生自此，死棋死亡不移除位置故仍阻塞）；BattleView 选中状态机：canSelectActor(move 阶段+当前 actor 己方) -> 点 actor toggle 选中+BFS 算 movableCells -> 点高亮格 game.move(preview 本地更新 mockPositions/real WS) -> watch actor\|phase 字符串变化清选中(避免 board 刷新误清)；客户端范围仅 UX 提示，服务端 validateMovement 再校验，不匹配回 battle:move:error 优雅降级 |
+| 打牌交互 (T072) | utils/cards.ts 加打牌分类(cardNeedsTarget 单体攻击/嘲讽, cardIsAOE, cardSupported)+ computeCardTargets(敌方+存活+射程内, 近战欧氏≤1.5/远程≤effect.range/嘲讽≤range??3, 对齐 validateAttack/validateTauntCard)；BattleHand 加 selectedCardDeckId 选中高亮 + unsupported 卡(defense/heal/movement 后端 T050 不支持)禁用+「暂不可用」标；BattleBoard/BattlePiece 加 targetableCharacterIds/isTargetable danger 准星脉冲环；BattleView 打牌状态机 canPlayCards(play 阶段+当前 actor 己方) -> onCardClick: AOE 直接 game.playCard / needsTarget 进目标选择模式(再点同卡取消) -> onPieceClick 目标模式优先(点可目标棋子 playCard+targetId/点其他取消) -> onCellClick 目标模式点空取消 -> 跳过出牌 game.skipPlay -> watch actor\|phase 清选中；AOE 无需选目标自动命中射程内全部；嘲讽强制目标等边界由服务端 getTauntRedirect 强制客户端不建模(回 battle:play_card:error 优雅降级) |
 
 ### 状态
 - T057(初始化) / T058(路由) / T059(Pinia) / T060-T063(登录注册/主界面+离线弹窗): 骨架完成
@@ -3211,8 +3212,9 @@ frontend/
 - 据点对称调整 (T068/T069 后续): P1 基地 (3,3)->(2,2)，P2 基地保持 (6,6)，关于棋盘中心 (4,4) 对称。全栈改动 -- 后端 battleOutcomeService(BASES 数组+默认 bases JSON)/battleInitializationService/battleStateBroadcaster(类型+默认+广播参数) + 3 测试文件(battleOutcomeService 5 占领场景+BASES+beforeEach / battleStateBroadcaster 7 处 / battleActionService mock bases) + 前端 types/BattleBoard(isBase+baseSideAt)/BattleView mock。两据点 Chebyshev 半径 2 范围仅 (4,4) 单格重叠。jest 81/81 战棋套件全绿 + tsc 零错 + 前端 typecheck/build 通过
 - T070(手牌渲染): 完成 - utils/cards.ts(CARD_TYPE_META + effectSummary 派生中文摘要) + BattleHand.vue(角色头标+卡牌横排 类型色/⚡费用/来源徽章 牌库-公共池/效果摘要 + 可出牌判定 isCurrentActor&&isPlayPhase&&cost<=energy + card-click emit) + BattleView 手牌区(每 own 角色一组 + 预览 mock 8 卡型全覆盖 + 阶段切换 move<->play 验证可点击态)；`typecheck` 零错；`build` 通过（BattleView 7.71kB->12.04kB，CSS 5.26kB->7.99kB）；dev server HTTP 200。**手牌数据源**: game.ownHand(WS battle:state:full/hand，T073 接入)，HandCard 运行时无 description 由 effect 派生
 - T071(移动交互): 完成 - **后端** characterStatusService CharacterStatus 加 movement 字段(piece.movement 已存但之前未广播, +DB SELECT movement, +测试断言)；**前端** utils/movement.ts(computeReachableCells BFS 复刻后端) + types CharacterStatus 加 movement + BattleBoard(movableCells/selectedCharacterId prop + 可移动格高亮) + BattlePiece(选中脉冲环) + BattleView 选中状态机(canSelectActor + movableCells BFS + onPieceClick toggle + onCellClick 执行移动[preview 更新 mockPositions/real game.move] + watch actor|phase 清选中 + mock 加 movement + mockPositions reactive)；`typecheck` 零错；`build` 通过（BattleView 12.04kB->13.99kB，CSS 7.99kB->9.04kB）；后端 tsc 零错 + jest 4 战棋 suite 134/134 全绿；dev server HTTP 200。**关键**: occupied 用 position!=null 精确镜像后端 getAllBoardPositions(死棋死亡不移除位置仍阻塞)，客户端范围仅 UX 提示服务端 validateMovement 再校验
-- T072-T077(战棋界面: 打牌交互/WS) / T078(匹配) / T079-T080: 待开发
+- T072(打牌交互): 完成 - utils/cards.ts 加 cardNeedsTarget/cardIsAOE/cardSupported + computeCardTargets(敌方+存活+射程内, 近战≤1.5/远程≤range/嘲讽≤range??3) + BattleHand(选中高亮 selectedCardDeckId + unsupported 卡禁用「暂不可用」) + BattleBoard/BattlePiece(targetableCharacterIds/isTargetable danger 准星脉冲环) + BattleView 打牌状态机(canPlayCards + onCardClick AOE直接打/needsTarget进目标模式 + onPieceClick目标模式优先 + onCellClick空格取消 + 跳过出牌 + watch 清选中)；typecheck 零错；build 通过(BattleView 13.99kB->16.57kB，CSS 9.04->10.15kB)；dev server HTTP 200。**关键**: defense/heal/movement 后端 T050 unsupported_card_type 故前端禁用; 嘲讽强制目标由服务端 getTauntRedirect 强制客户端不建模回 error 降级; AOE 无需选目标
+- T073-T077(战棋界面: WS) / T078(匹配) / T079-T080: 待开发
 - 前端尚未有独立构建产物部署 (Caddy 静态托管 / 资源缓存 / 增量同步 待做)
 
-*文档版本：v1.60*
+*文档版本：v1.61*
 *最后更新：2026-08-13*
