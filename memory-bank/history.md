@@ -2568,3 +2568,22 @@ VPS 有改动，重新建立通讯；确认通讯链路正常；记录部署链�
 - T069 棋子渲染 / T070 手牌 / T071 移动交互 / T072 打牌 / T073 WS 连接 / T077 匹配队列
 - 浏览器视觉 smoke（无 headless 自动化；预览模式供用户手动视觉验证）
 - 未 commit / 未部署（待用户确认）
+
+## 2026-08-13 - 任务：T069 战棋棋子渲染
+
+### Prompt
+检查本地 PtIDLE 状态，继续项目开发。当前 T068（棋盘渲染）已完成，下一个任务是 T069（棋子渲染）：在棋盘上绘制棋子，显示职业和血量。
+
+### 思考
+T069 是 T068 的直接延续，纯前端渲染任务（无新 REST/WS 端点，契约靠编译期对齐）。核心数据模型 CharacterStatus 已核实：profession/health/maxHealth/energy/position/isAlive/totalShield/effects/isTaunted。**关键设计决策**：
+1. **敌我区分**：CharacterStatus 无 side 字段（与 T068 核实一致），靠 game store 的 myCharacterIds（来自 ownHand keys）判定。own=蓝(accent)/enemy=红(danger)，与 T068 基地 p1蓝/p2红 配色一致。
+2. **职业可视化**：用单字 战/弓/法 + 职业色变量(--warrior/--ranger/--mage)，紧凑适配 ~46px 格子（非 CraftingPanel 的全名「战士/弓手/法师」）。
+3. **血量+护盾**：HP 段按比例绿>50%/黄>25%/红<=25%，护盾段蓝色拼接延伸（总宽上限 100%），超额护盾用 🛡N 徽章显示精确值。
+4. **预览 mock 充实**：为验证各渲染分支，mock 6 棋子含受损(ranger 3/8)、护盾(warrior 🛡2)、被嘲讽(isTaunted)、burn 效果、mark_fire 效果、当前行动者=own warrior。
+5. **click emit 预留**：BattlePiece 发 click，BattleBoard 冒泡 piece-click（同 T068 预留 cell-click 给 T071 的模式），T071 移动交互将接入选中逻辑。
+新建 BattlePiece.vue（presentational）+ 改 BattleBoard.vue（ownCharacterIds prop + pieceMap + 格子内渲染）+ 改 BattleView.vue（ownIds computed + 充实 mock）。
+
+### 意外
+- Edit 工具对 BattleBoard.vue 顶部多行块（含 `->` 箭头注释）首次匹配失败（提示尝试 \uXXXX 转义交换仍未匹配，疑不可见字符差异）。改用单行小步 Edit（先注释行、再 import+props 块）成功。后续 architecture.md 的目录树 box-drawing 字符行也需精确复制才匹配。教训：对含特殊符号的多行块，优先小步单行 Edit。
+- 棋子模板内多次调用 `pieceAt(x,y)!`（每格 4 次）有轻微重复求值，但 9x9=81 格 ~300 次 Map.get 可忽略；保持可读性优先，未抽 computed。
+- 范围外：浏览器视觉 smoke（无 headless 框架，预览模式供手动验证）/ T070 手牌 / T071 移动 / T072 打牌 / T073 WS。前端进度 T057-T069，战棋界面 5 子任务完成 2/5，下一个 T070 手牌渲染。

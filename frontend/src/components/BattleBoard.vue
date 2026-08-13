@@ -1,16 +1,42 @@
 <script setup lang="ts">
-// T068 棋盘渲染 -- 9x9 战棋棋盘 (presentational)
+// T068 棋盘渲染 + T069 棋子渲染 -- 9x9 战棋棋盘 (presentational)
 // 坐标约定: key "x,y", x=0..8 (左->右), y=0..8 (底->顶)
 // P1 侧 y=0 (底), P2 侧 y=8 (顶); 基地 (3,3)=P1 侧 / (6,6)=P2 侧, 初始 neutral
 // 渲染: 行从上到下 = y 8->0, 列从左到右 = x 0->8
 // 渲染技术选 CSS Grid (非 Canvas/SVG): 离散格子 + 后续点击交互(T071) + 主题一致
+// T069: 格子内渲染 BattlePiece (alive+有位置的棋子), 敌我靠 ownCharacterIds 区分
 import { computed } from 'vue';
-import type { BoardStateEvent, Side } from '@/types';
+import type { BoardStateEvent, CharacterStatus, Side } from '@/types';
+import BattlePiece from './BattlePiece.vue';
 
-const props = defineProps<{ board: BoardStateEvent }>();
+const props = defineProps<{
+  board: BoardStateEvent;
+  /** 自己的 characterId 列表 (来自 game store myCharacterIds), 用于区分敌我染色 */
+  ownCharacterIds?: string[];
+}>();
 const emit = defineEmits<{
   (e: 'cell-click', payload: { x: number; y: number }): void;
+  (e: 'piece-click', payload: { characterId: string; x: number; y: number }): void;
 }>();
+
+const ownSet = computed<Set<string>>(() => new Set(props.ownCharacterIds ?? []));
+
+// 位置 -> 棋子 映射 (仅 alive 且有位置)
+const pieceMap = computed<Map<string, CharacterStatus>>(() => {
+  const m = new Map<string, CharacterStatus>();
+  for (const c of props.board.characters) {
+    if (c.isAlive && c.position) {
+      m.set(`${c.position.x},${c.position.y}`, c);
+    }
+  }
+  return m;
+});
+function pieceAt(x: number, y: number): CharacterStatus | undefined {
+  return pieceMap.value.get(`${x},${y}`);
+}
+function onPieceClick(c: CharacterStatus) {
+  if (c.position) emit('piece-click', { characterId: c.characterId, x: c.position.x, y: c.position.y });
+}
 
 const BOARD_SIZE = 9;
 
@@ -94,7 +120,14 @@ function onClick(x: number, y: number) {
             :class="cellClass(x, y)"
             @click="onClick(x, y)"
           >
-            <span v-if="isBase(x, y)" class="base-mark" :title="`基地 ${x},${y}`">★</span>
+            <span v-if="isBase(x, y) && !pieceAt(x, y)" class="base-mark" :title="`基地 ${x},${y}`">★</span>
+            <BattlePiece
+              v-if="pieceAt(x, y)"
+              :character="pieceAt(x, y)!"
+              :is-own="ownSet.has(pieceAt(x, y)!.characterId)"
+              :is-current-actor="board.currentActorId === pieceAt(x, y)!.characterId"
+              @click="onPieceClick(pieceAt(x, y)!)"
+            />
           </div>
         </template>
       </div>

@@ -3177,8 +3177,9 @@ frontend/
     ├── components/
     │   ├── GatheringPanel.vue  # 采集面板: 技能列表 + 进度 + 领取/取消 + 轮询 (T064)
     │   ├── ProcessingPanel.vue # 加工面板: 配方卡 + input->output + 数量1/5/10 + 预算校验 (T065)
-    │   └── CraftingPanel.vue  # 制造面板: 3分类(卡牌/装备/消耗品) + 替代料 + 职业门槛 + 预算校验 (T066)
-    │   └── BattleBoard.vue   # 战棋棋盘: 9x9 CSS Grid + 基地(3,3/6,6) + 状态条 + cell-click事件 (T068)
+    │   ├── CraftingPanel.vue  # 制造面板: 3分类(卡牌/装备/消耗品) + 替代料 + 职业门槛 + 预算校验 (T066)
+    │   ├── BattleBoard.vue   # 战棋棋盘: 9x9 CSS Grid + 基地(3,3/6,6) + 状态条 + cell-click + 格子内渲染 BattlePiece (T068/T069)
+    │   └── BattlePiece.vue   # 战棋棋子: 职业字+血量条(护盾)+能量pips+效果点+当前行动者环+敌我边框 (T069)
     └── views/                  # Login/Register/HomeLayout/Home/Workshop(tab壳)/Warehouse/Characters/Cards/Battle(T068实现)
 ```
 
@@ -3201,8 +3202,9 @@ frontend/
 - T066(制造界面): 完成 - CraftingPanel + crafting store + WorkshopView 挂载（工坊三子页全完成）；`typecheck` 零错；`build` 通过（WorkshopView chunk 14.55kB）；API smoke 全过（card/gear/consumable×1 + 法师火球卡×3缩放 + 职业卡 + 回血药替代料 + 缺料400无missing + 职业403 + 卡牌上限400边界）
 - T067(仓库界面): 完成 - WarehouseView 实现（onMount fetchWarehouse + 资源/材料 section + 分类用量条 + 物品 grid）；`typecheck` 零错；`build` 通过（WarehouseView 0.25kB->3.34kB）；API smoke 全过（GET /warehouse 字段+数据正确 + 401 + 用量计算）
 - T068(棋盘渲染): 完成 - BattleBoard.vue（9x9 CSS Grid + 基地(3,3/6,6)染色 + 状态条 round/step/phase/stars + 坐标轴 + cell-click 事件）+ BattleView 容器（接 game store.board，预览 mock 供 WS 未接前验证）；`typecheck` 零错；`build` 通过（BattleView 3.28kB）。**渲染技术 CSS Grid（非计划 Canvas/SVG）**：离散格子 + 后续点击交互(T071) + 主题一致。棋盘无 REST 状态端点（实时走 WS T073），契约靠编译期对齐 BoardStateEvent（与后端 battleStateBroadcaster 核实一致）
-- T069-T077(战棋界面: 棋子/手牌/移动/打牌/WS) / T078(匹配) / T079-T080: 待开发
+- T069(棋子渲染): 完成 - BattlePiece.vue（职业单字 战/弓/法 + 职业色 + 血量条按比例绿/黄/红 + 护盾段拼接+🛡N 徽章 + 能量 pips + 状态效果点 boost/mark/burn/taunt + 当前行动者发光环 + 敌我边框 own蓝/enemy红 + click emit 供 T071）+ BattleBoard 加 ownCharacterIds prop + pieceMap 位置->棋子映射 + 格子内渲染 + piece-click emit + BattleView 传 ownIds(preview?mock:store) + 充实 mock 6 棋子(含受损/护盾/被嘲讽/burn/mark/当前行动者验证各分支)；`typecheck` 零错；`build` 通过（BattleView 3.28kB->7.71kB，CSS 5.26kB）；dev server HTTP 200。**敌我区分**：CharacterStatus 无 side 字段，靠 myCharacterIds（ownHand keys）判定
+- T070-T077(战棋界面: 手牌/移动/打牌/WS) / T078(匹配) / T079-T080: 待开发
 - 前端尚未有独立构建产物部署 (Caddy 静态托管 / 资源缓存 / 增量同步 待做)
 
-*文档版本：v1.56*
-*最后更新：2026-08-12*
+*文档版本：v1.57*
+*最后更新：2026-08-13*
