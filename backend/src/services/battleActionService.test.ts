@@ -235,7 +235,7 @@ beforeEach(() => {
   mockApplyKillStars.mockResolvedValue({ p1Delta: 0, p2Delta: 0, p1StarsAfter: 0, p2StarsAfter: 0 });
   mockApplyBaseStars.mockResolvedValue({
     p1Delta: 0, p2Delta: 0, p1StarsAfter: 0, p2StarsAfter: 0,
-    bases: { '3,3': 'neutral', '6,6': 'neutral' },
+    bases: { '2,2': 'neutral', '6,6': 'neutral' },
   });
   mockCheckWinCondition.mockResolvedValue({ status: 'not_over', p1Stars: 0, p2Stars: 0 });
   mockRecordVictory.mockResolvedValue(undefined);

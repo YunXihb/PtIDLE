@@ -341,7 +341,7 @@ describe('T052 broadcaster additions', () => {
 
       expect(board.p1Stars).toBe(0);
       expect(board.p2Stars).toBe(0);
-      expect(board.bases).toEqual({ '3,3': 'neutral', '6,6': 'neutral' });
+      expect(board.bases).toEqual({ '2,2': 'neutral', '6,6': 'neutral' });
     });
 
     it('已累加: p1=3, p2=1, bases p1+p2', async () => {
@@ -357,7 +357,7 @@ describe('T052 broadcaster additions', () => {
         if (key === `battle:${BATTLE_ID}:stars:p1`) return '3';
         if (key === `battle:${BATTLE_ID}:stars:p2`) return '1';
         if (key === `battle:${BATTLE_ID}:bases`)
-          return JSON.stringify({ '3,3': 'p1', '6,6': 'p2' });
+          return JSON.stringify({ '2,2': 'p1', '6,6': 'p2' });
         return null;
       });
 
@@ -365,26 +365,26 @@ describe('T052 broadcaster additions', () => {
 
       expect(board.p1Stars).toBe(3);
       expect(board.p2Stars).toBe(1);
-      expect(board.bases).toEqual({ '3,3': 'p1', '6,6': 'p2' });
+      expect(board.bases).toEqual({ '2,2': 'p1', '6,6': 'p2' });
     });
   });
 
   describe('broadcastBasesState', () => {
     it('happy: 2 据点 p1/p2 → emit battle:state:bases', async () => {
-      await broadcastBasesState(mockIo, BATTLE_ID, { '3,3': 'p1', '6,6': 'p2' });
+      await broadcastBasesState(mockIo, BATTLE_ID, { '2,2': 'p1', '6,6': 'p2' });
       expect(mockTo).toHaveBeenCalledWith(`battle:${BATTLE_ID}`);
       expect(mockEmit).toHaveBeenCalledWith('battle:state:bases', {
         battleId: BATTLE_ID,
-        bases: { '3,3': 'p1', '6,6': 'p2' },
+        bases: { '2,2': 'p1', '6,6': 'p2' },
       });
     });
 
     it('neutral: 2 据点 neutral', async () => {
-      await broadcastBasesState(mockIo, BATTLE_ID, { '3,3': 'neutral', '6,6': 'neutral' });
+      await broadcastBasesState(mockIo, BATTLE_ID, { '2,2': 'neutral', '6,6': 'neutral' });
       expect(mockTo).toHaveBeenCalledWith(`battle:${BATTLE_ID}`);
       expect(mockEmit).toHaveBeenCalledWith('battle:state:bases', {
         battleId: BATTLE_ID,
-        bases: { '3,3': 'neutral', '6,6': 'neutral' },
+        bases: { '2,2': 'neutral', '6,6': 'neutral' },
       });
     });
   });

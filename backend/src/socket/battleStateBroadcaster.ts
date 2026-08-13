@@ -48,7 +48,7 @@ export interface BoardStateEvent {
   p1Stars: number;
   p2Stars: number;
   bases: {
-    '3,3': 'p1' | 'p2' | 'neutral';
+    '2,2': 'p1' | 'p2' | 'neutral';
     '6,6': 'p1' | 'p2' | 'neutral';
   };
 }
@@ -136,7 +136,7 @@ export async function buildBoardState(
   const p1Stars = p1StarsRaw === null ? 0 : parseInt(p1StarsRaw, 10);
   const p2Stars = p2StarsRaw === null ? 0 : parseInt(p2StarsRaw, 10);
   const bases = basesRaw === null
-    ? { '3,3': 'neutral' as const, '6,6': 'neutral' as const }
+    ? { '2,2': 'neutral' as const, '6,6': 'neutral' as const }
     : JSON.parse(basesRaw);
 
   return {
@@ -330,14 +330,14 @@ export async function broadcastSessionState(
  *
  * payload 字段：
  *   - battleId
- *   - bases: { '3,3': 'p1' | 'p2' | 'neutral', '6,6': ... }
+ *   - bases: { '2,2': 'p1' | 'p2' | 'neutral', '6,6': ... }
  *
  * 调用方：battleOutcomeService.applyBaseStars
  */
 export async function broadcastBasesState(
   io: IOServer,
   battleId: string,
-  bases: { '3,3': 'p1' | 'p2' | 'neutral'; '6,6': 'p1' | 'p2' | 'neutral' }
+  bases: { '2,2': 'p1' | 'p2' | 'neutral'; '6,6': 'p1' | 'p2' | 'neutral' }
 ): Promise<void> {
   io.to(`battle:${battleId}`).emit('battle:state:bases', {
     battleId,

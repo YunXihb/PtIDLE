@@ -134,7 +134,7 @@ export interface BoardStateEvent {
   battleId: string; currentRound: number; currentStep: number;
   currentPhase: BattlePhase; currentActorId: string | null;
   characters: CharacterStatus[]; p1Stars: number; p2Stars: number;
-  bases: { '3,3': Side | 'neutral'; '6,6': Side | 'neutral' };
+  bases: { '2,2': Side | 'neutral'; '6,6': Side | 'neutral' };
 }
 
 export interface FullStateEvent {

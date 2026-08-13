@@ -2587,3 +2587,21 @@ T069 是 T068 的直接延续，纯前端渲染任务（无新 REST/WS 端点，
 - Edit 工具对 BattleBoard.vue 顶部多行块（含 `->` 箭头注释）首次匹配失败（提示尝试 \uXXXX 转义交换仍未匹配，疑不可见字符差异）。改用单行小步 Edit（先注释行、再 import+props 块）成功。后续 architecture.md 的目录树 box-drawing 字符行也需精确复制才匹配。教训：对含特殊符号的多行块，优先小步单行 Edit。
 - 棋子模板内多次调用 `pieceAt(x,y)!`（每格 4 次）有轻微重复求值，但 9x9=81 格 ~300 次 Map.get 可忽略；保持可读性优先，未抽 computed。
 - 范围外：浏览器视觉 smoke（无 headless 框架，预览模式供手动验证）/ T070 手牌 / T071 移动 / T072 打牌 / T073 WS。前端进度 T057-T069，战棋界面 5 子任务完成 2/5，下一个 T070 手牌渲染。
+
+## 2026-08-13 - 任务：据点对称调整 (P1 基地 (3,3)->(2,2))
+
+### Prompt
+需要调整样式，为了对称，如果是 0-8 表示 9x9 棋盘坐标，那么应对蓝色方的基地应该位于 2,2 位置。用户选择「全栈现在改」（后端逻辑+测试+前端，非仅前端样式）。
+
+### 思考
+T068/T069 落地后用户视觉验证发现 P1 基地 (3,3) 与 P2 基地 (6,6) 不对称（关于棋盘中心 (4,4)：(3,3) 镜像应是 (5,5) 而非 (6,6)）。调整为 (2,2)+(6,6) 后两据点关于 (4,4) 严格对称。**全栈影响评估**：
+1. **后端源码 3 文件**：`battleOutcomeService.ts`（BASES 数组常量 + 默认 bases JSON + 注释）、`battleInitializationService.ts`（初始化写入 bases JSON）、`battleStateBroadcaster.ts`（bases 类型签名 + 默认值 + broadcastBasesState 参数类型 + 注释，4 处）。
+2. **后端测试 3 文件**：`battleOutcomeService.test.ts`（5 个占领场景的棋子位置+断言+BASES 常量测试+beforeEach 默认位置）、`battleStateBroadcaster.test.ts`（7 处 '3,3': 替换）、`battleActionService.test.ts`（mockApplyBaseStars 返回值 bases 键）。
+3. **前端 3 文件**：`types/index.ts`（BoardStateEvent.bases 类型键）、`BattleBoard.vue`（isBase 判定 + baseSideAt 键查找 + 注释）、`BattleView.vue`（预览 mock bases）。
+**关键几何**：Chebyshev 半径 2 下，(2,2) 范围 = x0-4/y0-4，(6,6) 范围 = x4-8/y4-8，**仅 (4,4) 单格重叠**。因此场景 3（中立+p1 占 base2）中原本 (3,3) 落在两据点重叠区的计数需从 3/0 调为 2/0（c1 从 (3,3) 移到 (4,4) 仍在重叠区，但 c4(3,3) 现仅属 (2,2) 范围不再属 (6,6)，结果不变仍是 base1=neutral/base2=p1）。棋子位置 (3,3) 作为**格子坐标**仍合法（在 (2,2) 据点范围内，Chebyshev 距离 1），测试中 c4 棋子位 (3,3) 保留不动。默认棋子起始位 (6,0)(7,0)(8,0)/(0,8)(1,8)(2,8) 均在两据点范围外（安全区），无需调整。
+
+### 意外
+- **Unicode 箭头坑重现**：`battleOutcomeService.test.ts` 测试名注释用 `->`（U+2192 右箭头，非 ASCII `->`），Read 工具显示为 `->` 致 Edit old_string 用 ASCII `->` 匹配失败。解法：要么直接键入 `->`，要么匹配避开箭头的子串（如 `p2 占 2: (3,3) p1=0 p2=3` 不含箭头）。与 T069 同一坑，已二次踩中。
+- **architecture.md en-dash 坑**：据点配置行 `-- 9x9 棋盘对角线` 的 `--` 实为两个 U+2013（EN DASH, e2 80 94），非 ASCII 连字符，Edit 匹配失败（连 `\uXXXX` 交换也不中）。解法：改用 `sed -i '2080s/.*/.../'` 按行号整行替换绕过字符匹配。教训：architecture.md 历史条目常用 en-dash，Edit 失败时优先 sed 按行号。
+- **预存测试失败非本次引入**：全量 jest 跑出 3 suite/28 test 失败（authController/wsValidation.integration/socketServer），但 `git stash` 后在干净树跑同样 28 失败 -- 确认是环境问题（容器/端口）非本次改动。本次涉及的 3 个战棋 suite（battleOutcomeService/battleStateBroadcaster/battleActionService）81/81 全绿。
+- 范围外：浏览器视觉 smoke（预览模式供手动验证对称布局）/ T070 手牌 / T071 移动 / 未 commit 未部署（待用户确认）。前端进度仍 T057-T069，战棋界面 2/5，下一个 T070。

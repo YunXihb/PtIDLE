@@ -63,7 +63,7 @@ const mockBoard: BoardStateEvent = {
   characters: [mockOwnWarrior, mockOwnRanger, mockOwnMage, mockEnemyWarrior, mockEnemyRanger, mockEnemyMage],
   p1Stars: 0,
   p2Stars: 0,
-  bases: { '3,3': 'p1', '6,6': 'p2' },
+  bases: { '2,2': 'p1', '6,6': 'p2' },
 };
 const displayBoard = computed<BoardStateEvent | null>(() =>
   previewMode.value ? mockBoard : game.board,

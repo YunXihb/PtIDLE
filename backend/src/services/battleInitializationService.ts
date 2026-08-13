@@ -98,7 +98,7 @@ export async function initBattleField(io: IOServer, battleId: string): Promise<I
     await redisClient.set(redisKey.alive(battleId, 'p2'), '3');
     await redisClient.set(
       redisKey.bases(battleId),
-      JSON.stringify({ '3,3': 'neutral', '6,6': 'neutral' })
+      JSON.stringify({ '2,2': 'neutral', '6,6': 'neutral' })
     );
 
     // ── 步骤 6: 持久化 battles 行（pending → ongoing） ──────

@@ -35,10 +35,10 @@ import { redisKey } from '../utils/redisKeys';
 // ========================================
 
 /**
- * 棋盘上的固定据点（3v3 模式，9x9 棋盘对角线）
+ * 棋盘上的固定据点（3v3 模式，9x9 棋盘对角线，关于中心 (4,4) 对称）
  */
 export const BASES: ReadonlyArray<{ x: number; y: number; key: string }> = [
-  { x: 3, y: 3, key: '3,3' },
+  { x: 2, y: 2, key: '2,2' },
   { x: 6, y: 6, key: '6,6' },
 ] as const;
 
@@ -268,7 +268,7 @@ export async function applyKillStars(
 /**
  * T052 §3.1: 应用据点 star
  *
- * 扫描 2 个固定据点 (3,3) 和 (6,6)，按 Chebyshev 距离 ≤2 范围
+ * 扫描 2 个固定据点 (2,2) 和 (6,6)，按 Chebyshev 距离 ≤2 范围
  * 内的 alive 棋子数判定占领方。占领方 +1 star。
  *
  * 流程：
@@ -293,7 +293,7 @@ export async function applyBaseStars(battleId: string): Promise<BaseStarDelta> {
       p2Delta: 0,
       p1StarsAfter: 0,
       p2StarsAfter: 0,
-      bases: { '3,3': 'neutral', '6,6': 'neutral' },
+      bases: { '2,2': 'neutral', '6,6': 'neutral' },
     };
   }
 

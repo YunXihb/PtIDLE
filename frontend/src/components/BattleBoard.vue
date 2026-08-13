@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // T068 棋盘渲染 + T069 棋子渲染 -- 9x9 战棋棋盘 (presentational)
 // 坐标约定: key "x,y", x=0..8 (左->右), y=0..8 (底->顶)
-// P1 侧 y=0 (底), P2 侧 y=8 (顶); 基地 (3,3)=P1 侧 / (6,6)=P2 侧, 初始 neutral
+// P1 侧 y=0 (底), P2 侧 y=8 (顶); 基地 (2,2)=P1 侧 / (6,6)=P2 侧, 关于中心 (4,4) 对称, 初始 neutral
 // 渲染: 行从上到下 = y 8->0, 列从左到右 = x 0->8
 // 渲染技术选 CSS Grid (非 Canvas/SVG): 离散格子 + 后续点击交互(T071) + 主题一致
 // T069: 格子内渲染 BattlePiece (alive+有位置的棋子), 敌我靠 ownCharacterIds 区分
@@ -67,11 +67,11 @@ function phaseLabel(p: string): string {
 }
 
 function isBase(x: number, y: number): boolean {
-  return (x === 3 && y === 3) || (x === 6 && y === 6);
+  return (x === 2 && y === 2) || (x === 6 && y === 6);
 }
 function baseSideAt(x: number, y: number): Side | 'neutral' | null {
   const key = `${x},${y}`;
-  if (key === '3,3') return props.board.bases['3,3'];
+  if (key === '2,2') return props.board.bases['2,2'];
   if (key === '6,6') return props.board.bases['6,6'];
   return null;
 }
