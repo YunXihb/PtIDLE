@@ -2679,3 +2679,24 @@ T072 是战棋界面 5/5（打牌交互）。后端 executePlayCard（battleActi
 - **预览 mock 射程问题**：mock 棋子 own 在 y=0 底、enemy 在 y=8 顶（真实开局位），当前 actor=warrior(6,0) 与敌方距离~9-10，射程内无目标。故预览模式打牌目标高亮需先「移动阶段把棋子移近敌方」再「出牌阶段打出」才能看到目标高亮（move-then-play 集成测试 T071+T072）。未改 mock 位置以保留 T068-T071 已视觉验证的布局。
 - **AOE 与 unsupported 的处理**：AOE（火球术）无需选目标直接打出；defense/heal/movement 前端禁用（后端 T050 不支持）。这是 T072 相对 T070 的行为细化（T070 把这些卡当可出）。
 - 范围外：浏览器视觉 smoke（预览模式 move-then-play 流程供手动验证）/ T073 WS（接入后实战打牌生效）/ T078 匹配。**前端进度 T057-T072，战棋界面 5 子任务完成 5/5，战棋界面完结，下一个 T073 WebSocket 对战连接**。
+
+## 2026-08-14 - 任务：T073 WebSocket 对战连接 + T077 匹配队列界面
+
+### Prompt
+检查本地 PtIDLE 状态，继续进行项目。前序 T071+T072 已 push origin(c183026)。本会话接续用户「push first, then continue WS integration」选择，实现 T073（WS 对战连接）+ T077（匹配队列界面）--二者紧耦合（匹配触发是 WS auto-join 的唯一入口），合并实现+验证。
+
+### 思考
+**T073 范围核实**：implementation-plan T073 = "实现 WebSocket 对战连接"，deps T045/046/047，验证「连接成功，状态同步」。深入 game store（T057 骨架）发现 connect()/disconnect() + 全部 battle:state:*（full/board/session/hand/character/bases）+ opponent_joined/disconnected + end + move/play_card/skip_play/join:error handler 早已就绪。**唯一缺口**：battle:matched handler 设了 matched/matching/inQueue 但**未调 joinBattle**——匹配成功后不会自动加入对战房间。补一行 joinBattle(payload.battleId) 即补齐连接层。
+
+**T077 范围核实**：T077 = "匹配队列界面"（显示匹配中状态+取消），deps T058/T042/T043。matchApi（join/status/leave）早已在 services/api.ts 就绪。game store 有 matching/matched/inQueue 状态但**无 queueMatch/cancelMatch 函数**。补这两个函数 + BattleView 匹配面板三态。
+
+**matched 竞态设计**（关键）：POST /match/queue matched=true 时后端**同时** emit battle:matched（WS）+ 返回 201 matched=true（REST）。WS handler 负责 auto-join。queueMatch await REST 后**不在此复位 inQueue**——若 WS 事件未到就复位，UI 会闪烁回「开始匹配」按钮。保持 inQueue=true 直到 WS handler 复位，实现「匹配中」->「board」平滑过渡（无闪烁）。WS 是 matched->join 的唯一真源，REST 仅确认入队。
+
+**e2e 验证方案**：T073 验证「连接成功，状态同步」需真 WS，build 不足。compose 栈 backend(ptidle-backend-1) 跑 GHCR 镜像 3000/tcp 但**未暴露 host 端口**(T-FOLLOW-6)。解决：docker run node:20 容器挂 host backend/node_modules（含 socket.io-client devDep，生产镜像 omitted）入 ptidle_default 网络，连 http://ptidle-backend-1:3000。脚本 2 客户端：register/login -> socket.io-client connect(auth token) -> A POST /match/queue(matched=false) -> B POST /match/queue(matched=true) -> 双端收 battle:matched -> 模拟前端 emit battle:join -> 收 battle:join:ok + battle:state:full。
+
+### 意外
+- **socket.io-client 是 devDependency**：生产镜像（GHCR latest）npm ci --omit=dev 不含 socket.io-client，最初 docker exec ptidle-backend-1 node 报 MODULE_NOT_FOUND。改用 host 的 backend/node_modules（dev 已装）挂载到独立 node:20 容器解决。
+- **compose backend 镜像偏旧**：e2e 收到的 battle:state:full bases=`{"3,3":"neutral","6,6":"neutral"}`——是 611b7e5 据点对称调整(P1 (3,3)->(2,2) + 初始 p1/p2 染色)**之前**的版本。本地 compose 栈未刷新镜像，但 WS 流程不受影响（据点位置是后端独立改动已 push）。
+- **e2e 结果**：双端 matched + joinOk + battle:state:full(6 棋子/3 手牌/bases/actor=null/phase=idle) 全链路 ✅ PASS。A 收到两次 state:full（A 先 join 独占，B join 后重广播含对手）——后端 opponent join 重广播行为，前端 handler 覆写 board 无害。
+- typecheck 零错；build 通过（BattleView 16.57kB->17.07kB）。无后端改动。
+- 范围外：浏览器双 tab 实战 smoke（脚本已验证协议层）/ T074-T076 战棋其他交互 / T078 结算界面。**前端进度 T057-T072+T073+T077，下一个 T074-T076 或 T078**。

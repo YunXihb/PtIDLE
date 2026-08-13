@@ -2,6 +2,7 @@ import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import { io, type Socket } from 'socket.io-client';
 import { useAuthStore } from './auth';
+import { matchApi } from '@/services/api';
 import type {
   BoardStateEvent, FullStateEvent, HandCard, CharacterStatus,
   SessionStateEvent, BattleEndEvent, MatchMatchedEvent, JoinOkEvent,
@@ -57,6 +58,8 @@ export const useGameStore = defineStore('game', () => {
       matched.value = payload;
       matching.value = false;
       inQueue.value = false;
+      // T073: 匹配成功后自动加入对战房间，后端回 battle:join:ok + 推送 battle:state:full
+      joinBattle(payload.battleId);
     });
 
     s.on('battle:join:ok', (payload: JoinOkEvent) => {
@@ -162,6 +165,37 @@ export const useGameStore = defineStore('game', () => {
     socket.value?.emit('battle:skip_play', { battleId: battleId.value });
   }
 
+  // ---------- T077 匹配队列 ----------
+  // 加入匹配队列; matched=true 时后端 emit battle:matched -> handler(T073) 自动 joinBattle
+  async function queueMatch() {
+    if (inQueue.value || matched.value || battleId.value) return;
+    lastError.value = null;
+    matching.value = true;
+    inQueue.value = true;
+    try {
+      const res = await matchApi.join();
+      // matched=true: WS battle:matched handler 复位队列态 + auto-join (可能已先于 await 触发)
+      // matched=false: 留在队列等待 (inQueue 保持 true)
+      // 两种情况都不在此复位 inQueue, 避免 WS 事件未到时 UI 闪烁回「开始匹配」
+      void res;
+    } catch (e) {
+      lastError.value = (e as { error?: string })?.error || '匹配失败，请重试';
+      matching.value = false;
+      inQueue.value = false;
+    }
+  }
+
+  async function cancelMatch() {
+    try {
+      await matchApi.leave();
+    } catch {
+      // 取消失败不阻塞 UI 复位
+    }
+    matching.value = false;
+    inQueue.value = false;
+    matched.value = null;
+  }
+
   function clearError() { lastError.value = null; }
 
   function resetBattle() {
@@ -182,5 +216,6 @@ export const useGameStore = defineStore('game', () => {
     opponentJoined, opponentDisconnected, battleEnded, matching, matched, inQueue,
     lastError, currentPhase, currentActorId, isMyTurn,
     connect, disconnect, joinBattle, move, playCard, skipPlay, clearError, resetBattle,
+    queueMatch, cancelMatch,
   };
 });

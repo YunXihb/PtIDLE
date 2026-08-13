@@ -251,6 +251,15 @@ function togglePreviewPhase() {
   selectedCard.value = null;
   previewNotice.value = null;
 }
+
+// ---------- T077 匹配队列 ----------
+function onStartMatch() {
+  previewMode.value = false;
+  void game.queueMatch();
+}
+function onCancelMatch() {
+  void game.cancelMatch();
+}
 </script>
 
 <template>
@@ -303,13 +312,24 @@ function togglePreviewPhase() {
       />
     </div>
 
-    <div v-else-if="!displayBoard" class="panel mt">
-      <p class="dim">未在对战中。匹配队列界面待 T077 实现。</p>
+    <div v-else-if="!displayBoard" class="panel mt match-panel">
+      <!-- T077 匹配队列: 已匹配(auto-join 后等 battle:state:full) / 匹配中 / 空闲 -->
+      <div v-if="game.matched" class="match-status">
+        <p>✅ 已匹配到对手，正在进入战斗…</p>
+      </div>
+      <div v-else-if="game.inQueue" class="match-status">
+        <p class="matching">🔄 匹配中，等待对手加入…</p>
+        <button type="button" class="secondary" @click="onCancelMatch">取消匹配</button>
+      </div>
+      <div v-else class="match-idle">
+        <p class="dim mb">进入匹配队列，与在线玩家对战。</p>
+        <button type="button" @click="onStartMatch">开始匹配</button>
+      </div>
     </div>
 
     <div class="mt actions">
       <button
-        v-if="!game.board"
+        v-if="!game.board && !game.inQueue && !game.matched"
         class="secondary"
         @click="previewMode = !previewMode"
       >
@@ -338,4 +358,8 @@ function togglePreviewPhase() {
 .hint { font-size: 12px; margin: 6px 2px; }
 .notice { font-size: 12px; color: var(--accent); margin: 6px 2px; }
 .error-msg { font-size: 12px; color: var(--danger); margin: 6px 2px; }
+.match-panel { display: flex; flex-direction: column; gap: 10px; }
+.match-status p { margin: 0 0 8px; }
+.match-status .matching { color: var(--accent); }
+.match-idle p { margin: 0 0 10px; }
 </style>

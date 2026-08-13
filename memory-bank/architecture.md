@@ -3165,7 +3165,7 @@ frontend/
     ├── stores/
     │   ├── auth.ts             # token/user 持久化(localStorage) + login/register/logout
     │   ├── player.ts           # profile/warehouse/characters/myCards
-    │   ├── game.ts             # WS 连接 + 对战状态机(棋盘/手牌/回合/胜负)
+    │   ├── game.ts             # WS 连接 + 对战状态机(棋盘/手牌/回合/胜负) + T073 auto-join + T077 queueMatch/cancelMatch
     │   ├── gathering.ts        # 采集: skills/efficiency/activeTask + start/complete/cancel (T064)
     │   ├── processing.ts      # 加工: recipes/loadAll/process + lastMissing(缺料兜底) (T065)
     │   └── crafting.ts        # 制造: recipes/loadAll/craft(按 category 分发) (T066)
@@ -3183,7 +3183,7 @@ frontend/
     │   ├── BattleBoard.vue   # 战棋棋盘: 9x9 CSS Grid + 基地(2,2/6,6) + 状态条 + cell-click + 格子内渲染 BattlePiece + 可移动格/可目标高亮 (T068/T069/T071/T072)
     │   ├── BattlePiece.vue   # 战棋棋子: 职业字+血量条(护盾)+能量pips+效果点+当前行动者环+敌我边框+选中脉冲环+可目标准星环 (T069/T071/T072)
     │   └── BattleHand.vue    # 战棋手牌: 角色头标+卡牌横排(类型色/费用/来源/效果摘要)+可出牌判定+card-click (T070)
-    └── views/                  # Login/Register/HomeLayout/Home/Workshop(tab壳)/Warehouse/Characters/Cards/Battle(T068-T072实现)
+    └── views/                  # Login/Register/HomeLayout/Home/Workshop(tab壳)/Warehouse/Characters/Cards/Battle(T068-T072渲染交互+T073 WS auto-join+T077 匹配面板)
 ```
 
 ### 关键设计
@@ -3200,6 +3200,8 @@ frontend/
 | 手牌 (T070) | BattleHand 组件按 ownHand(Record<characterId, HandCard[]>) 每个 own 角色一组渲染；HandCard 运行时无 description，由 utils/cards.ts 的 effectSummary 把 effect JSONB 派生中文摘要（damage/aoe/range/shield/heal/movement/taunt）；可出牌判定 isCurrentActor&&isPlayPhase&&cost<=currentEnergy，当前行动者组高亮(accent 环)，能量不足卡 unaffordable 半透明，非行动组 dim；card-click emit {characterId,card} 供 T072 接入目标选择+WS(game.playCard)；ownHand 经 battle:state:full/hand WS 推送(T073 接入)，WS 未接前预览 mock 覆盖 8 卡型+public_pool 来源+能量不足分支 |
 | 移动交互 (T071) | **后端 CharacterStatus 加 movement 字段**（characterStatusService: interface+baseInfo+DB SELECT，piece.movement 已在 Redis/DB 之前未广播）使前端可算范围。前端 utils/movement.ts computeReachableCells 复刻后端 bfsFindReachablePositions（4 方向无对角，maxDistance=movement，阻塞=occupied，起点穿透）；occupied 取 board.characters 中 position!=null（与后端 getAllBoardPositions 同源--getCharacterStatus.position 即派生自此，死棋死亡不移除位置故仍阻塞）；BattleView 选中状态机：canSelectActor(move 阶段+当前 actor 己方) -> 点 actor toggle 选中+BFS 算 movableCells -> 点高亮格 game.move(preview 本地更新 mockPositions/real WS) -> watch actor\|phase 字符串变化清选中(避免 board 刷新误清)；客户端范围仅 UX 提示，服务端 validateMovement 再校验，不匹配回 battle:move:error 优雅降级 |
 | 打牌交互 (T072) | utils/cards.ts 加打牌分类(cardNeedsTarget 单体攻击/嘲讽, cardIsAOE, cardSupported)+ computeCardTargets(敌方+存活+射程内, 近战欧氏≤1.5/远程≤effect.range/嘲讽≤range??3, 对齐 validateAttack/validateTauntCard)；BattleHand 加 selectedCardDeckId 选中高亮 + unsupported 卡(defense/heal/movement 后端 T050 不支持)禁用+「暂不可用」标；BattleBoard/BattlePiece 加 targetableCharacterIds/isTargetable danger 准星脉冲环；BattleView 打牌状态机 canPlayCards(play 阶段+当前 actor 己方) -> onCardClick: AOE 直接 game.playCard / needsTarget 进目标选择模式(再点同卡取消) -> onPieceClick 目标模式优先(点可目标棋子 playCard+targetId/点其他取消) -> onCellClick 目标模式点空取消 -> 跳过出牌 game.skipPlay -> watch actor\|phase 清选中；AOE 无需选目标自动命中射程内全部；嘲讽强制目标等边界由服务端 getTauntRedirect 强制客户端不建模(回 battle:play_card:error 优雅降级) |
+| WS 对战连接 (T073) | game store 的 battle:matched handler 加 joinBattle(payload.battleId) 自动加入对战房间（补齐 T057 连接层最后缺口；connect/disconnect + 全部 battle:state:full/board/session/hand/character/bases + opponent_joined/disconnected + end + move/play_card/skip_play/join:error handler 早已就绪于 T057）；matched=true 时后端 emit battle:matched -> handler 复位 matching/inQueue + 自动 emit battle:join -> 后端回 battle:join:ok + 推 battle:state:full(棋盘+ownHand+myCharacterIds 由 ownHand keys 推断)。**e2e**: node 脚本 2 socket.io-client 客户端经 ptidle_default 网络验证 matched->auto-join->join:ok->state:full(6棋子/3手牌/状态同步) 全链路通过 |
+| 匹配队列界面 (T077) | game store 加 queueMatch/cancelMatch 并导出（queueMatch 调 matchApi.join 设 matching+inQueue=true；matched=true 依赖 WS handler(T073) auto-join，不在此复位 inQueue 防止 WS 事件未到时 UI 闪烁回「开始匹配」；失败回 lastError；cancelMatch 调 matchApi.leave 复位 matching/inQueue/matched）；BattleView 替换 T077 占位为匹配面板三态：game.matched->「已匹配进入战斗」/ game.inQueue->「匹配中」+取消按钮(调 cancelMatch)/ 空闲->「开始匹配」按钮(调 queueMatch)；预览(开发)按钮匹配中隐藏(v-if=!inQueue&&!matched) |
 
 ### 状态
 - T057(初始化) / T058(路由) / T059(Pinia) / T060-T063(登录注册/主界面+离线弹窗): 骨架完成
@@ -3213,8 +3215,10 @@ frontend/
 - T070(手牌渲染): 完成 - utils/cards.ts(CARD_TYPE_META + effectSummary 派生中文摘要) + BattleHand.vue(角色头标+卡牌横排 类型色/⚡费用/来源徽章 牌库-公共池/效果摘要 + 可出牌判定 isCurrentActor&&isPlayPhase&&cost<=energy + card-click emit) + BattleView 手牌区(每 own 角色一组 + 预览 mock 8 卡型全覆盖 + 阶段切换 move<->play 验证可点击态)；`typecheck` 零错；`build` 通过（BattleView 7.71kB->12.04kB，CSS 5.26kB->7.99kB）；dev server HTTP 200。**手牌数据源**: game.ownHand(WS battle:state:full/hand，T073 接入)，HandCard 运行时无 description 由 effect 派生
 - T071(移动交互): 完成 - **后端** characterStatusService CharacterStatus 加 movement 字段(piece.movement 已存但之前未广播, +DB SELECT movement, +测试断言)；**前端** utils/movement.ts(computeReachableCells BFS 复刻后端) + types CharacterStatus 加 movement + BattleBoard(movableCells/selectedCharacterId prop + 可移动格高亮) + BattlePiece(选中脉冲环) + BattleView 选中状态机(canSelectActor + movableCells BFS + onPieceClick toggle + onCellClick 执行移动[preview 更新 mockPositions/real game.move] + watch actor|phase 清选中 + mock 加 movement + mockPositions reactive)；`typecheck` 零错；`build` 通过（BattleView 12.04kB->13.99kB，CSS 7.99kB->9.04kB）；后端 tsc 零错 + jest 4 战棋 suite 134/134 全绿；dev server HTTP 200。**关键**: occupied 用 position!=null 精确镜像后端 getAllBoardPositions(死棋死亡不移除位置仍阻塞)，客户端范围仅 UX 提示服务端 validateMovement 再校验
 - T072(打牌交互): 完成 - utils/cards.ts 加 cardNeedsTarget/cardIsAOE/cardSupported + computeCardTargets(敌方+存活+射程内, 近战≤1.5/远程≤range/嘲讽≤range??3) + BattleHand(选中高亮 selectedCardDeckId + unsupported 卡禁用「暂不可用」) + BattleBoard/BattlePiece(targetableCharacterIds/isTargetable danger 准星脉冲环) + BattleView 打牌状态机(canPlayCards + onCardClick AOE直接打/needsTarget进目标模式 + onPieceClick目标模式优先 + onCellClick空格取消 + 跳过出牌 + watch 清选中)；typecheck 零错；build 通过(BattleView 13.99kB->16.57kB，CSS 9.04->10.15kB)；dev server HTTP 200。**关键**: defense/heal/movement 后端 T050 unsupported_card_type 故前端禁用; 嘲讽强制目标由服务端 getTauntRedirect 强制客户端不建模回 error 降级; AOE 无需选目标
-- T073-T077(战棋界面: WS) / T078(匹配) / T079-T080: 待开发
+- T073(WS对战连接): 完成 - game store battle:matched handler 加 auto-join(joinBattle)；e2e 2 客户端验证 matched->join->state:full 全链路通过
+- T077(匹配队列界面): 完成 - game store queueMatch/cancelMatch + BattleView 匹配面板三态(进入中/匹配中+取消/开始匹配)；e2e 同 T073 通过。`typecheck` 零错；`build` 通过(BattleView 16.57kB->17.07kB)
+- T074-T076(战棋其他交互) / T078(对战结算界面) / T079-T080: 待开发
 - 前端尚未有独立构建产物部署 (Caddy 静态托管 / 资源缓存 / 增量同步 待做)
 
-*文档版本：v1.61*
+*文档版本：v1.62*
 *最后更新：2026-08-13*
