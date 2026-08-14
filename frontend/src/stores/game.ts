@@ -2,11 +2,11 @@ import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import { io, type Socket } from 'socket.io-client';
 import { useAuthStore } from './auth';
-import { matchApi } from '@/services/api';
+import { matchApi, battleApi } from '@/services/api';
 import type {
   BoardStateEvent, FullStateEvent, HandCard, CharacterStatus,
   SessionStateEvent, BattleEndEvent, MatchMatchedEvent, JoinOkEvent,
-  BattlePhase,
+  BattlePhase, SettlementResult,
 } from '@/types';
 
 export const useGameStore = defineStore('game', () => {
@@ -22,6 +22,7 @@ export const useGameStore = defineStore('game', () => {
   const opponentJoined = ref(false);
   const opponentDisconnected = ref(false);
   const battleEnded = ref<BattleEndEvent | null>(null);
+  const settlement = ref<SettlementResult | null>(null);
 
   // 撮合状态
   const matching = ref(false);
@@ -43,6 +44,7 @@ export const useGameStore = defineStore('game', () => {
     const auth = useAuthStore();
     if (socket.value?.connected) return;
     if (!auth.token) return;
+    myUserId.value = auth.user?.id ?? null;
 
     const s = io('/', {
       auth: { token: auth.token },
@@ -121,6 +123,7 @@ export const useGameStore = defineStore('game', () => {
 
     s.on('battle:end', (payload: BattleEndEvent) => {
       battleEnded.value = payload;
+      settlement.value = null;
     });
 
     s.on('battle:move:error', (e: { error: string }) => { lastError.value = e.error; });
@@ -198,6 +201,16 @@ export const useGameStore = defineStore('game', () => {
 
   function clearError() { lastError.value = null; }
 
+  async function fetchSettlement() {
+    if (!battleId.value) return;
+    try {
+      const res = await battleApi.result(battleId.value);
+      settlement.value = res.data;
+    } catch (e) {
+      lastError.value = (e as { error?: string })?.error || '获取结算失败';
+    }
+  }
+
   function resetBattle() {
     battleId.value = null;
     board.value = null;
@@ -206,6 +219,7 @@ export const useGameStore = defineStore('game', () => {
     opponentJoined.value = false;
     opponentDisconnected.value = false;
     battleEnded.value = null;
+    settlement.value = null;
     matched.value = null;
     matching.value = false;
     inQueue.value = false;
@@ -213,9 +227,9 @@ export const useGameStore = defineStore('game', () => {
 
   return {
     socket, connected, battleId, board, ownHand, myUserId, myCharacterIds,
-    opponentJoined, opponentDisconnected, battleEnded, matching, matched, inQueue,
+    opponentJoined, opponentDisconnected, battleEnded, settlement, matching, matched, inQueue,
     lastError, currentPhase, currentActorId, isMyTurn,
     connect, disconnect, joinBattle, move, playCard, skipPlay, clearError, resetBattle,
-    queueMatch, cancelMatch,
+    queueMatch, cancelMatch, fetchSettlement,
   };
 });

@@ -260,12 +260,110 @@ function onStartMatch() {
 function onCancelMatch() {
   void game.cancelMatch();
 }
+
+// ---------- T078 对战结算 ----------
+// battle:end 到来 -> 拉详细结算 (SettlementResult); 失败降级用 BattleEndEvent 基本数据
+watch(
+  () => game.battleEnded,
+  (ended) => {
+    if (ended) void game.fetchSettlement();
+  }
+);
+
+// 我方阵营 p1/p2 (myUserId 对齐 BattleEndEvent.p1UserId/p2UserId)
+const mySide = computed<'p1' | 'p2' | null>(() => {
+  const e = game.battleEnded;
+  const me = game.myUserId;
+  if (!e || !me) return null;
+  if (e.p1UserId === me) return 'p1';
+  if (e.p2UserId === me) return 'p2';
+  return null;
+});
+
+// 胜负: 优先 settlement.yourResult, 降级 battleEnded.winnerUserId
+const myResult = computed<'win' | 'loss' | 'draw' | null>(() => {
+  if (game.settlement?.yourResult) return game.settlement.yourResult;
+  const e = game.battleEnded;
+  const me = game.myUserId;
+  if (!e || !me) return null;
+  if (e.winnerUserId === null) return 'draw';
+  return e.winnerUserId === me ? 'win' : 'loss';
+});
+
+const myStars = computed(() => {
+  const e = game.battleEnded;
+  if (!e || !mySide.value) return 0;
+  return mySide.value === 'p1' ? e.p1Stars : e.p2Stars;
+});
+const oppStars = computed(() => {
+  const e = game.battleEnded;
+  if (!e || !mySide.value) return 0;
+  return mySide.value === 'p1' ? e.p2Stars : e.p1Stars;
+});
+
+const VICTORY_LABEL: Record<string, string> = {
+  kill_threshold: '击杀达标',
+  base_threshold: '据点达标',
+  draw: '平局',
+};
+const victoryLabel = computed(() => {
+  const v = game.battleEnded?.victoryType ?? game.settlement?.victoryType;
+  return v ? (VICTORY_LABEL[v] ?? v) : '';
+});
+
+const durationLabel = computed(() => {
+  const d = game.settlement?.duration;
+  if (typeof d !== 'number' || !Number.isFinite(d)) return '';
+  const m = Math.floor(d / 60);
+  const s = Math.floor(d % 60);
+  return `${m}:${String(s).padStart(2, '0')}`;
+});
+
+const resultText = computed(() => {
+  switch (myResult.value) {
+    case 'win': return '胜利';
+    case 'loss': return '失败';
+    case 'draw': return '平局';
+    default: return '';
+  }
+});
+const resultClass = computed(() => myResult.value ?? '');
+
+function onLeaveBattle() {
+  game.resetBattle();
+}
 </script>
 
 <template>
   <div class="battle-view">
     <h2>对战</h2>
 
+    <!-- T078 对战结算面板 (battle:end 到来时优先展示, 隐藏对战内容) -->
+    <div v-if="game.battleEnded" class="settlement-panel panel">
+      <div class="settle-result" :class="resultClass">
+        <span class="result-text">{{ resultText }}</span>
+      </div>
+      <div class="settle-row">
+        <span class="dim">胜利方式</span>
+        <span>{{ victoryLabel }}</span>
+      </div>
+      <div class="settle-row">
+        <span class="dim">星数</span>
+        <span><strong>{{ myStars }}</strong> : {{ oppStars }}</span>
+      </div>
+      <div v-if="durationLabel" class="settle-row">
+        <span class="dim">时长</span>
+        <span>{{ durationLabel }}</span>
+      </div>
+      <div v-if="game.settlement" class="settle-row">
+        <span class="dim">累计战绩</span>
+        <span>{{ game.settlement.yourStats.wins }}胜 {{ game.settlement.yourStats.losses }}负 {{ game.settlement.yourStats.draws }}平</span>
+      </div>
+      <p v-else-if="game.lastError" class="error-msg">结算详情加载失败：{{ game.lastError }}</p>
+      <button type="button" class="mt" @click="onLeaveBattle">返回大厅</button>
+    </div>
+
+    <template v-else>
     <BattleBoard
       v-if="displayBoard"
       :board="displayBoard"
@@ -344,6 +442,7 @@ function onCancelMatch() {
       </button>
       <span v-if="previewMode" class="dim preview-note">预览模式 (mock 数据, T073 接入 WS 后移除)</span>
     </div>
+    </template>
   </div>
 </template>
 
@@ -362,4 +461,15 @@ function onCancelMatch() {
 .match-status p { margin: 0 0 8px; }
 .match-status .matching { color: var(--accent); }
 .match-idle p { margin: 0 0 10px; }
+
+/* T078 结算面板 */
+.settlement-panel { display: flex; flex-direction: column; gap: 12px; }
+.settle-result { text-align: center; padding: 16px 0; }
+.settle-result .result-text { font-size: 28px; font-weight: 700; }
+.settle-result.win .result-text { color: var(--success); }
+.settle-result.loss .result-text { color: var(--danger); }
+.settle-result.draw .result-text { color: var(--warning); }
+.settle-row { display: flex; justify-content: space-between; align-items: center; font-size: 14px; }
+.settle-row strong { font-size: 18px; color: var(--accent); }
+.settlement-panel .mt { margin-top: 4px; align-self: flex-start; }
 </style>
