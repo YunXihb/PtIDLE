@@ -175,6 +175,44 @@ describe('skillService', () => {
         byproductChance: 0.3
       });
     });
+
+    it('should pick highest-rate resource as primary regardless of JSONB key order', async () => {
+      // 实际 DB 中 mining/woodcutting 的 yields 副产物排在前:
+      //   mining {"coal":0.3,"iron_ore":1}, woodcutting {"sap":0.2,"wood":1}
+      // 主产物必须按 rate 最大者识别, 不可依赖 Object.keys 顺序, 否则主副颠倒。
+      mockedQuery.mockResolvedValueOnce([
+        {
+          id: 'skill-1',
+          name: '采矿',
+          type: 'mining',
+          yields: { coal: 0.3, iron_ore: 1 },
+          base_yield: 1
+        },
+        {
+          id: 'skill-2',
+          name: '伐木',
+          type: 'woodcutting',
+          yields: { sap: 0.2, wood: 1 },
+          base_yield: 1
+        }
+      ]);
+
+      const config = await skillService.getGatheringConfig();
+
+      expect(config.mining).toEqual({
+        primaryResource: 'iron_ore',
+        baseRate: 1,
+        byproduct: 'coal',
+        byproductChance: 0.3
+      });
+
+      expect(config.woodcutting).toEqual({
+        primaryResource: 'wood',
+        baseRate: 1,
+        byproduct: 'sap',
+        byproductChance: 0.2
+      });
+    });
   });
 
   describe('clearSkillsCache', () => {

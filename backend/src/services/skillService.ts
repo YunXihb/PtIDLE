@@ -70,16 +70,26 @@ export async function getGatheringConfig(): Promise<Record<string, {
 
   for (const skill of skills) {
     const yields = skill.yields;
-    const primaryResource = Object.keys(yields)[0];
-    const primaryYield = yields[primaryResource];
 
-    // 查找副产物（产量低于主产物的资源）
+    // 主产物 = 产量(rate)最大的资源。不可依赖 JSONB key 顺序,
+    // 否则当 DB yields 形如 {"coal":0.3,"iron_ore":1} 时会取 coal 作主产物,
+    // 主副颠倒(采矿得煤、伐木得树液)。
+    let primaryResource = '';
+    let primaryYield = 0;
+    for (const [resource, rate] of Object.entries(yields)) {
+      if (rate > primaryYield) {
+        primaryYield = rate;
+        primaryResource = resource;
+      }
+    }
+
+    // 副产物 = 其余资源中第一个, 概率 = 其产量 / 主产物产量
     let byproduct = '';
     let byproductChance = 0;
     for (const [resource, rate] of Object.entries(yields)) {
       if (resource !== primaryResource) {
         byproduct = resource;
-        byproductChance = rate / primaryYield;
+        byproductChance = primaryYield > 0 ? rate / primaryYield : 0;
         break;
       }
     }
