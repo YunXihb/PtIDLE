@@ -1,10 +1,11 @@
 import express from 'express';
 import cors from 'cors';
+import compression from 'compression';
 import dotenv from 'dotenv';
 import http from 'http';
 import { Server as IOServer } from 'socket.io';
 import { testConnection as testDb, pool } from './config/database';
-import { connectRedis, redisClient } from './config/redis';
+import { connectRedis, disconnectRedis, redisClient } from './config/redis';
 import authRoutes from './routes/auth';
 import battleRoutes from './routes/battle';
 import playerRoutes from './routes/player';
@@ -34,6 +35,9 @@ const corsOrigin = process.env.CORS_ORIGIN
   : '*';
 app.use(cors({ origin: corsOrigin }));
 app.use(express.json());
+// T082: HTTP 响应压缩（gzip）。API JSON 响应（卡牌模板/玩家数据/战斗状态）可较大，
+// 开启后按 Accept-Encoding 协商压缩，显著降低传输体积。静态资源若后续由后端托管同样受益。
+app.use(compression());
 
 // Routes
 app.use('/api/auth', authRoutes);
@@ -157,5 +161,36 @@ async function startGatheringChecker(): Promise<void> {
     }
   }, 10000);
 }
+
+// T082: 优雅关闭。Docker 发 SIGTERM（stop/recreate）时清理资源，避免泄漏 PG/Redis 连接
+// 与僵尸 socket。io.close() 关闭 Socket.IO + 底层 HTTP server（停止接受新连接）。
+let shuttingDown = false;
+async function gracefulShutdown(signal: string): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`\n[shutdown] ${signal} received, closing server...`);
+  try {
+    io.close();
+  } catch (e) {
+    console.error('[shutdown] Socket.IO close error:', (e as Error).message);
+  }
+  try {
+    await pool.end();
+    console.log('[shutdown] PG pool closed');
+  } catch (e) {
+    console.error('[shutdown] PG pool close error:', (e as Error).message);
+  }
+  try {
+    await disconnectRedis();
+    console.log('[shutdown] Redis disconnected');
+  } catch (e) {
+    console.error('[shutdown] Redis disconnect error:', (e as Error).message);
+  }
+  console.log('[shutdown] done, exiting');
+  process.exit(0);
+}
+
+process.on('SIGTERM', () => { void gracefulShutdown('SIGTERM'); });
+process.on('SIGINT', () => { void gracefulShutdown('SIGINT'); });
 
 export default app;

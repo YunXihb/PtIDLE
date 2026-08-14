@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
-import { io, type Socket } from 'socket.io-client';
+import type { Socket } from 'socket.io-client';
 import { useAuthStore } from './auth';
 import { matchApi, battleApi } from '@/services/api';
 import type {
@@ -40,12 +40,16 @@ export const useGameStore = defineStore('game', () => {
       myCharacterIds.value.includes(currentActorId.value)
   );
 
-  function connect() {
+  async function connect() {
     const auth = useAuthStore();
     if (socket.value?.connected) return;
     if (!auth.token) return;
     myUserId.value = auth.user?.id ?? null;
 
+    // T082: 延迟加载 socket.io-client(~40KB)，仅进入对战连接时才下载。
+    // 原静态 import 被 App.vue->game store 链路拉入主 chunk，首屏(登录/主页/工坊)
+    // 也被迫加载；改动态 import 后拆为独立 chunk，首屏不再下载该依赖。
+    const { io } = await import('socket.io-client');
     const s = io('/', {
       auth: { token: auth.token },
       transports: ['websocket', 'polling'],

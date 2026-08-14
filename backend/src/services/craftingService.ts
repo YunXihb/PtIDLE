@@ -1,4 +1,4 @@
-import { query, execute, withTransaction } from '../config/database';
+import { query, withTransaction } from '../config/database';
 import { v4 as uuidv4 } from 'uuid';
 import { createCache } from '../utils/cache';
 
@@ -335,7 +335,7 @@ export async function executeGearCrafting(
   recipeId: string,
   quantity: number = 1
 ): Promise<GearCraftingResult> {
-  // 1. 获取配方
+  // 1. 获取配方（缓存读取，配方数据静态无需事务）
   const recipe = await getCraftingRecipeById(recipeId);
   if (!recipe) {
     return { success: false, gearName: '', bonus: 0, materialsUsed: {}, error: 'Recipe not found' };
@@ -346,64 +346,10 @@ export async function executeGearCrafting(
     return { success: false, gearName: '', bonus: 0, materialsUsed: {}, error: 'Recipe is not a gear recipe' };
   }
 
-  // 3. 获取玩家数据
-  const playerResult = await query<{
-    id: string;
-    materials: Record<string, number>;
-    production_gear: Record<string, number>;
-  }>('SELECT id, materials, production_gear FROM players WHERE user_id = $1', [userId]);
-
-  if (playerResult.length === 0) {
-    return { success: false, gearName: '', bonus: 0, materialsUsed: {}, error: 'Player not found' };
-  }
-
-  const player = playerResult[0];
-  const currentMaterials = player.materials || {};
-  const currentGear = player.production_gear || {};
-
-  // 4. 解析输入材料（可能是单一对象或对象数组）
+  // 3. 解析输入材料（可能是单一对象或对象数组）
   const inputMaterials = Array.isArray(recipe.input) ? recipe.input : [recipe.input];
 
-  // 5. 检查每种材料是否足够（每种替代材料只需一种）
-  const materialUsage: Record<string, number> = {};
-  let hasAllMaterials = true;
-
-  for (const materialSet of inputMaterials) {
-    hasAllMaterials = true;
-    for (const [material, amount] of Object.entries(materialSet)) {
-      const totalRequired = amount * quantity;
-      const currentAmount = currentMaterials[material] || 0;
-      if (currentAmount < totalRequired) {
-        hasAllMaterials = false;
-        break;
-      }
-    }
-    if (hasAllMaterials) {
-      // 找到足够的材料组合
-      for (const [material, amount] of Object.entries(materialSet)) {
-        materialUsage[material] = amount * quantity;
-      }
-      break;
-    }
-  }
-
-  if (!hasAllMaterials) {
-    return {
-      success: false,
-      gearName: recipe.name,
-      bonus: 0,
-      materialsUsed: {},
-      error: 'Insufficient materials',
-    };
-  }
-
-  // 6. 扣除材料
-  const updatedMaterials = { ...currentMaterials };
-  for (const [material, amount] of Object.entries(materialUsage)) {
-    updatedMaterials[material] = (updatedMaterials[material] || 0) - amount;
-  }
-
-  // 7. 获取装备加成信息
+  // 4. 获取装备加成信息（静态配方数据，事务外提前校验）
   const outputInfo = recipe.output as { name: string; bonus: number };
   const gearName = outputInfo.name;
   const gearBonusKey = GEAR_BONUS_MAP[gearName];
@@ -413,29 +359,95 @@ export async function executeGearCrafting(
       success: false,
       gearName,
       bonus: 0,
-      materialsUsed: materialUsage,
+      materialsUsed: {},
       error: 'Unknown gear type',
     };
   }
 
   const bonusValue = GEAR_BONUS_VALUES[gearName] || 0;
 
-  // 8. 更新生产装备加成
-  const updatedGear = { ...currentGear };
-  updatedGear[gearBonusKey] = (updatedGear[gearBonusKey] || 0) + bonusValue;
+  // 5. 事务：读玩家材料(FOR UPDATE 锁行) + 校验 + 扣料 + 累加装备加成，原子化防 TOCTOU
+  //   原实现 read(事务外) -> 校验 -> write(单 execute)，并发扣料会丢失更新；
+  //   现把读+校验+写并入同一事务并对玩家行加 FOR UPDATE，串行化同玩家并发制造。
+  try {
+    const txn = await withTransaction(async (client) => {
+      // 5a. 锁定并读取玩家行（FOR UPDATE 防并发扣料丢失更新）
+      const playerResult = await client.query<{
+        id: string;
+        materials: Record<string, number>;
+        production_gear: Record<string, number>;
+      }>('SELECT id, materials, production_gear FROM players WHERE user_id = $1 FOR UPDATE', [userId]);
 
-  // 9. 执行数据库更新（材料和装备加成在同一个事务中）
-  await execute(
-    'UPDATE players SET materials = $1, production_gear = $2, updated_at = NOW() WHERE user_id = $3',
-    [JSON.stringify(updatedMaterials), JSON.stringify(updatedGear), userId]
-  );
+      if (playerResult.rows.length === 0) {
+        const err = new Error('Player not found') as Error & { code?: string };
+        err.code = 'PLAYER_NOT_FOUND';
+        throw err;
+      }
 
-  return {
-    success: true,
-    gearName,
-    bonus: bonusValue,
-    materialsUsed: materialUsage,
-  };
+      const player = playerResult.rows[0];
+      const currentMaterials = player.materials || {};
+      const currentGear = player.production_gear || {};
+
+      // 5b. 校验每种材料是否足够（每种替代材料只需一种）
+      const materialUsage: Record<string, number> = {};
+      let hasAllMaterials = false;
+
+      for (const materialSet of inputMaterials) {
+        hasAllMaterials = true;
+        for (const [material, amount] of Object.entries(materialSet)) {
+          const totalRequired = amount * quantity;
+          const currentAmount = currentMaterials[material] || 0;
+          if (currentAmount < totalRequired) {
+            hasAllMaterials = false;
+            break;
+          }
+        }
+        if (hasAllMaterials) {
+          for (const [material, amount] of Object.entries(materialSet)) {
+            materialUsage[material] = amount * quantity;
+          }
+          break;
+        }
+      }
+
+      if (!hasAllMaterials) {
+        const err = new Error('Insufficient materials') as Error & { code?: string };
+        err.code = 'INSUFFICIENT_MATERIALS';
+        throw err;
+      }
+
+      // 5c. 扣除材料 + 累加装备加成（材料和装备加成在同一个事务的同一个 UPDATE 中，原子）
+      const updatedMaterials = { ...currentMaterials };
+      for (const [material, amount] of Object.entries(materialUsage)) {
+        updatedMaterials[material] = (updatedMaterials[material] || 0) - amount;
+      }
+      const updatedGear = { ...currentGear };
+      updatedGear[gearBonusKey] = (updatedGear[gearBonusKey] || 0) + bonusValue;
+
+      await client.query(
+        'UPDATE players SET materials = $1, production_gear = $2, updated_at = NOW() WHERE user_id = $3',
+        [JSON.stringify(updatedMaterials), JSON.stringify(updatedGear), userId]
+      );
+
+      return { materialUsage };
+    });
+
+    return {
+      success: true,
+      gearName,
+      bonus: bonusValue,
+      materialsUsed: txn.materialUsage,
+    };
+  } catch (err) {
+    const e = err as Error & { code?: string };
+    if (e.code === 'PLAYER_NOT_FOUND') {
+      return { success: false, gearName: recipe.name, bonus: 0, materialsUsed: {}, error: 'Player not found' };
+    }
+    if (e.code === 'INSUFFICIENT_MATERIALS') {
+      return { success: false, gearName: recipe.name, bonus: 0, materialsUsed: {}, error: 'Insufficient materials' };
+    }
+    return { success: false, gearName: recipe.name, bonus: 0, materialsUsed: {}, error: e.message };
+  }
 }
 
 export interface ConsumableCraftingResult {
@@ -459,7 +471,7 @@ export async function executeConsumableCrafting(
   recipeId: string,
   quantity: number = 1
 ): Promise<ConsumableCraftingResult> {
-  // 1. 获取配方
+  // 1. 获取配方（缓存读取，配方数据静态无需事务）
   const recipe = await getCraftingRecipeById(recipeId);
   if (!recipe) {
     return { success: false, consumableName: '', quantity, effect: {}, materialsUsed: {}, error: 'Recipe not found' };
@@ -470,112 +482,127 @@ export async function executeConsumableCrafting(
     return { success: false, consumableName: '', quantity, effect: {}, materialsUsed: {}, error: 'Recipe is not a consumable recipe' };
   }
 
-  // 3. 获取玩家数据
-  const playerResult = await query<{
-    id: string;
-    materials: Record<string, number>;
-  }>('SELECT id, materials FROM players WHERE user_id = $1', [userId]);
-
-  if (playerResult.length === 0) {
-    return { success: false, consumableName: '', quantity, effect: {}, materialsUsed: {}, error: 'Player not found' };
-  }
-
-  const player = playerResult[0];
-  const currentMaterials = player.materials || {};
-
-  // 4. 解析输入材料（可能是单一对象或对象数组）
+  // 3. 解析输入材料（可能是单一对象或对象数组）
   const inputMaterials = Array.isArray(recipe.input) ? recipe.input : [recipe.input];
 
-  // 5. 检查每种材料是否足够（每种替代材料只需一种）
-  const materialUsage: Record<string, number> = {};
-  let hasAllMaterials = true;
-
-  for (const materialSet of inputMaterials) {
-    hasAllMaterials = true;
-    for (const [material, amount] of Object.entries(materialSet)) {
-      const totalRequired = amount * quantity;
-      const currentAmount = currentMaterials[material] || 0;
-      if (currentAmount < totalRequired) {
-        hasAllMaterials = false;
-        break;
-      }
-    }
-    if (hasAllMaterials) {
-      // 找到足够的材料组合
-      for (const [material, amount] of Object.entries(materialSet)) {
-        materialUsage[material] = amount * quantity;
-      }
-      break;
-    }
-  }
-
-  if (!hasAllMaterials) {
-    return {
-      success: false,
-      consumableName: recipe.name,
-      quantity,
-      effect: {},
-      materialsUsed: {},
-      error: 'Insufficient materials',
-    };
-  }
-
-  // 6. 扣除材料
-  const updatedMaterials = { ...currentMaterials };
-  for (const [material, amount] of Object.entries(materialUsage)) {
-    updatedMaterials[material] = (updatedMaterials[material] || 0) - amount;
-  }
-
-  // 7. 获取消耗品输出信息
+  // 4. 消耗品输出信息（静态配方数据，事务外提前计算）
   const outputInfo = recipe.output as { name: string; quantity: number; effect: Record<string, any> };
   const consumableName = outputInfo.name;
   const effect = outputInfo.effect || {};
   const outputQuantity = (outputInfo.quantity || 1) * quantity;
 
-  // 8. 检查是否已存在相同的消耗品
-  const existingResult = await query<{ id: string; quantity: number }>(
-    'SELECT id, quantity FROM player_consumables WHERE player_id = $1 AND name = $2',
-    [player.id, consumableName]
-  );
+  // 5. 事务：读玩家材料(FOR UPDATE 锁行) + 校验 + 扣料 + 发消耗品，原子化防拆分写不一致/TOCTOU
+  //   原实现扣料(UPDATE players) 与发消耗品(INSERT/UPDATE player_consumables) 分两条 execute，
+  //   中间失败会不一致（消耗品发了但材料没扣）；并发扣料还会丢失更新。
+  //   现把读+校验+扣料+发消耗品并入同一事务并对玩家行加 FOR UPDATE。
+  try {
+    const txn = await withTransaction(async (client) => {
+      // 5a. 锁定并读取玩家行（FOR UPDATE 防并发扣料丢失更新）
+      const playerResult = await client.query<{ id: string; materials: Record<string, number> }>(
+        'SELECT id, materials FROM players WHERE user_id = $1 FOR UPDATE',
+        [userId]
+      );
 
-  let playerConsumableId: string;
+      if (playerResult.rows.length === 0) {
+        const err = new Error('Player not found') as Error & { code?: string };
+        err.code = 'PLAYER_NOT_FOUND';
+        throw err;
+      }
 
-  if (existingResult.length > 0) {
-    // 更新现有消耗品数量
-    playerConsumableId = existingResult[0].id;
-    const newQuantity = existingResult[0].quantity + outputQuantity;
-    await execute(
-      'UPDATE player_consumables SET quantity = $1, created_at = NOW() WHERE id = $2',
-      [newQuantity, playerConsumableId]
-    );
-  } else {
-    // 创建新的消耗品记录
-    playerConsumableId = uuidv4();
-    await execute(
-      `INSERT INTO player_consumables (id, player_id, name, effect, quantity, created_at)
-       VALUES ($1, $2, $3, $4, $5, NOW())`,
-      [
-        playerConsumableId,
-        player.id,
-        consumableName,
-        JSON.stringify(effect),
-        outputQuantity,
-      ]
-    );
+      const player = playerResult.rows[0];
+      const currentMaterials = player.materials || {};
+
+      // 5b. 校验每种材料是否足够（每种替代材料只需一种）
+      const materialUsage: Record<string, number> = {};
+      let hasAllMaterials = false;
+
+      for (const materialSet of inputMaterials) {
+        hasAllMaterials = true;
+        for (const [material, amount] of Object.entries(materialSet)) {
+          const totalRequired = amount * quantity;
+          const currentAmount = currentMaterials[material] || 0;
+          if (currentAmount < totalRequired) {
+            hasAllMaterials = false;
+            break;
+          }
+        }
+        if (hasAllMaterials) {
+          for (const [material, amount] of Object.entries(materialSet)) {
+            materialUsage[material] = amount * quantity;
+          }
+          break;
+        }
+      }
+
+      if (!hasAllMaterials) {
+        const err = new Error('Insufficient materials') as Error & { code?: string };
+        err.code = 'INSUFFICIENT_MATERIALS';
+        throw err;
+      }
+
+      // 5c. 扣除材料
+      const updatedMaterials = { ...currentMaterials };
+      for (const [material, amount] of Object.entries(materialUsage)) {
+        updatedMaterials[material] = (updatedMaterials[material] || 0) - amount;
+      }
+
+      // 5d. 发消耗品（已存在则累加，否则新建）
+      const existingResult = await client.query<{ id: string; quantity: number }>(
+        'SELECT id, quantity FROM player_consumables WHERE player_id = $1 AND name = $2',
+        [player.id, consumableName]
+      );
+
+      let playerConsumableId: string;
+
+      if (existingResult.rows.length > 0) {
+        // 更新现有消耗品数量
+        playerConsumableId = existingResult.rows[0].id;
+        const newQuantity = existingResult.rows[0].quantity + outputQuantity;
+        await client.query(
+          'UPDATE player_consumables SET quantity = $1, created_at = NOW() WHERE id = $2',
+          [newQuantity, playerConsumableId]
+        );
+      } else {
+        // 创建新的消耗品记录
+        playerConsumableId = uuidv4();
+        await client.query(
+          `INSERT INTO player_consumables (id, player_id, name, effect, quantity, created_at)
+           VALUES ($1, $2, $3, $4, $5, NOW())`,
+          [
+            playerConsumableId,
+            player.id,
+            consumableName,
+            JSON.stringify(effect),
+            outputQuantity,
+          ]
+        );
+      }
+
+      // 5e. 更新玩家材料（与发消耗品在同一事务内，任一失败整体回滚）
+      await client.query(
+        'UPDATE players SET materials = $1, updated_at = NOW() WHERE user_id = $2',
+        [JSON.stringify(updatedMaterials), userId]
+      );
+
+      return { materialUsage, playerConsumableId };
+    });
+
+    return {
+      success: true,
+      consumableName,
+      quantity: outputQuantity,
+      effect,
+      materialsUsed: txn.materialUsage,
+      playerConsumableId: txn.playerConsumableId,
+    };
+  } catch (err) {
+    const e = err as Error & { code?: string };
+    if (e.code === 'PLAYER_NOT_FOUND') {
+      return { success: false, consumableName: recipe.name, quantity, effect: {}, materialsUsed: {}, error: 'Player not found' };
+    }
+    if (e.code === 'INSUFFICIENT_MATERIALS') {
+      return { success: false, consumableName: recipe.name, quantity, effect: {}, materialsUsed: {}, error: 'Insufficient materials' };
+    }
+    return { success: false, consumableName: recipe.name, quantity, effect: {}, materialsUsed: {}, error: e.message };
   }
-
-  // 9. 更新玩家材料
-  await execute(
-    'UPDATE players SET materials = $1, updated_at = NOW() WHERE user_id = $2',
-    [JSON.stringify(updatedMaterials), userId]
-  );
-
-  return {
-    success: true,
-    consumableName,
-    quantity: outputQuantity,
-    effect,
-    materialsUsed: materialUsage,
-    playerConsumableId,
-  };
 }

@@ -3217,8 +3217,25 @@ frontend/
 - T072(打牌交互): 完成 - utils/cards.ts 加 cardNeedsTarget/cardIsAOE/cardSupported + computeCardTargets(敌方+存活+射程内, 近战≤1.5/远程≤range/嘲讽≤range??3) + BattleHand(选中高亮 selectedCardDeckId + unsupported 卡禁用「暂不可用」) + BattleBoard/BattlePiece(targetableCharacterIds/isTargetable danger 准星脉冲环) + BattleView 打牌状态机(canPlayCards + onCardClick AOE直接打/needsTarget进目标模式 + onPieceClick目标模式优先 + onCellClick空格取消 + 跳过出牌 + watch 清选中)；typecheck 零错；build 通过(BattleView 13.99kB->16.57kB，CSS 9.04->10.15kB)；dev server HTTP 200。**关键**: defense/heal/movement 后端 T050 unsupported_card_type 故前端禁用; 嘲讽强制目标由服务端 getTauntRedirect 强制客户端不建模回 error 降级; AOE 无需选目标
 - T073(WS对战连接): 完成 - game store battle:matched handler 加 auto-join(joinBattle)；e2e 2 客户端验证 matched->join->state:full 全链路通过
 - T077(匹配队列界面): 完成 - game store queueMatch/cancelMatch + BattleView 匹配面板三态(进入中/匹配中+取消/开始匹配)；e2e 同 T073 通过。`typecheck` 零错；`build` 通过(BattleView 16.57kB->17.07kB)
-- T074-T076(战棋其他交互) / T078(对战结算界面) / T079-T080: 待开发
+- T074-T076(战棋其他交互) / T078(对战结算界面) / T079+T080(API 对接+JWT 管理, 审视确认实质完成) / T081(集成测试+Bug 修复) / T082(性能优化): 完成（详见 progress.md）
 - 前端尚未有独立构建产物部署 (Caddy 静态托管 / 资源缓存 / 增量同步 待做)
 
-*文档版本：v1.62*
-*最后更新：2026-08-13*
+## T082 性能优化 (2026-08-15)
+
+### 后端
+
+- **HTTP 压缩**: `index.ts` 挂 `compression()` 中间件(cors/json 之后、路由之前), 依赖 `compression@^1.8.1`(+`@types/compression`)。按 Accept-Encoding 协商 gzip, 大 JSON 响应(卡牌模板/玩家数据/战斗状态)传输体积显著降低。测试 `src/middleware/compression.test.ts`(gzip 生效 / identity 不压缩)。
+- **优雅关闭**: SIGTERM/SIGINT handler(Docker stop/recreate 触发), shuttingDown 幂等标志防重入, 依序 `io.close()`(Socket.IO+底层 HTTP server, 停止接受新连接) -> `pool.end()`(PG) -> `disconnectRedis()`, 各步独立 try/catch 防连环失败, 完成后 `process.exit(0)`。修复停容器时 PG/Redis 连接泄漏与僵尸 socket。
+- **crafting 事务化**(修 T081 已知③): `executeGearCrafting`/`executeConsumableCrafting` 改 `withTransaction` + 玩家行 `SELECT ... FOR UPDATE`(比 executeCardCrafting 更强--读也移入事务内)。gear 修 TOCTOU(原事务外 read->校验->write, 并发扣料丢失更新); consumable 修扣料与发消耗品分两条 execute 的中间失败不一致。PLAYER_NOT_FOUND/INSUFFICIENT_MATERIALS 以 `err.code` 抛出, 经 withTransaction 统一 ROLLBACK, 路由层 catch 映射回 `result.success=false` 契约不变。配方读取(静态缓存)与 gear 类型校验留事务外提前失败。+3 防回归 test(craftingService 34/34)。
+
+### 前端
+
+- **socket.io-client 延迟加载**: game store `connect()` 改 async + `await import('socket.io-client')`。原静态 import 经 App.vue->game store 链路把 socket.io 整个子图拉进主 chunk, 首屏(登录/主页/工坊)被迫下载; 改动态 import 后独立懒加载 chunk, 主 chunk(eager) 197KB->156KB, socket.io ~44KB 仅对战连接时下载。
+- **vite manualChunks**: 仅把 vue 全家桶(vue/vue-router/pinia/@vue)拆 `vendor-vue` chunk(跨路由复用+业务代码变动不失效长期缓存); 其余 node_modules 返回 undefined 交回 Vite 默认拆分(动态 import 的 socket.io 传递依赖自动成懒 chunk, 静态 import 的 axios 并入引用方)。**坑**: 不在 manualChunks 强行归类 socket.io 依赖, 否则传递依赖被错误并入 eager vendor 破坏延迟加载。
+
+### 验证
+
+后端 jest 40/43 suite 681/709(3 env-fail suite 不变: socketServer/authController/wsValidation.integration, ECONNREFUSED 环境非代码); 前端 build + typecheck 全过。
+
+*文档版本：v1.63*
+*最后更新：2026-08-15*

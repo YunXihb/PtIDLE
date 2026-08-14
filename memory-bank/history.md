@@ -2700,3 +2700,17 @@ T072 是战棋界面 5/5（打牌交互）。后端 executePlayCard（battleActi
 - **e2e 结果**：双端 matched + joinOk + battle:state:full(6 棋子/3 手牌/bases/actor=null/phase=idle) 全链路 ✅ PASS。A 收到两次 state:full（A 先 join 独占，B join 后重广播含对手）——后端 opponent join 重广播行为，前端 handler 覆写 board 无害。
 - typecheck 零错；build 通过（BattleView 16.57kB->17.07kB）。无后端改动。
 - 范围外：浏览器双 tab 实战 smoke（脚本已验证协议层）/ T074-T076 战棋其他交互 / T078 结算界面。**前端进度 T057-T072+T073+T077，下一个 T074-T076 或 T078**。
+
+## 2026-08-15 - 任务：T082 性能优化收尾（memory-bank 同步 + commit）
+
+### Prompt
+继续进行 T082 的收尾。前序：T082 5 项改动（compression 中间件 / socket.io-client 动态 import / vite manualChunks / 优雅关闭 / crafting 事务化）已全部实现并验证（后端 jest 40/43 suite 681/709，前端 build+typecheck 全过），用户暂停留下次继续；本次完成 memory-bank 三文件同步（progress.md + architecture.md + history.md）+ git commit（不 push，规则4）。
+
+### 思考
+T082 是横切性能批次，无单一归属章节，architecture.md 采用独立「T082 性能优化」节分后端/前端/验证三段记录；同时修正前端章节「状态」列表的过期 bullet（T074-T078/T079+T080/T081 已完成仍标待开发）。crafting 事务化的契约保持是关键设计：PLAYER_NOT_FOUND/INSUFFICIENT_MATERIALS 以 `err.code` 抛出经 withTransaction 统一 ROLLBACK，service 层 catch 后映射回 `result.success=false` 返回对象（crafting 是 result.success 型服务非 throw 型），路由层契约零变化，前端无感。
+
+### 意外
+- compression.test.ts 断言是 gzip 生效/identity 不压缩（文档初稿误写 br 优先，核对后修正）。
+- manualChunks 的坑：若对 socket.io-client 依赖强行归类到 vendor chunk，会把 engine.io-client 等传递依赖错误并入 eager vendor，反而破坏动态 import 的延迟加载；正确做法是只拆 vue 全家桶、其余返回 undefined 交回 Vite 默认拆分。
+- 后端 jest 3 个 env-fail suite（socketServer/authController/wsValidation.integration，ECONNREFUSED）不变，为环境问题（compose 不发布 host 端口 + dev 容器未运行）非代码。
+- **核心计划 T001-T082 全部完成**，项目进入运营+扩展期；下一个功能增量为 T1001 战棋公共池（设计已锁定），生产基建余项（Caddy HTTPS / UptimeRobot）阻塞于域名。

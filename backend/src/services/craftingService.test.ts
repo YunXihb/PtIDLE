@@ -431,7 +431,7 @@ describe('CraftingService', () => {
     it('should craft gear successfully', async () => {
       mockQuery.mockResolvedValueOnce([mockGearRecipe] as any);
       mockQuery.mockResolvedValueOnce([mockPlayerWithMaterials] as any);
-      mockExecute.mockResolvedValueOnce({} as any);
+      mockQuery.mockResolvedValueOnce([] as any);
 
       const result = await executeGearCrafting('user-1', 'gear-recipe-1', 1);
 
@@ -488,7 +488,7 @@ describe('CraftingService', () => {
     it('should update production_gear with correct bonus', async () => {
       mockQuery.mockResolvedValueOnce([mockGearRecipe] as any);
       mockQuery.mockResolvedValueOnce([mockPlayerWithMaterials] as any);
-      mockExecute.mockResolvedValueOnce({} as any);
+      mockQuery.mockResolvedValueOnce([] as any);
 
       const result = await executeGearCrafting('user-1', 'gear-recipe-1', 1);
 
@@ -506,13 +506,29 @@ describe('CraftingService', () => {
 
       mockQuery.mockResolvedValueOnce([mockGearRecipe] as any);
       mockQuery.mockResolvedValueOnce([playerWithExistingGear] as any);
-      mockExecute.mockResolvedValueOnce({} as any);
+      mockQuery.mockResolvedValueOnce([] as any);
 
       const result = await executeGearCrafting('user-1', 'gear-recipe-1', 1);
 
       expect(result.success).toBe(true);
       expect(result.gearName).toBe('矿镐');
       expect(result.bonus).toBe(0.5);
+    });
+
+    it('should wrap crafting in a transaction with FOR UPDATE (T082 regression)', async () => {
+      // 修复前：gear 制造为裸 read(事务外) -> 校验 -> 单 execute，并发扣料会丢失更新。
+      // 修复后：玩家读取移入事务并加 FOR UPDATE 行锁，扣料+发装备在同一事务内。
+      mockQuery.mockResolvedValueOnce([mockGearRecipe] as any); // recipe
+      mockQuery.mockResolvedValueOnce([mockPlayerWithMaterials] as any); // player (FOR UPDATE)
+      mockQuery.mockResolvedValueOnce([] as any); // UPDATE players
+
+      await executeGearCrafting('user-1', 'gear-recipe-1', 1);
+
+      expect(mockWithTransaction).toHaveBeenCalledTimes(1);
+      const playerReadCall = mockQuery.mock.calls.find(
+        ([sql]) => typeof sql === 'string' && sql.includes('FOR UPDATE')
+      );
+      expect(playerReadCall).toBeDefined();
     });
   });
 
@@ -535,8 +551,8 @@ describe('CraftingService', () => {
       mockQuery.mockResolvedValueOnce([mockConsumableRecipe] as any);
       mockQuery.mockResolvedValueOnce([mockPlayerWithMaterials] as any);
       mockQuery.mockResolvedValueOnce([] as any); // No existing consumable
-      mockExecute.mockResolvedValueOnce({} as any); // Insert consumable
-      mockExecute.mockResolvedValueOnce({} as any); // Update materials
+      mockQuery.mockResolvedValueOnce([] as any); // Insert consumable
+      mockQuery.mockResolvedValueOnce([] as any); // Update materials
 
       const result = await executeConsumableCrafting('user-1', 'consumable-recipe-1', 1);
 
@@ -598,8 +614,8 @@ describe('CraftingService', () => {
       mockQuery.mockResolvedValueOnce([mockConsumableRecipe] as any);
       mockQuery.mockResolvedValueOnce([mockPlayerWithMaterials] as any);
       mockQuery.mockResolvedValueOnce([existingConsumable] as any); // Existing consumable found
-      mockExecute.mockResolvedValueOnce({} as any); // Update quantity
-      mockExecute.mockResolvedValueOnce({} as any); // Update materials
+      mockQuery.mockResolvedValueOnce([] as any); // Update quantity
+      mockQuery.mockResolvedValueOnce([] as any); // Update materials
 
       const result = await executeConsumableCrafting('user-1', 'consumable-recipe-1', 1);
 
@@ -616,8 +632,8 @@ describe('CraftingService', () => {
       mockQuery.mockResolvedValueOnce([mockConsumableRecipe] as any);
       mockQuery.mockResolvedValueOnce([playerWithOnlyPlank] as any);
       mockQuery.mockResolvedValueOnce([] as any); // No existing consumable
-      mockExecute.mockResolvedValueOnce({} as any); // Insert consumable
-      mockExecute.mockResolvedValueOnce({} as any); // Update materials
+      mockQuery.mockResolvedValueOnce([] as any); // Insert consumable
+      mockQuery.mockResolvedValueOnce([] as any); // Update materials
 
       const result = await executeConsumableCrafting('user-1', 'consumable-recipe-1', 1);
 
@@ -630,14 +646,48 @@ describe('CraftingService', () => {
       mockQuery.mockResolvedValueOnce([mockConsumableRecipe] as any);
       mockQuery.mockResolvedValueOnce([mockPlayerWithMaterials] as any);
       mockQuery.mockResolvedValueOnce([] as any); // No existing consumable
-      mockExecute.mockResolvedValueOnce({} as any); // Insert consumable
-      mockExecute.mockResolvedValueOnce({} as any); // Update materials
+      mockQuery.mockResolvedValueOnce([] as any); // Insert consumable
+      mockQuery.mockResolvedValueOnce([] as any); // Update materials
 
       const result = await executeConsumableCrafting('user-1', 'consumable-recipe-1', 3);
 
       expect(result.success).toBe(true);
       expect(result.quantity).toBe(3);
       expect(result.materialsUsed).toEqual({ iron_ingot: 3 });
+    });
+
+    it('should wrap crafting in a transaction with FOR UPDATE (T082 regression)', async () => {
+      // 修复前：扣料与发消耗品分两条 execute，玩家材料事务外读取。
+      // 修复后：读+校验+扣料+发消耗品并入同一事务，玩家行加 FOR UPDATE。
+      mockQuery.mockResolvedValueOnce([mockConsumableRecipe] as any); // recipe
+      mockQuery.mockResolvedValueOnce([mockPlayerWithMaterials] as any); // player (FOR UPDATE)
+      mockQuery.mockResolvedValueOnce([] as any); // existing consumable
+      mockQuery.mockResolvedValueOnce([] as any); // insert consumable
+      mockQuery.mockResolvedValueOnce([] as any); // update materials
+
+      await executeConsumableCrafting('user-1', 'consumable-recipe-1', 1);
+
+      expect(mockWithTransaction).toHaveBeenCalledTimes(1);
+      const playerReadCall = mockQuery.mock.calls.find(
+        ([sql]) => typeof sql === 'string' && sql.includes('FOR UPDATE')
+      );
+      expect(playerReadCall).toBeDefined();
+    });
+
+    it('should not report success when materials update fails after granting consumable (T082 atomicity)', async () => {
+      // 原实现：发消耗品(INSERT) 与扣料(UPDATE players) 分两条 execute，扣料失败时
+      // 消耗品已落库 -> 不一致。事务化后整体回滚 -> 返回失败而非部分成功。
+      mockQuery.mockResolvedValueOnce([mockConsumableRecipe] as any); // recipe
+      mockQuery.mockResolvedValueOnce([mockPlayerWithMaterials] as any); // player
+      mockQuery.mockResolvedValueOnce([] as any); // existing consumable
+      mockQuery.mockResolvedValueOnce([] as any); // insert consumable (succeeds)
+      mockQuery.mockRejectedValueOnce(new Error('materials update failed')); // update materials fails
+
+      const result = await executeConsumableCrafting('user-1', 'consumable-recipe-1', 1);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('materials update failed');
+      expect(mockWithTransaction).toHaveBeenCalledTimes(1);
     });
   });
 });
