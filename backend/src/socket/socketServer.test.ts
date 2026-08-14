@@ -500,6 +500,7 @@ describe('T045 + T046 socketServer', () => {
       maxHealth: 20,
       energy: 3,
       maxEnergy: 3,
+      movement: 2,
       position: { x: 0, y: 0 },
       isAlive: true,
       effects: [],
