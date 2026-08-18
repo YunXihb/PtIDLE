@@ -3,10 +3,12 @@ import { getPendingBattleForJoin } from '../services/battleService';
 import { broadcastFullState } from './battleStateBroadcaster';
 import { initBattleField } from '../services/battleInitializationService';
 import { executeMove, executePlayCard, executeEndStep } from '../services/battleActionService';
+import { surrenderBattle, requestDraw, respondDraw } from '../services/battleInteractionService';
 import type { HandCard } from '../services/handService';
 import { redisClient } from '../config/redis';
 import { queryOne } from '../config/database';
-import { validateOperationContext, validateJoinContext } from './wsValidation';
+import { validateOperationContext, validateJoinContext, checkRoomMembership, checkRateLimit } from './wsValidation';
+import { ApiError } from '../utils/ApiError';
 
 /**
  * T046 房间管理 —— 集中 battle 房间相关的 socket.io 操作
@@ -379,4 +381,123 @@ export async function handleBattleSkipPlay(
     });
   }
   // 成功: 不 emit（依赖 broadcaster 推送 session + board）
+}
+
+// ========================================
+// 对战互动：退出对战（认输）/ 请求平局 / 回应平局
+// ========================================
+
+/**
+ * 处理客户端的 `battle:surrender` 事件（退出对战，判负）
+ *
+ * 手动组合 checkRoomMembership + checkRateLimit（不用 validateOperationContext，
+ * 因其 status 校验仅允许 ongoing，而认输需兼容 pending —— 兼作未开局卡死对局的逃生门；
+ * status 与归属校验由 surrenderBattle 内部完成）。
+ * 成功后 recordVictory 广播 battle:end，双方进结算流程。
+ */
+export async function handleBattleSurrender(
+  io: IOServer,
+  socket: Socket,
+  payload: { battleId?: unknown }
+): Promise<void> {
+  const battleId = typeof payload?.battleId === 'string' ? payload.battleId : null;
+  if (!battleId) {
+    socket.emit('battle:surrender:error', { error: 'invalid_payload' });
+    return;
+  }
+
+  const userId = socket.data.userId as string;
+
+  const roomCheck = await checkRoomMembership(socket, battleId);
+  if (!roomCheck.ok) {
+    socket.emit('battle:surrender:error', { error: roomCheck.reason });
+    return;
+  }
+  const rateCheck = await checkRateLimit(userId, 'battle:surrender');
+  if (!rateCheck.ok) {
+    socket.emit('battle:surrender:error', { error: rateCheck.reason });
+    return;
+  }
+
+  try {
+    await surrenderBattle(io, battleId, userId);
+  } catch (err) {
+    socket.emit('battle:surrender:error', {
+      error: err instanceof ApiError ? err.message : 'internal_error',
+    });
+  }
+}
+
+/**
+ * 处理客户端的 `battle:draw_request` 事件（请求平局）
+ * 成功后 io 向对战房间广播 battle:draw_requested（客户端按 fromUserId 忽略自己）。
+ */
+export async function handleBattleDrawRequest(
+  io: IOServer,
+  socket: Socket,
+  payload: { battleId?: unknown }
+): Promise<void> {
+  const battleId = typeof payload?.battleId === 'string' ? payload.battleId : null;
+  if (!battleId) {
+    socket.emit('battle:draw_request:error', { error: 'invalid_payload' });
+    return;
+  }
+
+  const userId = socket.data.userId as string;
+
+  const opCheck = await validateOperationContext(socket, {
+    battleId,
+    userId,
+    eventName: 'battle:draw_request',
+  });
+  if (!opCheck.ok) {
+    socket.emit('battle:draw_request:error', { error: opCheck.reason });
+    return;
+  }
+
+  try {
+    await requestDraw(io, battleId, userId);
+  } catch (err) {
+    socket.emit('battle:draw_request:error', {
+      error: err instanceof ApiError ? err.message : 'internal_error',
+    });
+  }
+}
+
+/**
+ * 处理客户端的 `battle:draw_response` 事件（回应平局请求）
+ * accept -> recordVictory 平局结算（广播 battle:end）
+ * reject -> 仅向请求方单播 battle:draw_declined，对当前对局无影响。
+ */
+export async function handleBattleDrawResponse(
+  io: IOServer,
+  socket: Socket,
+  payload: { battleId?: unknown; accept?: unknown }
+): Promise<void> {
+  const battleId = typeof payload?.battleId === 'string' ? payload.battleId : null;
+  const accept = typeof payload?.accept === 'boolean' ? payload.accept : null;
+  if (!battleId || accept === null) {
+    socket.emit('battle:draw_response:error', { error: 'invalid_payload' });
+    return;
+  }
+
+  const userId = socket.data.userId as string;
+
+  const opCheck = await validateOperationContext(socket, {
+    battleId,
+    userId,
+    eventName: 'battle:draw_response',
+  });
+  if (!opCheck.ok) {
+    socket.emit('battle:draw_response:error', { error: opCheck.reason });
+    return;
+  }
+
+  try {
+    await respondDraw(io, battleId, userId, accept);
+  } catch (err) {
+    socket.emit('battle:draw_response:error', {
+      error: err instanceof ApiError ? err.message : 'internal_error',
+    });
+  }
 }

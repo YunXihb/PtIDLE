@@ -91,7 +91,7 @@ export interface MatchQueueStatus {
   matched?: boolean; battleId?: string; matchedAt?: number;
 }
 export type PlayerResult = 'win' | 'loss' | 'draw';
-export type VictoryType = 'kill_threshold' | 'base_threshold' | 'draw';
+export type VictoryType = 'kill_threshold' | 'base_threshold' | 'draw' | 'surrender';
 export interface PlayerStats { wins: number; losses: number; draws: number }
 export interface SettlementResult {
   battleId: string; status: 'finished'; yourResult: PlayerResult;

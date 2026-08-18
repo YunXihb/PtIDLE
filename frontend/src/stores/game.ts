@@ -29,6 +29,12 @@ export const useGameStore = defineStore('game', () => {
   const matched = ref<MatchMatchedEvent | null>(null);
   const inQueue = ref(false);
 
+  // 对战互动（退出/求和）
+  // 对方发来的未决求和请求（对方 userId）
+  const pendingDrawRequest = ref<string | null>(null);
+  // 我方已发出求和、等待对方回应
+  const drawRequestSent = ref(false);
+
   // 操作错误提示
   const lastError = ref<string | null>(null);
 
@@ -128,6 +134,8 @@ export const useGameStore = defineStore('game', () => {
     s.on('battle:end', (payload: BattleEndEvent) => {
       battleEnded.value = payload;
       settlement.value = null;
+      pendingDrawRequest.value = null;
+      drawRequestSent.value = false;
     });
 
     s.on('battle:move:error', (e: { error: string }) => { lastError.value = e.error; });
@@ -138,6 +146,20 @@ export const useGameStore = defineStore('game', () => {
       lastError.value = e.detail || e.error;
     });
     s.on('battle:join:error', (e: { error: string }) => { lastError.value = e.error; });
+
+    // 对战互动：对方求和（忽略自己发出的广播）/ 对方拒绝我的求和
+    s.on('battle:draw_requested', (payload: { battleId: string; fromUserId: string }) => {
+      if (payload.fromUserId !== myUserId.value) {
+        pendingDrawRequest.value = payload.fromUserId;
+      }
+    });
+    s.on('battle:draw_declined', () => {
+      drawRequestSent.value = false;
+      lastError.value = '对方拒绝了和局请求';
+    });
+    s.on('battle:surrender:error', (e: { error: string }) => { lastError.value = e.error; });
+    s.on('battle:draw_request:error', (e: { error: string }) => { lastError.value = e.error; });
+    s.on('battle:draw_response:error', (e: { error: string }) => { lastError.value = e.error; });
   }
 
   function disconnect() {
@@ -170,6 +192,25 @@ export const useGameStore = defineStore('game', () => {
   function skipPlay() {
     if (!battleId.value) return;
     socket.value?.emit('battle:skip_play', { battleId: battleId.value });
+  }
+
+  // ---------- 对战互动 ----------
+  // 退出对战：后端判我方负、对方胜，battle:end 结算
+  function surrender() {
+    if (!battleId.value) return;
+    socket.value?.emit('battle:surrender', { battleId: battleId.value });
+  }
+  // 请求平局：对方收弹框；拒绝时我方收 battle:draw_declined
+  function requestDraw() {
+    if (!battleId.value) return;
+    drawRequestSent.value = true;
+    socket.value?.emit('battle:draw_request', { battleId: battleId.value });
+  }
+  // 回应对方求和：accept -> 双方平局结算；reject -> 对当前对局无影响
+  function respondDraw(accept: boolean) {
+    if (!battleId.value) return;
+    pendingDrawRequest.value = null;
+    socket.value?.emit('battle:draw_response', { battleId: battleId.value, accept });
   }
 
   // ---------- T077 匹配队列 ----------
@@ -224,6 +265,8 @@ export const useGameStore = defineStore('game', () => {
     opponentDisconnected.value = false;
     battleEnded.value = null;
     settlement.value = null;
+    pendingDrawRequest.value = null;
+    drawRequestSent.value = false;
     matched.value = null;
     matching.value = false;
     inQueue.value = false;
@@ -235,5 +278,6 @@ export const useGameStore = defineStore('game', () => {
     lastError, currentPhase, currentActorId, isMyTurn,
     connect, disconnect, joinBattle, move, playCard, skipPlay, clearError, resetBattle,
     queueMatch, cancelMatch, fetchSettlement,
+    pendingDrawRequest, drawRequestSent, surrender, requestDraw, respondDraw,
   };
 });

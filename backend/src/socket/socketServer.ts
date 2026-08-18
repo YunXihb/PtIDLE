@@ -1,6 +1,6 @@
 import { Server as IOServer, Socket } from 'socket.io';
 import { verifyClientToken } from './authMiddleware';
-import { handleBattleJoin, handleBattleMove, handleBattlePlayCard, handleBattleSkipPlay, broadcastOpponentDisconnected, userRoom } from './battleRoom';
+import { handleBattleJoin, handleBattleMove, handleBattlePlayCard, handleBattleSkipPlay, handleBattleSurrender, handleBattleDrawRequest, handleBattleDrawResponse, broadcastOpponentDisconnected, userRoom } from './battleRoom';
 
 /**
  * T045 + T046 Socket.io 入口
@@ -81,6 +81,26 @@ export function initializeSocketServer(io: IOServer): void {
       handleBattleSkipPlay(io, socket, payload).catch((err) => {
         console.error(`[WS] battle:skip_play error: userId=${userId}`, err);
         socket.emit('battle:skip_play:error', { error: 'internal_error' });
+      });
+    });
+
+    // 对战互动：退出对战（认输）/ 请求平局 / 回应平局
+    socket.on('battle:surrender', (payload: { battleId?: unknown }) => {
+      handleBattleSurrender(io, socket, payload).catch((err) => {
+        console.error('[WS] battle:surrender handler error:', err);
+        socket.emit('battle:surrender:error', { error: 'internal_error' });
+      });
+    });
+    socket.on('battle:draw_request', (payload: { battleId?: unknown }) => {
+      handleBattleDrawRequest(io, socket, payload).catch((err) => {
+        console.error('[WS] battle:draw_request handler error:', err);
+        socket.emit('battle:draw_request:error', { error: 'internal_error' });
+      });
+    });
+    socket.on('battle:draw_response', (payload: { battleId?: unknown; accept?: unknown }) => {
+      handleBattleDrawResponse(io, socket, payload).catch((err) => {
+        console.error('[WS] battle:draw_response handler error:', err);
+        socket.emit('battle:draw_response:error', { error: 'internal_error' });
       });
     });
 

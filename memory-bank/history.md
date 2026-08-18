@@ -2730,3 +2730,21 @@ T082 是横切性能批次，无单一归属章节，architecture.md 采用独�
 - 本地 jest 集成套件（socketServer/authController/wsValidation.integration）今日全绿——因为本轮网页测试把 ptidle-dev-pg(5433)/ptidle-dev-redis(6379) 容器起来了，历史「3 env-fail」随环境变化，非代码改动。
 - Edit 工具对 battleActionService.ts 的 `->`（U+2192）匹配再次失败（memory 已记录的坑），改 python 按锚点字符串替换。
 - 全量 43/43 suite 711/711 通过；tsc 零错；后端 nodemon dev server 已热重载，待用户浏览器双开复验「进入后即可移动」。
+
+## 2026-08-18 - 任务：对战互动按钮（退出对战认输 + 请求平局）
+
+### Prompt
+给对战添加双方互动功能按钮：退出对战（弹框二次确认，退出方判负对方胜）；请求平局（对方弹框接受/拒绝，接受即双方平局，拒绝无影响）。
+
+### 思考
+**结算复用是关键设计**：recordVictory 已完成 UPDATE battles + finishSession + broadcastBattleEnd 全链路，T054 settleBattle 的战绩入账由前端收 battle:end 后 POST /battle/result 自动触发 -- 互动服务只需把胜负判定结果喂给 recordVictory，零结算改动。认输需新 victory_type 'surrender'（migration 011 扩 CHECK），求和复用 'draw'。求和请求存 Redis 单 key（后发覆盖先发），终局清理收敛到 recordVictory 唯一漏斗。拒绝回应经 user:{userId} 个人房间单播（socketServer 连接时自动 join）。
+
+**认输兼容 pending**：validateOperationContext 的 status 校验只放行 ongoing，认输 handler 改手动组合 checkRoomMembership + checkRateLimit，status/归属交给 service -- 这让"退出对战"兼作未开局卡死对局（如本次 nodemon 重启孤儿局）的逃生门。
+
+### 意外
+- 复测"卡待机"未过的真因：测试窗口正逢死锁修复的多次 nodemon 重启（含一段编译崩溃），battle:matched 一次性事件丢失，第二名玩家从未 auto-join，对局永远 pending -- 非修复无效。孤儿局已手动置 finished；需重新匹配新对局复验死锁修复。
+- battles.status CHECK 只允许 pending/ongoing/finished，无 'cancelled'（第一次 UPDATE 报约束违例）。
+- jest.resetAllMocks() 会清掉 mockReturnThis() 实现（顶层构造的 FAKE_IO.to 变返回 undefined），IO mock 必须在 beforeEach 内重建。
+- socketServer 注册块插入的 python 正则 `
+  });
+` 误匹配 io.on('connection') 收尾而非 skip_play 块收尾（缩进 2 vs 4 空格），导致注册代码落到 handler 外报 TS 找不到 socket -- 按锚点注释重插修复。

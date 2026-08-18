@@ -305,6 +305,7 @@ const VICTORY_LABEL: Record<string, string> = {
   kill_threshold: '击杀达标',
   base_threshold: '据点达标',
   draw: '平局',
+  surrender: '退出判负',
 };
 const victoryLabel = computed(() => {
   const v = game.battleEnded?.victoryType ?? game.settlement?.victoryType;
@@ -331,6 +332,31 @@ const resultClass = computed(() => myResult.value ?? '');
 
 function onLeaveBattle() {
   game.resetBattle();
+}
+
+// ---------- 对战互动：退出对战（认输）+ 请求平局 ----------
+const showSurrenderConfirm = ref(false);
+
+function onSurrenderClick() {
+  showSurrenderConfirm.value = true;
+}
+function onSurrenderConfirm() {
+  showSurrenderConfirm.value = false;
+  game.surrender();
+  // 认输不本地清 board：等后端 battle:end 推送进结算面板（失败会有 error 提示）
+}
+function onSurrenderCancel() {
+  showSurrenderConfirm.value = false;
+}
+
+function onRequestDraw() {
+  game.requestDraw();
+}
+function onDrawAccept() {
+  game.respondDraw(true);
+}
+function onDrawReject() {
+  game.respondDraw(false);
 }
 </script>
 
@@ -410,6 +436,43 @@ function onLeaveBattle() {
       />
     </div>
 
+    <!-- 对战互动：请求平局 + 退出对战（实战进行中） -->
+    <div v-if="displayBoard && !previewMode" class="mt interaction-row">
+      <button
+        type="button"
+        class="secondary small"
+        :disabled="game.drawRequestSent"
+        @click="onRequestDraw"
+      >
+        {{ game.drawRequestSent ? '等待对方回应…' : '请求平局' }}
+      </button>
+      <button type="button" class="danger small" @click="onSurrenderClick">退出对战</button>
+    </div>
+
+    <!-- 退出对战二次确认弹框 -->
+    <div v-if="showSurrenderConfirm" class="modal-mask" @click.self="onSurrenderCancel">
+      <div class="modal panel">
+        <h3>退出对战</h3>
+        <p>确定退出本次对战？退出将判负，对方获胜。</p>
+        <div class="modal-actions">
+          <button type="button" class="secondary" @click="onSurrenderCancel">取消</button>
+          <button type="button" class="danger" @click="onSurrenderConfirm">确认退出</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 对方求和弹框 -->
+    <div v-if="game.pendingDrawRequest" class="modal-mask">
+      <div class="modal panel">
+        <h3>和局请求</h3>
+        <p>对方请求和局，是否接受？</p>
+        <div class="modal-actions">
+          <button type="button" class="secondary" @click="onDrawReject">拒绝</button>
+          <button type="button" @click="onDrawAccept">接受</button>
+        </div>
+      </div>
+    </div>
+
     <div v-else-if="!displayBoard" class="panel mt match-panel">
       <!-- T077 匹配队列: 已匹配(auto-join 后等 battle:state:full) / 匹配中 / 空闲 -->
       <div v-if="game.matched" class="match-status">
@@ -457,6 +520,23 @@ function onLeaveBattle() {
 .hint { font-size: 12px; margin: 6px 2px; }
 .notice { font-size: 12px; color: var(--accent); margin: 6px 2px; }
 .error-msg { font-size: 12px; color: var(--danger); margin: 6px 2px; }
+/* 对战互动 */
+.interaction-row { display: flex; gap: 10px; }
+.modal-mask {
+  position: fixed; inset: 0; z-index: 100;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex; align-items: center; justify-content: center;
+}
+.modal { max-width: 320px; width: 90%; display: flex; flex-direction: column; gap: 12px; }
+.modal h3 { margin: 0; }
+.modal p { margin: 0; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
+.danger {
+  background: var(--danger); color: #fff; border: none;
+  cursor: pointer; border-radius: 6px; padding: 8px 16px; font-size: 14px;
+}
+.danger:hover { opacity: 0.9; }
+
 .match-panel { display: flex; flex-direction: column; gap: 10px; }
 .match-status p { margin: 0 0 8px; }
 .match-status .matching { color: var(--accent); }

@@ -20,4 +20,5 @@ export const redisKey = {
   warriorStatus: (battleId: string, characterId: string) => `battle:${battleId}:warrior_status:${characterId}`,
   rangerStatus: (battleId: string, characterId: string) => `battle:${battleId}:ranger_status:${characterId}`,
   initLock: (battleId: string) => `battle:${battleId}:init_lock`,
+  drawRequest: (battleId: string) => `battle:${battleId}:draw_request`,
 } as const;

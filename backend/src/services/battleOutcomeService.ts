@@ -58,13 +58,18 @@ export const WIN_THRESHOLD = 6;
 
 export type Side = 'p1' | 'p2';
 export type BaseOwner = Side | 'neutral';
-export type VictoryType = 'kill_threshold' | 'base_threshold' | 'draw';
+export type VictoryType = 'kill_threshold' | 'base_threshold' | 'draw' | 'surrender';
 /**
  * 胜利进度来源类型（用于区分击杀加星 vs 据点加星）
  * T052 范围：仅作类型导出；Task 3-4 的 applyKillStars / applyBaseStars 在内部使用
  * 未来扩展：可用于胜负事件 telemetry、replay 回放等
  */
 export type StarSource = 'kill' | 'base';
+/**
+ * recordVictory 的胜负来源（映射 victory_type）
+ * 'surrender': 玩家退出对战判负（battleInteractionService 使用）
+ */
+export type VictorySource = StarSource | 'surrender' | 'draw';
 
 export type BasesState = Record<string, BaseOwner>;
 
@@ -408,7 +413,7 @@ export async function recordVictory(
   io: IOServer,
   battleId: string,
   outcome: RecordVictoryOutcome,
-  source: StarSource = 'kill'
+  source: VictorySource = 'kill'
 ): Promise<void> {
   // 1. 单次 JOIN 拿双方 playerId + userId
   const playerRows = await query<{
@@ -437,7 +442,10 @@ export async function recordVictory(
   if (outcome.status === 'win') {
     winnerSide = outcome.winnerSide;
     winnerUserId = outcome.winnerSide === 'p1' ? p1?.user_id ?? null : p2?.user_id ?? null;
-    victoryType = source === 'base' ? 'base_threshold' : 'kill_threshold';
+    victoryType =
+      source === 'base' ? 'base_threshold'
+      : source === 'surrender' ? 'surrender'
+      : 'kill_threshold';
   } else {
     victoryType = 'draw';
   }
@@ -474,6 +482,13 @@ export async function recordVictory(
     });
   } catch (err) {
     console.error(`[T052] recordVictory: broadcastBattleEnd failed: battleId=${battleId}`, err);
+  }
+
+  // 5. 清理求和请求 key（所有终局路径的唯一漏斗，best-effort）
+  try {
+    await redisClient.del(redisKey.drawRequest(battleId));
+  } catch {
+    // 忽略：key 带战斗前缀，误留无实际影响
   }
 }
 

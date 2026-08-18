@@ -366,7 +366,7 @@ export async function broadcastBattleEnd(
   payload: {
     winnerUserId: string | null;
     winnerSide: 'p1' | 'p2' | null;
-    victoryType: 'kill_threshold' | 'base_threshold' | 'draw';
+    victoryType: 'kill_threshold' | 'base_threshold' | 'draw' | 'surrender';
     p1Stars: number;
     p2Stars: number;
     p1UserId: string | null;

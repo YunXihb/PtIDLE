@@ -49,7 +49,7 @@ const REDIS_BATTLE_KEY_PATTERN = (battleId: string): string => `battle:${battleI
 
 export type Side = 'p1' | 'p2';
 export type PlayerResult = 'win' | 'loss' | 'draw';
-export type VictoryType = 'kill_threshold' | 'base_threshold' | 'draw';
+export type VictoryType = 'kill_threshold' | 'base_threshold' | 'draw' | 'surrender';
 
 export interface PlayerStats {
   wins: number;

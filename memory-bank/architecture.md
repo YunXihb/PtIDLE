@@ -2045,6 +2045,21 @@ T051 实现回合切换 orchestrator, 在 T050 出牌后自动级联, 客户端�
 6. **retainHandOnStepEnd 第 3 参**: T051 决定自动取 `hand[0]?.deck_id ?? null` (第一张手牌, 空手牌传 null), handler 不需客户端传保留牌 ID, 简化 client.
 7. **错误传播**: 失败 → emit `battle:skip_play:error` 带 error + detail. 抛错 → 沿用 socketServer 兜底 (log + emit `internal_error`).
 
+### 3.4 对战互动：退出对战（认输）+ 请求平局（2026-08-18）
+
+**新服务** `src/services/battleInteractionService.ts`（result/ApiError 风格）：
+
+| 函数 | 行为 | 校验 |
+|------|------|------|
+| `surrenderBattle(io, battleId, userId)` | 退出方判负、对方胜利，`recordVictory(..., 'surrender')` | participant + status ∈ {pending, ongoing}（pending 兼作卡死对局逃生门） |
+| `requestDraw(io, battleId, userId)` | SET `battle:{id}:draw_request`=请求方 + 房间广播 `battle:draw_requested {fromUserId}` | participant + status=ongoing |
+| `respondDraw(io, battleId, userId, accept)` | accept -> `recordVictory` 平局；reject -> DEL key + 仅向请求方 `user:{userId}` 房间单播 `battle:draw_declined` | participant + ongoing + 存在请求 + responder ≠ 请求方 |
+
+- **victory_type**：新增 `'surrender'`（migration 011 扩 CHECK 约束）；求和接受用既有 `'draw'`。`recordVictory` 的 source 参数类型扩为 `VictorySource = 'kill' | 'base' | 'surrender' | 'draw'`，并在终局时 best-effort DEL draw_request key（唯一漏斗）。
+- **WS 事件**：client->server `battle:surrender` / `battle:draw_request` / `battle:draw_response {accept}`；server->client `battle:draw_requested`（房间广播，客户端按 fromUserId 忽略自己）/ `battle:draw_declined`（请求方单播）/ 三个 `battle:X:error`。认输 handler 手动组合 checkRoomMembership + checkRateLimit（validateOperationContext 的 status 校验仅允许 ongoing）。
+- **结算链路不变**：battle:end -> 前端 POST /api/battle/result（T054 settleBattle 幂等入账）。
+- **前端**：game store `pendingDrawRequest`/`drawRequestSent` + 三个 emit 封装；BattleView 实战中显示 [请求平局]/[退出对战]，两个自制 modal（退出二次确认 / 对方求和接受拒绝）。
+
 ### 3.5 T-FIX 战棋死锁修复（2026-08-18，用户实测发现）
 
 **现象**：真实对战卡在「第1回合 步骤0 待机」（currentPhase='idle'），双方均无法行动。
