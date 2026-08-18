@@ -8,6 +8,9 @@ const mockDrawCards = jest.fn();
 const mockInitSession = jest.fn();
 const mockGetOrder = jest.fn();
 
+// T-FIX(战棋死锁): init 步骤 6.5 激活首 actor 的 helper
+const mockActivateActor = jest.fn();
+
 const mockQuery = jest.fn();
 const mockQueryOne = jest.fn();
 
@@ -26,6 +29,9 @@ jest.mock('./battleService', () => ({
 }));
 jest.mock('./handService', () => ({
   drawCards: mockDrawCards,
+}));
+jest.mock('./battleActionService', () => ({
+  activateActorForStep: mockActivateActor,
 }));
 jest.mock('./battleSessionService', () => ({
   initializeSession: mockInitSession,
@@ -73,6 +79,7 @@ beforeEach(() => {
   mockDrawCards.mockResolvedValue({} as any);
   mockInitSession.mockResolvedValue(undefined);
   mockGetOrder.mockReturnValue(['c1', 'c4', 'c2', 'c5', 'c3', 'c6']);
+  mockActivateActor.mockResolvedValue(undefined);
   // mockQueryOne for loadBattleCharacters: battles row + p1 chars + p2 chars
   mockQueryOne.mockResolvedValueOnce({ player1_id: 'p1', player2_id: 'p2' });
   mockQuery.mockResolvedValueOnce(P1_CHARS);  // p1 chars query
@@ -116,6 +123,11 @@ describe('initBattleField happy path', () => {
       expect.stringContaining(`UPDATE battles`),
       expect.arrayContaining(['c1', 'b1'])
     );
+    // 步骤 6.5: T-FIX(战棋死锁) 激活首 actor（不抽牌 - 初始手牌步骤 4 已发）
+    expect(mockActivateActor).toHaveBeenCalledTimes(1);
+    expect(mockActivateActor).toHaveBeenCalledWith(FAKE_IO, 'b1');
+    // 激活必须发生在全量广播之前（首屏即 phase=move，不能先推 idle 再推 move）
+    expect(mockActivateActor.mock.invocationCallOrder[0]).toBeLessThan(mockBroadcastFullState.mock.invocationCallOrder[0]);
     // 步骤 7: broadcastFullState × 2
     expect(mockBroadcastFullState).toHaveBeenCalledTimes(2);
     expect(mockBroadcastFullState).toHaveBeenNthCalledWith(1, FAKE_IO, 'b1', 'u1');
@@ -279,5 +291,7 @@ describe('initBattleField failure paths', () => {
       expect(result.failedStep).toBe(6);
       expect(result.error).toMatch(/battle_row_not_updated/);
     }
+    // battles 行未更新时不应激活首 actor
+    expect(mockActivateActor).not.toHaveBeenCalled();
   });
 });

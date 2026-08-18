@@ -20,6 +20,7 @@ import * as battleSessionService from './battleSessionService';
 import { query, queryOne } from '../config/database';
 import { redisClient } from '../config/redis';
 import { broadcastFullState } from '../socket/battleStateBroadcaster';
+import { activateActorForStep } from './battleActionService';
 import { redisKey } from '../utils/redisKeys';
 
 // ─── 公共类型 ──────────────────────────────────────────────
@@ -116,6 +117,13 @@ export async function initBattleField(io: IOServer, battleId: string): Promise<I
     if ((result as unknown as { rowCount: number }).rowCount !== 1) {
       return { success: false, failedStep: 6, error: 'battle_row_not_updated' };
     }
+
+    // ── 步骤 6.5: ★ T-FIX(战棋死锁): 激活首 actor (idle -> draw -> move) ──
+    //    init 结束时 phase 必须离开 idle，否则战斗永远卡在「第1回合 步骤0 待机」
+    //    （activateCurrentUnit 唯一的其他调用点 executeEndStep 要求入口 phase 为 move/play）
+    //    不抽牌：步骤 4 已给 6 个棋子各发 3 张初始手牌，drawCards 是覆盖式写
+    lastStep = 7;
+    await activateActorForStep(io, battleId);
 
     // ── 步骤 7: 广播全量状态给双端 ─────────────────────────
     lastStep = 7;

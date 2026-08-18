@@ -627,4 +627,55 @@ export async function executeRoundEnd(
   if (winResult.status === 'win' || winResult.status === 'draw') {
     await recordVictory(io, battleId, winResult, 'base');
   }
+
+  // 7. ★ T-FIX(战棋死锁): 无胜负时激活新回合首 actor (idle -> 抽牌 -> move)
+  //    endCurrentRound 把 phase 重置为 idle 后若无人推进，新回合第 0 步会永远停在
+  //    「待机」；executeEndStep 对最后一步提前 return，激活只能在这里做
+  if (winResult.status !== 'win' && winResult.status !== 'draw') {
+    await activateActorForStep(io, battleId, { draw: true });
+  }
+}
+
+/**
+ * T-FIX(战棋死锁): 激活当前步骤的 actor (idle -> draw -> move) + 广播
+ *
+ * 两个调用点：
+ *   - initBattleField 步骤 6.5：战斗开始首步激活（draw=false，初始手牌已由 init 步骤 4 发放）
+ *   - executeRoundEnd 步骤 7：新回合首步激活（draw=true，跨回合需要给新 actor 发手牌）
+ *
+ * @param options.draw 是否为新 actor 抽牌（drawCards 覆盖式写手牌，重复抽会顶掉已有手牌）
+ * @throws 任一阶段推进失败时抛错（调用方自行决定回滚/记录）
+ */
+export async function activateActorForStep(
+  io: IOServer,
+  battleId: string,
+  options: { draw?: boolean } = {}
+): Promise<void> {
+  // 1. idle -> draw
+  const r = await activateCurrentUnit(battleId);
+  if (!r.success) {
+    throw new Error(`activateActorForStep: activate failed: ${r.error ?? 'unknown'}`);
+  }
+
+  // 2. 抽牌（仅回合切换路径）
+  if (options.draw && r.state?.currentActorId) {
+    const d = await drawCards(battleId, r.state.currentActorId);
+    if (!d.success) {
+      throw new Error(`activateActorForStep: draw failed: ${d.error ?? 'unknown'}`);
+    }
+  }
+
+  // 3. draw -> move
+  const c = await completeDrawPhase(battleId);
+  if (!c.success) {
+    throw new Error(`activateActorForStep: completeDrawPhase failed: ${c.error ?? 'unknown'}`);
+  }
+
+  // 4. 广播（c.state 缺失时重读一次 session 兜底）
+  const finalState = c.state ?? await getSessionState(battleId);
+  if (!finalState) {
+    throw new Error('activateActorForStep: final state read failed');
+  }
+  await broadcastSessionState(io, battleId, finalState);
+  await broadcastBoardState(io, battleId);
 }

@@ -1078,8 +1078,56 @@ describe('executeEndStep', () => {
     }
     expect(mockEndCurrentRound).toHaveBeenCalledTimes(1);
     expect(mockTickBurnDamageOnTarget).toHaveBeenCalledTimes(6);
-    // round-end 广播 1 次（executeRoundEnd 内完成 endCurrentRound + 广播，executeEndStep 不再重复推）
-    expect(mockBroadcastSessionState).toHaveBeenCalledTimes(1);
+    // round-end 广播 2 次（executeRoundEnd 内 endCurrentRound 后 1 次 + T-FIX 新回合首步激活后 1 次）
+    expect(mockBroadcastSessionState).toHaveBeenCalledTimes(2);
+  });
+
+  // ★ T-FIX(战棋死锁) 回归：回合结束无胜负时必须激活新回合首 actor，否则卡「待机」
+  it('last-step 无胜负 -> 激活新回合首 actor (activate -> draw -> completeDrawPhase)', async () => {
+    mockGetSessionState
+      .mockResolvedValueOnce({  // 步骤 1 读 (last step)
+        battleId: 'b1', currentRound: 1, currentStep: 5, currentPhase: 'play', currentActorId: 'c6',
+      } as any)
+      .mockResolvedValueOnce({  // executeRoundEnd 内 endCurrentRound 后重读
+        battleId: 'b1', currentRound: 2, currentStep: 0, currentPhase: 'idle', currentActorId: 'c1',
+      } as any)
+      .mockResolvedValueOnce({  // activateActorForStep 兜底重读
+        battleId: 'b1', currentRound: 2, currentStep: 0, currentPhase: 'move', currentActorId: 'c1',
+      } as any)
+      .mockResolvedValueOnce({  // executeEndStep 末尾重读
+        battleId: 'b1', currentRound: 2, currentStep: 0, currentPhase: 'move', currentActorId: 'c1',
+      } as any);
+    mockGetActorHand.mockResolvedValue([]);
+    mockActivateCurrentUnit.mockResolvedValueOnce({
+      success: true,
+      state: { battleId: 'b1', currentRound: 2, currentStep: 0, currentPhase: 'draw', currentActorId: 'c1' },
+    } as any);
+    const { executeEndStep } = await import('./battleActionService');
+    const result = await executeEndStep(createMockIO(), 'b1');
+    expect(result.success).toBe(true);
+    expect(mockActivateCurrentUnit).toHaveBeenCalledTimes(1);
+    // 新回合首 actor 已抽牌
+    expect(mockDrawCards).toHaveBeenCalledWith('b1', 'c1');
+    expect(mockCompleteDrawPhase).toHaveBeenCalledTimes(1);
+  });
+
+  // ★ T-FIX(战棋死锁) 回归：已分出胜负时不激活（session 已 finished）
+  it('last-step 有胜负(win) -> 不激活新回合 actor', async () => {
+    mockGetSessionState
+      .mockResolvedValueOnce({  // 步骤 1 读 (last step)
+        battleId: 'b1', currentRound: 1, currentStep: 5, currentPhase: 'play', currentActorId: 'c6',
+      } as any)
+      .mockResolvedValueOnce({  // executeRoundEnd 内重读
+        battleId: 'b1', currentRound: 2, currentStep: 0, currentPhase: 'finished', currentActorId: 'c1',
+      } as any);
+    mockGetActorHand.mockResolvedValue([]);
+    mockCheckWinCondition.mockResolvedValueOnce({ status: 'win', winner: 'p1', p1Stars: 3, p2Stars: 0 } as any);
+    const { executeEndStep } = await import('./battleActionService');
+    const result = await executeEndStep(createMockIO(), 'b1');
+    expect(result.success).toBe(true);
+    expect(mockActivateCurrentUnit).not.toHaveBeenCalled();
+    expect(mockDrawCards).not.toHaveBeenCalled();
+    expect(mockRecordVictory).toHaveBeenCalledTimes(1);
   });
 
   it('executeRoundEnd 失败 → error: round_end_failed（endCurrentStep 已先执行）', async () => {

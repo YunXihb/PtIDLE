@@ -2045,6 +2045,22 @@ T051 实现回合切换 orchestrator, 在 T050 出牌后自动级联, 客户端�
 6. **retainHandOnStepEnd 第 3 参**: T051 决定自动取 `hand[0]?.deck_id ?? null` (第一张手牌, 空手牌传 null), handler 不需客户端传保留牌 ID, 简化 client.
 7. **错误传播**: 失败 → emit `battle:skip_play:error` 带 error + detail. 抛错 → 沿用 socketServer 兜底 (log + emit `internal_error`).
 
+### 3.5 T-FIX 战棋死锁修复（2026-08-18，用户实测发现）
+
+**现象**：真实对战卡在「第1回合 步骤0 待机」（currentPhase='idle'），双方均无法行动。
+
+**根因**：`activateCurrentUnit`（唯一 idle->draw 推进点）只被 `executeEndStep` 步骤 6.5 调用，而后者入口要求 phase ∈ {move, play}。两个死锁点：
+1. `initBattleField` 初始化后 phase 停在 idle，无人推进（战斗开始死锁）；
+2. `executeRoundEnd` 的 `endCurrentRound` 把 phase 重置为 idle 后 `executeEndStep` 提前 return（每回合切换死锁）。
+
+此前 e2e 只验证 matched->join->state:full 广播链路（当时 state:full 就显示 phase=idle/actor 未激活，未被识别为问题），从未走完真实回合。
+
+**修复**：`battleActionService.ts` 新增 `activateActorForStep(io, battleId, {draw})` helper（activateCurrentUnit -> 可选 drawCards -> completeDrawPhase -> broadcastSessionState + broadcastBoardState）：
+- `initBattleField` 步骤 6.5（battles 行 ongoing 之后、首屏 broadcastFullState 之前）调 `activateActorForStep(io, battleId)`——**不抽牌**，初始手牌已由 init 步骤 4 发放（drawCards 是覆盖式写，重复抽会顶掉）；
+- `executeRoundEnd` 步骤 7（applyBaseStars + checkWinCondition + recordVictory 之后）**仅当无胜负**时调 `activateActorForStep(io, battleId, {draw: true})`——跨回合给新回合首 actor 发手牌。
+
+回归测试 4 个：init 后激活且在首屏广播之前 / battles 行未更新不激活 / last-step 无胜负激活+抽牌 / 有胜负不激活。
+
 ### 4. T056 集成要点
 
 - **T056 整合时**: T051 是 T056 `applyDamage` 之外的新 HP 操作点 (round-end tick burn 扣 HP). 整合时需要审计 executeRoundEnd 步骤 1 调 `tickBurnDamageOnTarget` 的位置, 由 T056 统一 `applyDamage` 替换.

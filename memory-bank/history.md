@@ -2714,3 +2714,19 @@ T082 是横切性能批次，无单一归属章节，architecture.md 采用独�
 - manualChunks 的坑：若对 socket.io-client 依赖强行归类到 vendor chunk，会把 engine.io-client 等传递依赖错误并入 eager vendor，反而破坏动态 import 的延迟加载；正确做法是只拆 vue 全家桶、其余返回 undefined 交回 Vite 默认拆分。
 - 后端 jest 3 个 env-fail suite（socketServer/authController/wsValidation.integration，ECONNREFUSED）不变，为环境问题（compose 不发布 host 端口 + dev 容器未运行）非代码。
 - **核心计划 T001-T082 全部完成**，项目进入运营+扩展期；下一个功能增量为 T1001 战棋公共池（设计已锁定），生产基建余项（Caddy HTTPS / UptimeRobot）阻塞于域名。
+
+## 2026-08-18 - 任务：T-FIX 战棋死锁修复（卡「第1回合 步骤0 待机」）
+
+### Prompt
+本地网页测试对战时卡在第一回合步骤0待机，请求排查修复。
+
+### 思考
+**定位路径**：前端「待机」= BattleBoard PHASE_LABELS['idle']，即后端 session currentPhase='idle'。全库 grep `activateCurrentUnit`（唯一 idle->draw 推进）只有 executeEndStep 步骤 6.5 一个调用点，而 executeEndStep 入口 assertPhase(play|move)。两个死锁点成立：(1) initBattleField 初始化后停在 idle，无人推进；(2) executeRoundEnd 的 endCurrentRound 重置 idle 后 executeEndStep 提前 return。修复：新增 activateActorForStep(io, battleId, {draw}) helper；initBattleField 步骤 6.5 激活首 actor（draw=false——init 步骤 4 已给 6 棋子发初始手牌，drawCards 覆盖式写不能重抽）；executeRoundEnd 在胜负判定之后、仅无胜负时激活新回合首 actor（draw=true）。
+
+**测试设计**：init 套件需 jest.mock('./battleActionService')（否则真模块依赖未 mock 的 activateCurrentUnit 抛错）；断言激活发生在首屏 broadcastFullState 之前（首屏即 move，不闪 idle）。last-step happy path 广播断言 1->2。胜负分支：win 时 session 已 finished，必须不激活（显式判断 winResult.status，不依赖 assertPhase 兜底）。
+
+### 意外
+- **E2E 验证盲区坐实**：T073 的 e2e 日志当时就打出 `state:full(... actor=null/phase=idle)` 且标 ✅ PASS——协议层全通但游戏从未真正开始过，真实对战测试才能暴露。
+- 本地 jest 集成套件（socketServer/authController/wsValidation.integration）今日全绿——因为本轮网页测试把 ptidle-dev-pg(5433)/ptidle-dev-redis(6379) 容器起来了，历史「3 env-fail」随环境变化，非代码改动。
+- Edit 工具对 battleActionService.ts 的 `->`（U+2192）匹配再次失败（memory 已记录的坑），改 python 按锚点字符串替换。
+- 全量 43/43 suite 711/711 通过；tsc 零错；后端 nodemon dev server 已热重载，待用户浏览器双开复验「进入后即可移动」。
