@@ -2748,3 +2748,26 @@ T082 是横切性能批次，无单一归属章节，architecture.md 采用独�
 - socketServer 注册块插入的 python 正则 `
   });
 ` 误匹配 io.on('connection') 收尾而非 skip_play 块收尾（缩进 2 vs 4 空格），导致注册代码落到 handler 外报 TS 找不到 socket -- 按锚点注释重插修复。
+
+## 2026-08-22 - 任务：修复用户报告的对战三连 bug（开局卡死/认输无效/求和无效）
+
+### Prompt
+用户实测反馈（2026-08-18，发生于 8b427a9 + nodemon 热重载后）：①新对局仍卡「第1回合 步骤0 待机」②退出对战（认输）无效 ③请求平局无效。上次会话抓到的孤儿局签名（status=pending + current_phase=idle + 无 battle:* key）待定位根因。
+
+### 思考
+**端到端脚本复现优先于静态分析**：用 socket.io-client 双 socket 脚本完整走 login->WS->双入队->auto-join 链路，一次复现即定位出 5 处根因（静态分析曾把 6.5 步骤误判为"不在 try/catch"）：
+
+1. **rowCount 假检查（主根因）**：initBattleField 步骤 6 用 `query()` 读 `.rowCount`，而 query 只返回 rows 数组 -> 恒 undefined -> 检查恒判"未更新"提前 return（不走 cleanup 不抛错零日志）-> 步骤 6.5（d9543db 的死锁修复）实为不可达死代码，对局永远卡 ongoing+idle。改用 `execute()`（返回真实受影响行数）。
+2. **tryInitBattleField 锁竞态**：T073 auto-join 后双方毫秒级并发 battle:join，先到者持锁走单人 broadcast 分支（持锁期间 await broadcast），后到者 SETNX 失败仅等 100ms 见 pending 即静默返回 -> 无人 init。改为锁丢失轮询重试（≤5 次：status 变 ongoing 则 broadcast，否则抢锁重评，房间满+pending 则自己 init）。
+3. **broadcaster 读废弃 DB 状态源**：battleStateBroadcaster 仍调 getDbSessionState（注释已标废弃"phase 滞后"），Redis 主存 phase=move 但首屏永远广播 idle。改 getSessionState。
+4. **认输被 DB CHECK 拒**：migration 011 注释误判"battles.victory_type 无 CHECK 约束"，漏改 battles 表（010 的 CHECK 不含 'surrender'），recordVictory UPDATE 抛 23514。新增 migration 012。
+5. **ongoing 对局无法重连**：getPendingBattleForJoin 仅放行 status='pending'，战斗开始后刷新页面永远 not_in_room（认输/求和全被拒）。放行 pending+ongoing。
+
+另：认输/求和 3 个 handler 的 catch 吞非 ApiError 不落日志，补 console.error（本次靠它抓到根因 4）。
+
+### 意外
+- **孤儿局签名判读经验**：current_phase=idle 是 schema 默认值 -> "pending+idle+无 key" 意味着 init 从未执行；若 init 中途回滚，cleanup 会置 current_phase=NULL -- 两种签名可区分"从未 init"与"init 失败回滚"。
+- **nodemon 日志陷阱**：多次快速重启后子进程 console.log 一度"消失"（实为排查过程中误判），用文件顶部 import 时 MARKER 日志确认模块加载路径正常后才回归正轨；`lsof`/`ss -tlnp` 核对 pid 是排除"旧进程占端口"的快速手段。
+- query/execute 语义差异：query 返回 rows（查数据），execute 返回 rowCount（写确认）-- 检查"UPDATE 是否生效"必须用 execute。battleService.test 等单测因 mock 的 query 自带 rowCount 而测不出该 bug，只有真实 E2E 能暴露。
+- socketServer.test 中 mock battleSessionService 原来只导出 getDbSessionState，broadcaster 改用 getSessionState 后 mock 缺导出 -> state:full 静默超时；补导出 + mock 返回值需补全 BattleSessionState 完整字段（battleId/activationOrder/...）。
+- 验证方式：44/44 套件 723/723 全绿 + 双 socket E2E 脚本（开局即 phase=move / 认输 surrender 落库 / 求和请求->接受->battle:end draw 全链路）。dev 环境测试用户 testuser_*/logintest_*（password123）可复用。
