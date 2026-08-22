@@ -5,6 +5,8 @@ jest.mock('../services/battleService', () => ({
 }));
 
 jest.mock('../services/battleSessionService', () => ({
+  // T-FIX: broadcaster 运行时改读 Redis 主存 getSessionState
+  getSessionState: jest.fn(),
   getDbSessionState: jest.fn(),
 }));
 
@@ -60,9 +62,9 @@ const mockListCharactersInBattle =
     typeof battleService.listCharactersInBattle
   >;
 
-const mockGetDbSessionState =
-  battleSessionService.getDbSessionState as jest.MockedFunction<
-    typeof battleSessionService.getDbSessionState
+const mockGetSessionState =
+  battleSessionService.getSessionState as jest.MockedFunction<
+    typeof battleSessionService.getSessionState
   >;
 
 const mockGetCharacterStatus =
@@ -139,7 +141,7 @@ describe('T045 + T046 socketServer', () => {
     activeClients = [];
     mockGetPendingBattleForJoin.mockReset();
     mockListCharactersInBattle.mockReset();
-    mockGetDbSessionState.mockReset();
+    mockGetSessionState.mockReset();
     mockGetCharacterStatus.mockReset();
     mockGetActorHand.mockReset();
   });
@@ -476,11 +478,16 @@ describe('T045 + T046 socketServer', () => {
       started_at: null,
     });
 
-    mockGetDbSessionState.mockResolvedValue({
+    mockGetSessionState.mockResolvedValue({
+      battleId: 'b1',
       currentRound: 1,
       currentStep: 1,
-      currentPhase: 'playing',
+      currentPhase: 'play',
       currentActorId: 'c-p1-1',
+      activationOrder: ['c-p1-1', 'c-p2-1'],
+      player1Chars: ['c-p1-1'],
+      player2Chars: ['c-p2-1'],
+      updatedAt: new Date().toISOString(),
     });
 
     mockListCharactersInBattle.mockResolvedValue([
@@ -591,8 +598,8 @@ describe('T045 + T046 socketServer', () => {
     // broadcastFullState 内部 listCharactersInBattle 抛错
     mockListCharactersInBattle.mockRejectedValueOnce(new Error('boom'));
 
-    // getDbSessionState 也设个返 null,确保 board 路径不阻塞(error 在 broadcastFullState 的 try/catch 内吞掉)
-    mockGetDbSessionState.mockResolvedValueOnce(null);
+    // getSessionState 也设个返 null,确保 board 路径不阻塞(error 在 broadcastFullState 的 try/catch 内吞掉)
+    mockGetSessionState.mockResolvedValueOnce(null);
 
     // 静默 console.error(本测试预期它被调用)
     const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);

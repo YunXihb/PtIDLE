@@ -17,7 +17,7 @@ import type { Server as IOServer } from 'socket.io';
 import * as battleService from './battleService';
 import * as handService from './handService';
 import * as battleSessionService from './battleSessionService';
-import { query, queryOne } from '../config/database';
+import { execute, query, queryOne } from '../config/database';
 import { redisClient } from '../config/redis';
 import { broadcastFullState } from '../socket/battleStateBroadcaster';
 import { activateActorForStep } from './battleActionService';
@@ -106,7 +106,10 @@ export async function initBattleField(io: IOServer, battleId: string): Promise<I
     lastStep = 6;
     const order = battleSessionService.buildSnakeOrder(p1Ids, p2Ids);
     const startedAt = new Date();
-    const result = await query(
+    // ★ T-FIX(开局卡死): execute() 返回受影响行数。query() 只返回 rows 数组，
+    //   rowCount 恒为 undefined -> 旧检查恒判"未更新" -> init 在此提前 return，
+    //   步骤 6.5 永不执行，对局卡在 ongoing + idle。
+    const updatedCount = await execute(
       `UPDATE battles
        SET status='ongoing', started_at=$1, current_actor_id=$2,
            current_phase='idle', current_round=1, current_step=0,
@@ -114,7 +117,7 @@ export async function initBattleField(io: IOServer, battleId: string): Promise<I
        WHERE id=$3 AND status='pending'`,
       [startedAt, order[0], battleId]
     );
-    if ((result as unknown as { rowCount: number }).rowCount !== 1) {
+    if (updatedCount !== 1) {
       return { success: false, failedStep: 6, error: 'battle_row_not_updated' };
     }
 

@@ -13,6 +13,7 @@ const mockActivateActor = jest.fn();
 
 const mockQuery = jest.fn();
 const mockQueryOne = jest.fn();
+const mockExecute = jest.fn();
 
 const mockRedisClient = {
   set: jest.fn(),
@@ -41,7 +42,7 @@ jest.mock('./battleSessionService', () => ({
 jest.mock('../config/database', () => ({
   query: mockQuery,
   queryOne: mockQueryOne,
-  execute: jest.fn(),
+  execute: mockExecute,
 }));
 jest.mock('../config/redis', () => ({
   redisClient: mockRedisClient,
@@ -85,8 +86,8 @@ beforeEach(() => {
   mockQuery.mockResolvedValueOnce(P1_CHARS);  // p1 chars query
   mockQuery.mockResolvedValueOnce(P2_CHARS);  // p2 chars query
   mockQuery.mockResolvedValueOnce({ rowCount: 1 });  // UPDATE characters.battle_id
-  // mockQuery for UPDATE battles status=ongoing
-  mockQuery.mockResolvedValueOnce({ rowCount: 1 });
+  // T-FIX: step 6 UPDATE battles 改走 execute()（返回受影响行数）
+  mockExecute.mockResolvedValue(1);
 });
 
 describe('initBattleField happy path', () => {
@@ -118,8 +119,8 @@ describe('initBattleField happy path', () => {
       ['c1', 'c2', 'c3'],
       ['c4', 'c5', 'c6']
     );
-    // 步骤 6: UPDATE battles
-    expect(mockQuery).toHaveBeenCalledWith(
+    // 步骤 6: UPDATE battles -- T-FIX: 走 execute()（返回受影响行数）
+    expect(mockExecute).toHaveBeenCalledWith(
       expect.stringContaining(`UPDATE battles`),
       expect.arrayContaining(['c1', 'b1'])
     );
@@ -270,13 +271,14 @@ describe('initBattleField failure paths', () => {
     mockGetOrder.mockReturnValue(['c1', 'c4', 'c2', 'c5', 'c3', 'c6']);
     mockQueryOne.mockReset();
     mockQuery.mockReset();
+    mockExecute.mockReset();
     // loadBattleCharacters 3 queries
     mockQueryOne.mockResolvedValueOnce({ player1_id: 'p1', player2_id: 'p2' });
     mockQuery.mockResolvedValueOnce(P1_CHARS);
     mockQuery.mockResolvedValueOnce(P2_CHARS);
     mockQuery.mockResolvedValueOnce({ rowCount: 6 });  // UPDATE characters.battle_id
-    // step 6 UPDATE battles returns 0 rows (race condition)
-    mockQuery.mockResolvedValueOnce({ rowCount: 0 });
+    // step 6 UPDATE battles returns 0 rows (race condition) -- T-FIX: 走 execute()
+    mockExecute.mockResolvedValueOnce(0);
     // cleanup 调用的 query
     mockQueryOne.mockReset();
     mockQueryOne.mockResolvedValueOnce({ player1_id: 'p1', player2_id: 'p2' });

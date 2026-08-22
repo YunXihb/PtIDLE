@@ -26,7 +26,7 @@ import { userRoom, battleRoom } from './battleRoom';
 import { listCharactersInBattle } from '../services/battleService';
 import { getCharacterStatus, CharacterStatus } from '../services/characterStatusService';
 import { getActorHand, HandCard } from '../services/handService';
-import { getDbSessionState } from '../services/battleSessionService';
+import { getSessionState } from '../services/battleSessionService';
 import { redisClient } from '../config/redis';
 
 // ========================================
@@ -89,7 +89,8 @@ export interface FullStateEvent {
  * 内部:聚合 battle 整盘状态(纯函数,不发 WS)。
  *
  * 流程:
- *   1. 并行 `getDbSessionState` + `listCharactersInBattle`(独立查询,无依赖)
+ *   1. 并行 `getSessionState`(Redis 主存) + `listCharactersInBattle`(独立查询,无依赖)
+ *      ★ T-FIX: 原用废弃的 getDbSessionState 读 DB, phase 滞后, init 后首屏永远显示 idle
  *      - battle 不存在(session 为 null)→ throws(让上层决定是否吞掉)
  *   2. `Promise.all` 并行调 `getCharacterStatus` 拿每个 character 完整状态
  *   3. 过滤掉 `null`(角色中途被删)
@@ -115,7 +116,7 @@ export async function buildBoardState(
   }>;
 }> {
   const [session, characters, p1StarsRaw, p2StarsRaw, basesRaw] = await Promise.all([
-    getDbSessionState(battleId),
+    getSessionState(battleId),
     listCharactersInBattle(battleId),
     redisClient.get(`battle:${battleId}:stars:p1`),
     redisClient.get(`battle:${battleId}:stars:p2`),
@@ -224,7 +225,7 @@ export async function broadcastCharacterStatus(
   characterId: string
 ): Promise<void> {
   try {
-    const session = await getDbSessionState(battleId);
+    const session = await getSessionState(battleId);
     if (!session) {
       return;
     }

@@ -1277,7 +1277,9 @@ export async function getPendingBattleForJoin(
     `SELECT b.id, b.player1_id, b.player2_id, b.status, b.matched_at, b.started_at
      FROM battles b
      WHERE b.id = $1
-       AND b.status = 'pending'
+       -- ★ T-FIX: 允许 ongoing 对局重新 join（断线/刷新后重连）。原仅 pending，
+       --   战斗一旦开始玩家永远无法回到房间，认输/求和/操作全部 not_in_room
+       AND b.status IN ('pending', 'ongoing')
        AND (
          b.player1_id IN (SELECT id FROM players WHERE user_id = $2)
          OR b.player2_id IN (SELECT id FROM players WHERE user_id = $2)

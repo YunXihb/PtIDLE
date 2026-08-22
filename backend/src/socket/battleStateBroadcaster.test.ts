@@ -23,7 +23,7 @@ const mockGetCharacterStatus = jest.fn();
 
 const mockGetActorHand = jest.fn();
 
-const mockGetDbSessionState = jest.fn();
+const mockGetSessionState = jest.fn();
 
 // T052: redis mocks for stars/bases reads in buildBoardState
 const mockRedisGet = jest.fn();
@@ -43,7 +43,7 @@ jest.mock('../services/handService', () => ({
 }));
 
 jest.mock('../services/battleSessionService', () => ({
-  getDbSessionState: mockGetDbSessionState,
+  getSessionState: mockGetSessionState,
 }));
 
 jest.mock('../config/redis', () => ({
@@ -118,7 +118,7 @@ describe('T047 battleStateBroadcaster', () => {
 
   // ========== 1 ==========
   it('buildBoardState happy path(6 角色)→ board.characters.length === 6', async () => {
-    mockGetDbSessionState.mockResolvedValue({
+    mockGetSessionState.mockResolvedValue({
       currentRound: 1,
       currentStep: 1,
       currentPhase: 'playing',
@@ -147,7 +147,7 @@ describe('T047 battleStateBroadcaster', () => {
 
   // ========== 2 ==========
   it('buildBoardState 空 board(0 角色)→ board.characters === []', async () => {
-    mockGetDbSessionState.mockResolvedValue({
+    mockGetSessionState.mockResolvedValue({
       currentRound: 1,
       currentStep: 0,
       currentPhase: 'pending',
@@ -164,14 +164,14 @@ describe('T047 battleStateBroadcaster', () => {
 
   // ========== 3 ==========
   it('buildBoardState 战斗已消失(getDbSessionState → null)throws', async () => {
-    mockGetDbSessionState.mockResolvedValue(null);
+    mockGetSessionState.mockResolvedValue(null);
 
     await expect(buildBoardState(BATTLE_ID)).rejects.toThrow(/battle not found/);
   });
 
   // ========== 4 ==========
   it('broadcastBoardState 推 room + emit battle:state:board', async () => {
-    mockGetDbSessionState.mockResolvedValue({
+    mockGetSessionState.mockResolvedValue({
       currentRound: 2,
       currentStep: 3,
       currentPhase: 'playing',
@@ -225,7 +225,7 @@ describe('T047 battleStateBroadcaster', () => {
 
   // ========== 6 ==========
   it('broadcastFullState 组合 board + ownHand 推 user-room', async () => {
-    mockGetDbSessionState.mockResolvedValue({
+    mockGetSessionState.mockResolvedValue({
       currentRound: 1,
       currentStep: 1,
       currentPhase: 'playing',
@@ -277,7 +277,7 @@ describe('T047 battleStateBroadcaster', () => {
 
   // ========== 7 ==========
   it('broadcastCharacterStatus 单角色推 room + emit battle:state:character', async () => {
-    mockGetDbSessionState.mockResolvedValue({
+    mockGetSessionState.mockResolvedValue({
       currentRound: 1,
       currentStep: 1,
       currentPhase: 'playing',
@@ -328,7 +328,7 @@ describe('T052 broadcaster additions', () => {
 
   describe('buildBoardState T052 增量字段', () => {
     it('默认值: p1Stars=0, p2Stars=0, bases 全 neutral', async () => {
-      mockGetDbSessionState.mockResolvedValue({
+      mockGetSessionState.mockResolvedValue({
         currentRound: 1,
         currentStep: 0,
         currentPhase: 'playing',
@@ -345,7 +345,7 @@ describe('T052 broadcaster additions', () => {
     });
 
     it('已累加: p1=3, p2=1, bases p1+p2', async () => {
-      mockGetDbSessionState.mockResolvedValue({
+      mockGetSessionState.mockResolvedValue({
         currentRound: 2,
         currentStep: 3,
         currentPhase: 'playing',

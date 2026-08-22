@@ -141,47 +141,67 @@ export function broadcastOpponentDisconnected(
  * T048: 双方都在 battle 房间后，调用 initBattleField 初始化战场
  * - SETNX init_lock 防止并发
  * - 检查 status='pending' 才执行（idempotent re-join 直接 broadcast）
+ *
+ * ★ T-FIX(开局卡死): 锁竞争时带重试。
+ * T073 auto-join 后双方客户端几乎同时 emit battle:join：
+ * 先到者抢到锁但房间只有自己 -> 只 broadcast 不 init（持锁期间不初始化）；
+ * 后到者 SETNX 失败 -> 若只等 100ms 读 status 仍是 pending -> 静默返回，
+ * 结果双方都在房间却无人执行 init，对局永远停在「第1回合 步骤0 待机」。
+ * 修复：锁丢失时轮询重试 -- 要么等 status 变 ongoing（对方已 init，broadcast 即可），
+ * 要么等对方释放锁后自己重新评估（房间满 2 人 + pending -> 自己 init）。
  */
+const INIT_LOCK_RETRY_DELAY_MS = 150;
+const INIT_LOCK_MAX_ATTEMPTS = 5;
+
 export async function tryInitBattleField(
   io: IOServer,
   battleId: string,
   joiningUserId: string
 ): Promise<void> {
-  const lockToken = `${Date.now()}-${Math.random()}`;
-  const locked = await redisClient.set(
-    `battle:${battleId}:init_lock`,
-    lockToken,
-    { NX: true, EX: 30 }
+  for (let attempt = 1; attempt <= INIT_LOCK_MAX_ATTEMPTS; attempt++) {
+    const lockToken = `${Date.now()}-${Math.random()}`;
+    const locked = await redisClient.set(
+      `battle:${battleId}:init_lock`,
+      lockToken,
+      { NX: true, EX: 30 }
+    );
+
+    if (!locked) {
+      // 别人正在 init 或正持锁 broadcast，等一拍再看
+      await new Promise(r => setTimeout(r, INIT_LOCK_RETRY_DELAY_MS));
+      const status = await getBattleStatus(battleId);
+      if (status === 'ongoing') {
+        await broadcastFullState(io, battleId, joiningUserId).catch(err =>
+          console.error(`[tryInitBattleField:${battleId}] broadcast after lock-loss:`, err)
+        );
+        return;
+      }
+      // status 仍 pending：持锁者可能只是单人 broadcast 不会 init -> 重试抢锁
+      continue;
+    }
+
+    try {
+      const otherInRoom = isOtherPlayerInRoom(io, battleId);
+      const status = await getBattleStatus(battleId);
+
+      if (otherInRoom && status === 'pending') {
+        await initBattleField(io, battleId).catch(err => {
+          console.error(`[tryInitBattleField:${battleId}] init failed:`, err);
+        });
+      } else {
+        await broadcastFullState(io, battleId, joiningUserId).catch(err =>
+          console.error(`[tryInitBattleField:${battleId}] broadcast:`, err)
+        );
+      }
+      return;
+    } finally {
+      await redisClient.del(`battle:${battleId}:init_lock`);
+    }
+  }
+
+  console.warn(
+    `[tryInitBattleField:${battleId}] init lock retry exhausted (${INIT_LOCK_MAX_ATTEMPTS} attempts), giving up`
   );
-
-  if (!locked) {
-    // 别人正在 init，sleep 100ms 后读 status
-    await new Promise(r => setTimeout(r, 100));
-    const status = await getBattleStatus(battleId);
-    if (status === 'ongoing') {
-      await broadcastFullState(io, battleId, joiningUserId).catch(err =>
-        console.error(`[tryInitBattleField:${battleId}] broadcast after lock-loss:`, err)
-      );
-    }
-    return;
-  }
-
-  try {
-    const otherInRoom = isOtherPlayerInRoom(io, battleId);
-    const status = await getBattleStatus(battleId);
-
-    if (otherInRoom && status === 'pending') {
-      await initBattleField(io, battleId).catch(err => {
-        console.error(`[tryInitBattleField:${battleId}] init failed:`, err);
-      });
-    } else {
-      await broadcastFullState(io, battleId, joiningUserId).catch(err =>
-        console.error(`[tryInitBattleField:${battleId}] broadcast:`, err)
-      );
-    }
-  } finally {
-    await redisClient.del(`battle:${battleId}:init_lock`);
-  }
 }
 
 function isOtherPlayerInRoom(io: IOServer, battleId: string): boolean {
@@ -422,6 +442,7 @@ export async function handleBattleSurrender(
   try {
     await surrenderBattle(io, battleId, userId);
   } catch (err) {
+    console.error(`[handleBattleSurrender:${battleId}] surrender failed:`, err);
     socket.emit('battle:surrender:error', {
       error: err instanceof ApiError ? err.message : 'internal_error',
     });
@@ -458,6 +479,7 @@ export async function handleBattleDrawRequest(
   try {
     await requestDraw(io, battleId, userId);
   } catch (err) {
+    console.error(`[handleBattleDrawRequest:${battleId}] requestDraw failed:`, err);
     socket.emit('battle:draw_request:error', {
       error: err instanceof ApiError ? err.message : 'internal_error',
     });
@@ -496,6 +518,7 @@ export async function handleBattleDrawResponse(
   try {
     await respondDraw(io, battleId, userId, accept);
   } catch (err) {
+    console.error(`[handleBattleDrawResponse:${battleId}] respondDraw failed:`, err);
     socket.emit('battle:draw_response:error', {
       error: err instanceof ApiError ? err.message : 'internal_error',
     });
