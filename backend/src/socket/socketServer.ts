@@ -1,6 +1,6 @@
 import { Server as IOServer, Socket } from 'socket.io';
 import { verifyClientToken } from './authMiddleware';
-import { handleBattleJoin, handleBattleMove, handleBattlePlayCard, handleBattleSkipPlay, handleBattleSurrender, handleBattleDrawRequest, handleBattleDrawResponse, broadcastOpponentDisconnected, userRoom } from './battleRoom';
+import { handleBattleJoin, handleBattleMove, handleBattlePlayCard, handleBattleSkipPlay, handleBattleDeployUpdate, handleBattleDeployConfirm, handleBattleSurrender, handleBattleDrawRequest, handleBattleDrawResponse, broadcastOpponentDisconnected, userRoom } from './battleRoom';
 
 /**
  * T045 + T046 Socket.io 入口
@@ -81,6 +81,20 @@ export function initializeSocketServer(io: IOServer): void {
       handleBattleSkipPlay(io, socket, payload).catch((err) => {
         console.error(`[WS] battle:skip_play error: userId=${userId}`, err);
         socket.emit('battle:skip_play:error', { error: 'internal_error' });
+      });
+    });
+
+    // T1013: 布置阶段 -- 草稿同步 / 确认完成
+    socket.on('battle:deploy_update', (payload: { battleId?: unknown; draft?: unknown }) => {
+      handleBattleDeployUpdate(io, socket, payload).catch((err) => {
+        console.error('[WS] battle:deploy_update handler error:', err);
+        socket.emit('battle:deploy_update:error', { error: 'internal_error' });
+      });
+    });
+    socket.on('battle:deploy_confirm', (payload: { battleId?: unknown }) => {
+      handleBattleDeployConfirm(io, socket, payload).catch((err) => {
+        console.error('[WS] battle:deploy_confirm handler error:', err);
+        socket.emit('battle:deploy_confirm:error', { error: 'internal_error' });
       });
     });
 

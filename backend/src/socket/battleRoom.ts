@@ -1,7 +1,8 @@
 import { Server as IOServer, Socket } from 'socket.io';
 import { getPendingBattleForJoin } from '../services/battleService';
-import { broadcastFullState } from './battleStateBroadcaster';
-import { initBattleField } from '../services/battleInitializationService';
+import { broadcastFullState, broadcastDeploymentState } from './battleStateBroadcaster';
+import { initDeployment, startBattle } from '../services/battleInitializationService';
+import { updateDraft, confirmDeployment, cleanupDeployment, DeployDraft } from '../services/deploymentService';
 import { executeMove, executePlayCard, executeEndStep } from '../services/battleActionService';
 import { surrenderBattle, requestDraw, respondDraw } from '../services/battleInteractionService';
 import type { HandCard } from '../services/handService';
@@ -138,7 +139,7 @@ export function broadcastOpponentDisconnected(
 }
 
 /**
- * T048: 双方都在 battle 房间后，调用 initBattleField 初始化战场
+ * T048: 双方都在 battle 房间后初始化战场（T1013 起改为进入布置阶段）
  * - SETNX init_lock 防止并发
  * - 检查 status='pending' 才执行（idempotent re-join 直接 broadcast）
  *
@@ -185,8 +186,11 @@ export async function tryInitBattleField(
       const status = await getBattleStatus(battleId);
 
       if (otherInRoom && status === 'pending') {
-        await initBattleField(io, battleId).catch(err => {
-          console.error(`[tryInitBattleField:${battleId}] init failed:`, err);
+        // ★ T1013: 双方到齐 -> 进入布置阶段（120s）而非直接 initBattleField；
+        //   开战由双方 deploy_confirm 或超时 sweeper 触发 startBattle。
+        //   initDeployment 幂等：重连/重复 join 时返回现有部署状态并重播 deploy_state。
+        await initDeployment(io, battleId).catch(err => {
+          console.error(`[tryInitBattleField:${battleId}] initDeployment failed:`, err);
         });
       } else {
         await broadcastFullState(io, battleId, joiningUserId).catch(err =>
@@ -441,6 +445,10 @@ export async function handleBattleSurrender(
 
   try {
     await surrenderBattle(io, battleId, userId);
+    // ★ T1013: 布置阶段认输 -> 清理部署状态（认输兼容 pending，此时可能仍在布置期）
+    await cleanupDeployment(battleId).catch(err => {
+      console.error(`[handleBattleSurrender:${battleId}] cleanupDeployment failed:`, err);
+    });
   } catch (err) {
     console.error(`[handleBattleSurrender:${battleId}] surrender failed:`, err);
     socket.emit('battle:surrender:error', {
@@ -523,4 +531,126 @@ export async function handleBattleDrawResponse(
       error: err instanceof ApiError ? err.message : 'internal_error',
     });
   }
+}
+
+// ========================================
+// T1013: 布置阶段事件
+// ========================================
+
+/**
+ * 布置阶段通用前置校验（房间成员 + 速率限制）
+ *
+ * 不用 validateOperationContext：其 status 校验仅允许 ongoing，
+ * 而布置期 status='pending'；状态/归属校验由 deploymentService 内部完成
+ * （与认输 handler 同模式）。
+ */
+async function checkDeployContext(
+  socket: Socket,
+  battleId: string,
+  userId: string,
+  eventName: string
+): Promise<boolean> {
+  const roomCheck = await checkRoomMembership(socket, battleId);
+  if (!roomCheck.ok) {
+    socket.emit(`${eventName}:error`, { error: roomCheck.reason });
+    return false;
+  }
+  const rateCheck = await checkRateLimit(userId, eventName);
+  if (!rateCheck.ok) {
+    socket.emit(`${eventName}:error`, { error: rateCheck.reason });
+    return false;
+  }
+  return true;
+}
+
+/**
+ * 草稿结构预检（轻量）：服务端 validateDraft 做权威校验，
+ * 这里只挡明显非对象/缺字段的 payload，避免 service 层抛异常。
+ */
+function isDraftLike(draft: unknown): draft is DeployDraft {
+  if (typeof draft !== 'object' || draft === null) {
+    return false;
+  }
+  const d = draft as Record<string, unknown>;
+  return Array.isArray(d.selectedCharacters) && Array.isArray(d.placements)
+    && typeof d.decks === 'object' && d.decks !== null;
+}
+
+/**
+ * 处理客户端的 `battle:deploy_update` 事件（布置草稿全量同步）
+ *
+ * 成功后 broadcastDeploymentState 推双方各自视角（对手细节隐藏），
+ * 不单独 ack；失败回 battle:deploy_update:error（含 details 违规明细）。
+ */
+export async function handleBattleDeployUpdate(
+  io: IOServer,
+  socket: Socket,
+  payload: { battleId?: unknown; draft?: unknown }
+): Promise<void> {
+  const battleId = typeof payload?.battleId === 'string' ? payload.battleId : null;
+  if (!battleId || !isDraftLike(payload?.draft)) {
+    socket.emit('battle:deploy_update:error', { error: 'invalid_payload' });
+    return;
+  }
+
+  const userId = socket.data.userId as string;
+  if (!(await checkDeployContext(socket, battleId, userId, 'battle:deploy_update'))) {
+    return;
+  }
+
+  const result = await updateDraft(battleId, userId, payload.draft as DeployDraft);
+  if (!result.success) {
+    socket.emit('battle:deploy_update:error', {
+      error: result.error,
+      details: result.details,
+    });
+    return;
+  }
+  await broadcastDeploymentState(io, battleId);
+}
+
+/**
+ * 处理客户端的 `battle:deploy_confirm` 事件（确认完成布置）
+ *
+ * - 单方确认 -> broadcastDeploymentState（对方看到「对方已确认」）
+ * - 双方确认 -> startBattle（finalize + 开战 + broadcastFullState）
+ *   startBattle 失败仅记日志 + 回 error（finalize 幂等，sweeper/重试可再触发）
+ */
+export async function handleBattleDeployConfirm(
+  io: IOServer,
+  socket: Socket,
+  payload: { battleId?: unknown }
+): Promise<void> {
+  const battleId = typeof payload?.battleId === 'string' ? payload.battleId : null;
+  if (!battleId) {
+    socket.emit('battle:deploy_confirm:error', { error: 'invalid_payload' });
+    return;
+  }
+
+  const userId = socket.data.userId as string;
+  if (!(await checkDeployContext(socket, battleId, userId, 'battle:deploy_confirm'))) {
+    return;
+  }
+
+  const result = await confirmDeployment(battleId, userId);
+  if (!result.success) {
+    socket.emit('battle:deploy_confirm:error', {
+      error: result.error,
+      details: result.details,
+    });
+    return;
+  }
+
+  if (result.bothConfirmed) {
+    const start = await startBattle(io, battleId);
+    if (!start.success) {
+      console.error(
+        `[handleBattleDeployConfirm:${battleId}] startBattle failed at step ${start.failedStep}:`,
+        start.error
+      );
+      socket.emit('battle:deploy_confirm:error', { error: 'start_failed' });
+    }
+    return; // startBattle 成功路径内部 broadcastFullState
+  }
+  await broadcastDeploymentState(io, battleId);
 }

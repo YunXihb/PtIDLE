@@ -16,14 +16,21 @@ jest.mock('../config/database', () => ({
   execute: jest.fn(),
 }));
 jest.mock('../services/battleInitializationService', () => ({
-  initBattleField: jest.fn(),
+  initDeployment: jest.fn(),
+  startBattle: jest.fn(),
   cleanupPartialInit: jest.fn(),
+}));
+jest.mock('../services/deploymentService', () => ({
+  updateDraft: jest.fn(),
+  confirmDeployment: jest.fn(),
+  cleanupDeployment: jest.fn(),
 }));
 jest.mock('./battleStateBroadcaster', () => ({
   broadcastFullState: jest.fn(),
   broadcastBoardState: jest.fn(),
   broadcastHandState: jest.fn(),
   broadcastCharacterStatus: jest.fn(),
+  broadcastDeploymentState: jest.fn(),
 }));
 jest.mock('../services/battleActionService', () => ({
   executeMove: jest.fn(),
@@ -31,14 +38,17 @@ jest.mock('../services/battleActionService', () => ({
   executeEndStep: jest.fn(),
 }));
 
-import { handleBattleJoin, handleBattleMove, handleBattlePlayCard, handleBattleSkipPlay } from './battleRoom';
-import { initBattleField, cleanupPartialInit } from '../services/battleInitializationService';
+import { handleBattleJoin, handleBattleMove, handleBattlePlayCard, handleBattleSkipPlay, handleBattleDeployUpdate, handleBattleDeployConfirm } from './battleRoom';
+import { initDeployment, cleanupPartialInit } from '../services/battleInitializationService';
 import { broadcastFullState } from './battleStateBroadcaster';
 import { executeMove, executePlayCard } from '../services/battleActionService';
+import { updateDraft, confirmDeployment } from '../services/deploymentService';
+import { startBattle } from '../services/battleInitializationService';
+import { broadcastDeploymentState } from './battleStateBroadcaster';
 import { redisClient } from '../config/redis';
 import { queryOne } from '../config/database';
 
-const mockInit = initBattleField as jest.MockedFunction<typeof initBattleField>;
+const mockInit = initDeployment as jest.MockedFunction<typeof initDeployment>;
 const mockCleanup = cleanupPartialInit as jest.MockedFunction<typeof cleanupPartialInit>;
 const mockBroadcast = broadcastFullState as jest.MockedFunction<typeof broadcastFullState>;
 const mockExecuteMove = executeMove as jest.MockedFunction<typeof executeMove>;
@@ -93,7 +103,7 @@ beforeEach(() => {
   mockRedisDel.mockResolvedValue(1);
   // T055: 默认 redisClient.eval 返回 1（rate-limit 未超限）
   (redisClient.eval as jest.Mock).mockResolvedValue(1);
-  mockInit.mockResolvedValue({ success: true, startedAt: new Date(), actorId: 'c1' });
+  mockInit.mockResolvedValue({ success: true });
   mockBroadcast.mockResolvedValue(undefined);
 });
 
@@ -106,7 +116,7 @@ describe('handleBattleJoin — tryInitBattleField', () => {
     expect(mockBroadcast).toHaveBeenCalledWith(io, 'b1', 'u1');
   });
 
-  it('should call initBattleField on second player join (both in room)', async () => {
+  it('should call initDeployment on second player join (both in room)', async () => {
     const io = createMockIO(2);
     const { socket } = createMockSocket();
     mockQueryOne.mockResolvedValue({ status: 'pending' });
@@ -559,5 +569,95 @@ describe('T055: handler 接入 validateOperationContext', () => {
     // 不应触发 DB join 查询（rate-limit 短路在前面）
     // 注: 第一行 queryOne 不应是 join 查询 — 但 jest 计数无法验证顺序,只能验证 mockGetPendingBattleForJoin
     // 这里通过 mockEmit 调用验证
+  });
+});
+
+
+// ========================================
+// T1013: 布置阶段事件
+// ========================================
+const mockUpdateDraft = updateDraft as jest.MockedFunction<typeof updateDraft>;
+const mockConfirmDeployment = confirmDeployment as jest.MockedFunction<typeof confirmDeployment>;
+const mockStartBattle = startBattle as jest.MockedFunction<typeof startBattle>;
+const mockBroadcastDeploy = broadcastDeploymentState as jest.MockedFunction<typeof broadcastDeploymentState>;
+
+const VALID_DRAFT = {
+  selectedCharacters: ['c1', 'c2', 'c3'],
+  placements: [
+    { characterId: 'c1', x: 0 },
+    { characterId: 'c2', x: 1 },
+    { characterId: 'c3', x: 2 },
+  ],
+  decks: {},
+};
+
+describe('handleBattleDeployUpdate (T1013)', () => {
+  it('payload 非法 -> battle:deploy_update:error invalid_payload', async () => {
+    const { socket } = createMockSocket();
+    await handleBattleDeployUpdate(createMockIO(2), socket, { battleId: 'b1', draft: 'not-object' });
+    expect(socket.emit).toHaveBeenCalledWith('battle:deploy_update:error', { error: 'invalid_payload' });
+    expect(mockUpdateDraft).not.toHaveBeenCalled();
+  });
+
+  it('不在房间 -> not_in_room', async () => {
+    const { socket } = createMockSocket('other');
+    await handleBattleDeployUpdate(createMockIO(2), socket, { battleId: 'b1', draft: VALID_DRAFT });
+    expect(socket.emit).toHaveBeenCalledWith('battle:deploy_update:error', { error: 'not_in_room' });
+  });
+
+  it('service 校验失败 -> error + details', async () => {
+    const { socket } = createMockSocket();
+    mockUpdateDraft.mockResolvedValueOnce({ success: false, error: 'invalid_draft', details: ['deck_too_large:c1:13'] });
+    await handleBattleDeployUpdate(createMockIO(2), socket, { battleId: 'b1', draft: VALID_DRAFT });
+    expect(socket.emit).toHaveBeenCalledWith('battle:deploy_update:error', {
+      error: 'invalid_draft',
+      details: ['deck_too_large:c1:13'],
+    });
+    expect(mockBroadcastDeploy).not.toHaveBeenCalled();
+  });
+
+  it('成功 -> broadcastDeploymentState 双方视角', async () => {
+    const { socket } = createMockSocket();
+    mockUpdateDraft.mockResolvedValueOnce({ success: true, state: {} as any });
+    const io = createMockIO(2);
+    await handleBattleDeployUpdate(io, socket, { battleId: 'b1', draft: VALID_DRAFT });
+    expect(socket.emit).not.toHaveBeenCalled();
+    expect(mockBroadcastDeploy).toHaveBeenCalledWith(io, 'b1');
+  });
+});
+
+describe('handleBattleDeployConfirm (T1013)', () => {
+  it('单方确认 -> broadcastDeploymentState, 不开战', async () => {
+    const { socket } = createMockSocket();
+    mockConfirmDeployment.mockResolvedValueOnce({ success: true, state: {} as any, bothConfirmed: false });
+    const io = createMockIO(2);
+    await handleBattleDeployConfirm(io, socket, { battleId: 'b1' });
+    expect(mockStartBattle).not.toHaveBeenCalled();
+    expect(mockBroadcastDeploy).toHaveBeenCalledWith(io, 'b1');
+  });
+
+  it('双方确认 -> startBattle', async () => {
+    const { socket } = createMockSocket();
+    mockConfirmDeployment.mockResolvedValueOnce({ success: true, state: {} as any, bothConfirmed: true });
+    mockStartBattle.mockResolvedValueOnce({ success: true, startedAt: new Date(), actorId: 'c1' });
+    const io = createMockIO(2);
+    await handleBattleDeployConfirm(io, socket, { battleId: 'b1' });
+    expect(mockStartBattle).toHaveBeenCalledWith(io, 'b1');
+  });
+
+  it('双方确认但 startBattle 失败 -> start_failed', async () => {
+    const { socket } = createMockSocket();
+    mockConfirmDeployment.mockResolvedValueOnce({ success: true, state: {} as any, bothConfirmed: true });
+    mockStartBattle.mockResolvedValueOnce({ success: false, failedStep: 2, error: 'Insufficient characters' });
+    await handleBattleDeployConfirm(createMockIO(2), socket, { battleId: 'b1' });
+    expect(socket.emit).toHaveBeenCalledWith('battle:deploy_confirm:error', { error: 'start_failed' });
+  });
+
+  it('service 失败(side_confirmed) -> 回执错误', async () => {
+    const { socket } = createMockSocket();
+    mockConfirmDeployment.mockResolvedValueOnce({ success: false, error: 'side_confirmed' });
+    await handleBattleDeployConfirm(createMockIO(2), socket, { battleId: 'b1' });
+    expect(socket.emit).toHaveBeenCalledWith('battle:deploy_confirm:error', { error: 'side_confirmed', details: undefined });
+    expect(mockStartBattle).not.toHaveBeenCalled();
   });
 });
