@@ -146,6 +146,33 @@ export interface FullStateEvent {
 export interface SessionStateEvent {
   battleId: string; currentRound: number; currentStep: number;
   currentActorId: string | null; currentPhase: BattlePhase;
+  /** T1014: 当前步时限 ISO（前端倒计时渲染用；无步时为 null） */
+  stepDeadline?: string | null;
+}
+
+// ---------- T1015 布置阶段 ----------
+export interface DeployPlacement {
+  characterId: string;
+  x: number;
+}
+
+/** 布置草稿（与后端 deploymentService.DeployDraft 同构，全量同步） */
+export interface DeployDraft {
+  selectedCharacters: string[];
+  placements: DeployPlacement[];
+  decks: Record<string, string[]>;
+}
+
+/** battle:deploy_state 事件（后端按用户视角单播，对手细节隐藏） */
+export interface DeploymentStateEvent {
+  phase: 'deployment';
+  deadline: string;
+  deadlineRemainingMs: number;
+  mySide: 'p1' | 'p2';
+  myDraft: DeployDraft | null;
+  myConfirmed: boolean;
+  opponentConfirmed: boolean;
+  finalized: boolean;
 }
 
 export interface BattleEndEvent {

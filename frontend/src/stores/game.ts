@@ -6,7 +6,7 @@ import { matchApi, battleApi } from '@/services/api';
 import type {
   BoardStateEvent, FullStateEvent, HandCard, CharacterStatus,
   SessionStateEvent, BattleEndEvent, MatchMatchedEvent, JoinOkEvent,
-  BattlePhase, SettlementResult,
+  BattlePhase, SettlementResult, DeployDraft, DeploymentStateEvent,
 } from '@/types';
 
 export const useGameStore = defineStore('game', () => {
@@ -34,6 +34,11 @@ export const useGameStore = defineStore('game', () => {
   const pendingDrawRequest = ref<string | null>(null);
   // 我方已发出求和、等待对方回应
   const drawRequestSent = ref(false);
+
+  // T1015 布置阶段状态（battle:deploy_state 单播；开战 battle:state:full 到达时清空）
+  const deployState = ref<DeploymentStateEvent | null>(null);
+  // T1014/T1016: 当前步时限 ISO（battle:state:session 附带，倒计时条渲染用）
+  const stepDeadline = ref<string | null>(null);
 
   // 操作错误提示
   const lastError = ref<string | null>(null);
@@ -85,6 +90,8 @@ export const useGameStore = defineStore('game', () => {
       battleId.value = payload.battleId;
       // 推断自己的角色：ownHand 的 key 即自己的角色 id
       myCharacterIds.value = Object.keys(payload.ownHand);
+      // T1015: 开战全量状态到达 -> 布置阶段结束
+      deployState.value = null;
     });
 
     s.on('battle:state:board', (payload: BoardStateEvent) => {
@@ -98,6 +105,8 @@ export const useGameStore = defineStore('game', () => {
         board.value.currentActorId = payload.currentActorId;
         board.value.currentPhase = payload.currentPhase;
       }
+      // T1016: 步时限随 session 广播更新
+      stepDeadline.value = payload.stepDeadline ?? null;
     });
 
     s.on('battle:state:hand', (payload: { battleId: string; characterId: string; hand: HandCard[] }) => {
@@ -136,6 +145,7 @@ export const useGameStore = defineStore('game', () => {
       settlement.value = null;
       pendingDrawRequest.value = null;
       drawRequestSent.value = false;
+      deployState.value = null; // T1015: 布置期认输等终局路径
     });
 
     s.on('battle:move:error', (e: { error: string }) => { lastError.value = e.error; });
@@ -146,6 +156,17 @@ export const useGameStore = defineStore('game', () => {
       lastError.value = e.detail || e.error;
     });
     s.on('battle:join:error', (e: { error: string }) => { lastError.value = e.error; });
+
+    // T1015: 布置阶段（状态单播 / 草稿同步与确认的错误回执）
+    s.on('battle:deploy_state', (payload: DeploymentStateEvent) => {
+      deployState.value = payload;
+    });
+    s.on('battle:deploy_update:error', (e: { error: string; details?: string[] }) => {
+      lastError.value = e.details?.length ? `${e.error}: ${e.details.join(', ')}` : e.error;
+    });
+    s.on('battle:deploy_confirm:error', (e: { error: string; details?: string[] }) => {
+      lastError.value = e.details?.length ? `${e.error}: ${e.details.join(', ')}` : e.error;
+    });
 
     // 对战互动：对方求和（忽略自己发出的广播）/ 对方拒绝我的求和
     s.on('battle:draw_requested', (payload: { battleId: string; fromUserId: string }) => {
@@ -192,6 +213,18 @@ export const useGameStore = defineStore('game', () => {
   function skipPlay() {
     if (!battleId.value) return;
     socket.value?.emit('battle:skip_play', { battleId: battleId.value });
+  }
+
+  // ---------- T1015 布置阶段 ----------
+  // 草稿全量同步（DeploymentPanel 节流后调用；断线/刷新由 deploy_state.myDraft 恢复）
+  function updateDeployDraft(draft: DeployDraft) {
+    if (!battleId.value) return;
+    socket.value?.emit('battle:deploy_update', { battleId: battleId.value, draft });
+  }
+  // 确认完成（双方确认或 120s 超时 -> 后端 finalize + 开战）
+  function confirmDeploy() {
+    if (!battleId.value) return;
+    socket.value?.emit('battle:deploy_confirm', { battleId: battleId.value });
   }
 
   // ---------- 对战互动 ----------
@@ -270,14 +303,18 @@ export const useGameStore = defineStore('game', () => {
     matched.value = null;
     matching.value = false;
     inQueue.value = false;
+    deployState.value = null;
+    stepDeadline.value = null;
   }
 
   return {
     socket, connected, battleId, board, ownHand, myUserId, myCharacterIds,
     opponentJoined, opponentDisconnected, battleEnded, settlement, matching, matched, inQueue,
     lastError, currentPhase, currentActorId, isMyTurn,
+    deployState, stepDeadline,
     connect, disconnect, joinBattle, move, playCard, skipPlay, clearError, resetBattle,
     queueMatch, cancelMatch, fetchSettlement,
+    updateDeployDraft, confirmDeploy,
     pendingDrawRequest, drawRequestSent, surrender, requestDraw, respondDraw,
   };
 });
