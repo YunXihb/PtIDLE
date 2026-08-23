@@ -297,7 +297,7 @@ describe('T047 battleStateBroadcaster', () => {
 });
 
 describe('broadcastSessionState', () => {
-  it('emit battle:state:session 到 battle room, payload 含 4 字段', async () => {
+  it('emit battle:state:session 到 battle room, payload 含 5 字段 (T1014 加 stepDeadline)', async () => {
     const mockEmit = jest.fn();
     const mockTo = jest.fn().mockReturnValue({ emit: mockEmit });
     const io = { to: mockTo } as any;
@@ -316,6 +316,8 @@ describe('broadcastSessionState', () => {
       currentStep: 0,
       currentActorId: 'c1',
       currentPhase: 'draw',
+      // 无步时记录（redis get 返回 null）-> 广播 null（T1014）
+      stepDeadline: null,
     });
   });
 });

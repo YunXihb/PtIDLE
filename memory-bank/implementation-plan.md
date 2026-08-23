@@ -508,27 +508,27 @@
 > - 行动阶段每棋子步 **90s 总时限**，操作不重置；到期走与手动 `skip_play` 相同的 `executeEndStep` 路径
 > - 击杀 star + 据点 star 双路径保留（现状 T052）
 
-- [ ] **T1010** - migration 013：`battles.current_phase` CHECK 约束加 `'deployment'`
+- [x] **T1010** - migration 013：`battles.current_phase` CHECK 约束加 `'deployment'`
   - 上下文：布置阶段成为 battles 合法 phase；dev/prod 部署均需跑此 migration
   - 依赖：无
   - 验证：migration 应用成功，现有对局流程不受影响
 
-- [ ] **T1011** - 实现 deploymentService（布置核心逻辑）
+- [x] **T1011** - 实现 deploymentService（布置核心逻辑）
   - 上下文：Redis 布置状态（双方草稿/confirmed/deadline）、服务端权威校验（棋子归属、行限制、重叠、卡组同名≤3/总≤12/职业/库存）、默认配置生成、finalizeDeployment 幂等锁（双方确认与 120s 超时竞争安全）
   - 依赖：T1010
   - 验证：合法配置通过、非法配置全部被拒；confirm 与超时并发只触发一次 finalize
 
-- [ ] **T1012** - 拆分 initBattleField + 卡组快照接入
+- [x] **T1012** - 拆分 initBattleField + 卡组快照接入
   - 上下文：`initDeployment`（棋盘初始化 + 建布置状态 + 起 120s 时限）/ `startBattle(configs)`（原步骤 3-7，位置改从布置结果写入）；`handService.drawCards` 优先读对局卡组快照，无快照回落 `character_deck`
   - 依赖：T1011
   - 验证：布置完成 -> 战斗正常开局；抽牌来自快照卡组
 
-- [ ] **T1013** - 布置阶段 Socket 事件
+- [x] **T1013** - 布置阶段 Socket 事件
   - 上下文：`battle:deploy_update`（全量草稿同步，断线/刷新恢复）、`battle:deploy_confirm`、`battle:deploy_state` 广播（倒计时 + 双方确认状态 + 仅自己的草稿）；surrender 在布置阶段放行，求和禁用
   - 依赖：T1012
   - 验证：双端事件流转正确，对手细节不下发，布置阶段认输可用
 
-- [ ] **T1014** - 实现 deadline sweeper（定时器基础设施）
+- [x] **T1014** - 实现 deadline sweeper（定时器基础设施）
   - 上下文：全局 1s interval 扫活跃对局的布置/步时 deadline（权威时限只存 Redis，不用内存 setTimeout）；每步激活写 `step_deadline = now+90s`；布置到期 -> finalizeDeployment，步时到期 -> `executeEndStep`（move 阶段未动直接放弃）；服务重启后从 Redis 恢复不丢时限
   - 依赖：T1011, T1012
   - 验证：120s/90s 到期自动触发；nodemon 重启后时限仍生效；与手动 skip/confirm 并发无双触发

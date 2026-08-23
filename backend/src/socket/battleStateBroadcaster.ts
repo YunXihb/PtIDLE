@@ -27,6 +27,7 @@ import { listCharactersInBattle } from '../services/battleService';
 import { getCharacterStatus, CharacterStatus } from '../services/characterStatusService';
 import { getActorHand, HandCard } from '../services/handService';
 import { getSessionState } from '../services/battleSessionService';
+import { getStepDeadline } from '../services/battleDeadlineService';
 import { getDeploymentView } from '../services/deploymentService';
 import { queryOne } from '../config/database';
 import { redisClient } from '../config/redis';
@@ -319,12 +320,15 @@ export async function broadcastSessionState(
     currentPhase: string;
   }
 ): Promise<void> {
+  // T1014: 附带当前步时限（前端倒计时渲染用；读取失败不阻塞广播）
+  const stepDeadlineRecord = await getStepDeadline(battleId).catch(() => null);
   io.to(`battle:${battleId}`).emit('battle:state:session', {
     battleId,
     currentRound: state.currentRound,
     currentStep: state.currentStep,
     currentActorId: state.currentActorId,
     currentPhase: state.currentPhase,
+    stepDeadline: stepDeadlineRecord?.deadline ?? null,
   });
 }
 

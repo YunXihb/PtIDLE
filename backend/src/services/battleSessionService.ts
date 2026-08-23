@@ -1,6 +1,7 @@
 import { redisClient } from '../config/redis';
 import { query, queryOne, execute } from '../config/database';
 import { redisKey } from '../utils/redisKeys';
+import { armStepDeadline, clearStepDeadline, getStepDeadline } from './battleDeadlineService';
 
 // ========================================
 // 类型定义
@@ -47,6 +48,7 @@ export interface BattleSessionView extends BattleSessionState {
   totalSteps: number; // 本轮总步数（activationOrder.length）
   nextActorId: string | null; // 下一步激活的棋子（end_step 时为下一个；end_round 时为下一轮首步）
   isLastStepInRound: boolean;
+  stepDeadline: string | null; // T1014: 当前步时限 ISO（无步时/战斗结束为 null；前端倒计时渲染用）
 }
 
 // ========================================
@@ -239,11 +241,15 @@ export async function getCurrentState(
     nextActorId = state.activationOrder[0]; // 下一轮首步
   }
 
+  // T1014: 当前步时限（sweeper 权威时限的只读镜像，前端倒计时用）
+  const stepDeadlineRecord = await getStepDeadline(battleId);
+
   return {
     ...state,
     totalSteps,
     nextActorId,
     isLastStepInRound,
+    stepDeadline: stepDeadlineRecord?.deadline ?? null,
   };
 }
 
@@ -272,6 +278,12 @@ export async function activateCurrentUnit(
 
   state.currentPhase = 'draw';
   await saveSessionState(state);
+
+  // T1014: 步时武装（90s 总时限，不因操作重置；sweeper 到期触发 executeEndStep）
+  //    activateCurrentUnit 是所有步骤激活的唯一汇聚点（init 首步 / executeEndStep
+  //    步骤推进 / executeRoundEnd 新回合首步），在此武装覆盖全部路径
+  await armStepDeadline(battleId, state.currentStep, state.currentActorId);
+
   return { success: true, state };
 }
 
@@ -422,6 +434,10 @@ export async function finishSession(
   state.currentActorId = null;
   await saveSessionState(state);
   await persistSessionToDb(state);
+
+  // T1014: 战斗结束清除步时（best-effort，sweeper 对残留条目另有自愈清理）
+  await clearStepDeadline(battleId).catch(() => undefined);
+
   return { success: true, state };
 }
 
@@ -430,6 +446,8 @@ export async function finishSession(
  */
 export async function deleteSession(battleId: string): Promise<void> {
   await redisClient.del(getSessionKey(battleId));
+  // T1014: 一并清除步时记录与索引条目
+  await clearStepDeadline(battleId).catch(() => undefined);
 }
 
 /**

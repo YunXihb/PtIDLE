@@ -10,6 +10,9 @@ const mockRedisClient = {
   hDel: jest.fn(),
   hGetAll: jest.fn(),
   hSetNX: jest.fn(),
+  // T1014: 步时索引 ZSET 操作
+  zAdd: jest.fn(),
+  zRem: jest.fn(),
 };
 
 const mockQuery = jest.fn();
@@ -68,6 +71,10 @@ describe('battleSessionService', () => {
       delete sessionStore[key];
       return Promise.resolve(1);
     });
+
+    // T1014: 步时 arm/clear（best-effort，默认成功即可）
+    mockRedisClient.zAdd.mockResolvedValue(1);
+    mockRedisClient.zRem.mockResolvedValue(1);
 
     mockExecute.mockResolvedValue(1);
   });

@@ -14,6 +14,8 @@ jest.mock('../config/database', () => ({
 }));
 jest.mock('../config/redis', () => {
   const store = new Map<string, string>();
+  // T1014: 内存 ZSET 模拟（deadlineIndex 用）
+  const zset = new Map<string, number>();
   return {
     redisClient: {
       get: async (k: string) => store.get(k) ?? null,
@@ -28,7 +30,19 @@ jest.mock('../config/redis', () => {
         store.delete(k);
         return 1;
       },
+      zAdd: async (_k: string, m: { score: number; value: string }) => {
+        zset.set(m.value, m.score);
+        return 1;
+      },
+      zRem: async (_k: string, ...members: string[]) => {
+        let n = 0;
+        for (const m of members) {
+          if (zset.delete(m)) n++;
+        }
+        return n;
+      },
       __store: store,
+      __zset: zset,
     },
   };
 });

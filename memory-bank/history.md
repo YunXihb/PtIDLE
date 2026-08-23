@@ -2771,3 +2771,26 @@ T082 是横切性能批次，无单一归属章节，architecture.md 采用独�
 - query/execute 语义差异：query 返回 rows（查数据），execute 返回 rowCount（写确认）-- 检查"UPDATE 是否生效"必须用 execute。battleService.test 等单测因 mock 的 query 自带 rowCount 而测不出该 bug，只有真实 E2E 能暴露。
 - socketServer.test 中 mock battleSessionService 原来只导出 getDbSessionState，broadcaster 改用 getSessionState 后 mock 缺导出 -> state:full 静默超时；补导出 + mock 返回值需补全 BattleSessionState 完整字段（battleId/activationOrder/...）。
 - 验证方式：44/44 套件 723/723 全绿 + 双 socket E2E 脚本（开局即 phase=move / 认输 surrender 落库 / 求和请求->接受->battle:end draw 全链路）。dev 环境测试用户 testuser_*/logintest_*（password123）可复用。
+
+## 2026-08-23 - 任务：T1010-T1013 布置与计时系列（前一会话交付）+ T1014 deadline sweeper（本会话）
+
+### Prompt
+继续 T1010 系列（对战布置与计时）。前一会话已完成并提交 T1010-T1014 计划立项与 T1010(migration 013)/T1011(deploymentService)/T1012(initBattleField 拆分+卡组快照)/T1013(布置 Socket 事件) 四个任务（commit 02e27d3..0d511df）。本会话恢复 dev 环境（docker start 两 dev 容器 + 前后端 dev 进程）后继续实施 T1014：全局 1s interval 扫描布置/步时 deadline，权威时限只存 Redis（防 nodemon 重启丢失），布置到期->finalizeDeployment+开战，步时到期->executeEndStep，与手动 confirm/skip 并发无双触发。
+
+### 思考
+- **模块分层防循环依赖**：arm/clear 辅助（battleDeadlineService，只依赖 redisClient+redisKeys）与扫描触发（deadlineSweeper，依赖 deployment/initialization/action/session 四个 battle 服务）拆成两个文件。battleSessionService -> battleDeadlineService 无环；deadlineSweeper 只被 index.ts 引用。
+- **数据模型**：`battle:{id}:step_deadline` 存 JSON（含 step+actorId，触发前与 session 比对，手动推进后失配只清理不触发——这是防双触发的核心）；全局 ZSET `battle:deadline_index`（score=到期 ms，member=deploy:{id}/step:{id}）做发现索引，重启后 sweeper 重新扫即恢复。
+- **武装点选 activateCurrentUnit**：它是所有步骤激活的唯一汇聚点（init 首步 / executeEndStep 推进 / executeRoundEnd 新回合首步三处全经过），单点武装覆盖全部路径，无需改三个调用方。
+- **并发安全三件套**：finalizeDeployment 写锁+幂等（超时与双方确认竞争只算一次）；startBattle 加 in-process Set 守卫（sweeper 与 confirm 同时触发只跑一次，busy 方静默退避）；sweeper 认领（zScore 自检+ZREM）后读记录自愈（认领期间被新一步激活重写 -> 恢复索引不误触发）。
+- **失败退避**：startBattle/executeEndStep 失败不丢条目，索引重置为 now+10s 重试（幂等安全）；布置条目前置校验 battles.status=pending + 部署状态存在，非 pending 直接清索引（开战成功竞态漏删/认输结束的残留自愈）。
+- **E2E 提前触发手法**：redis-cli 同时覆盖记录 key 的 deadline（改为过去 ISO）与索引 score。只改索引不改记录会被自愈分支拒发——失败的第一版 E2E 恰好实证了该防护生效。
+- **T1016 铺垫**：broadcastSessionState（battle:state:session）与 getCurrentState view 加 stepDeadline 字段，前端倒计时直接用服务器时间戳渲染。
+
+### 意外
+- **★ executeEndStep 既有 bug（retain 盲取 hand[0]）**：E2E 首跑步时超时推进报 retain_failed。根因：retainHandOnStepEnd 对公共池卡返回失败（by design），但 executeEndStep 自动保留时盲取 hand[0]——纯公共池手牌（空卡组棋子的常态）下手动 skip_play 也会失败，此前从未暴露是因为历次 E2E 都走打牌路径。修正：优先保留首张非公共池卡，全公共池传 null（全弃）。
+- **broadcaster 广播事件名**是 battle:state:full/session/board（非 battle:state），E2E 脚本第一版监听错事件名；battle:state:session payload 新增 stepDeadline 后 broadcaster 既有断言需同步（1 处）。
+- **客户端重连不重进 battle 房间**：C 项（重启恢复）E2E 客户端收不到广播，但 Redis session 证实 sweeper 已推进 step 1->2——服务端行为正确，房间重进属 T1015 前端断线重连范畴。
+- **node-redis 4.x zAdd 字段名是 value 不是 member**（tsc 报错才发现）；matchmakingService 既有用法可参照。
+- **E2E 脚本时序坑×2**：撮合推送在第二次入队 await 期间到达，监听器必须先建好；login 响应是 {success, data:{token}} 包一层。dev PG 容器用户是 postgres（非 ptidle）。
+- 测试 microtask 刷新：sweep 链上多个 await，fake timers 用 jest.advanceTimersByTimeAsync、真实计时器用多次 setImmediate flush 才能断言到调用。
+- 验证：全量 47/47 suite 795/795 绿（+24 新单测）；E2E A(布置超时 0.5s 内自动开战 phase=move)/B(步时超时 step 0->1+新时限)/C(nodemon 重启后 step 1->2) 三项全过。E2E 脚本 /tmp/repro-t1014.js（/tmp 重启即丢，可按本条目重写）。

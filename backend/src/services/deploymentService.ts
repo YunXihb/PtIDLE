@@ -29,6 +29,7 @@ import { query, queryOne, execute } from '../config/database';
 import { redisClient } from '../config/redis';
 import { redisKey } from '../utils/redisKeys';
 import { getCharacterDeckCards } from './characterService';
+import { armDeploymentDeadline, clearDeploymentDeadline } from './battleDeadlineService';
 
 // ========================================
 // 常量（T1010 设计锁定）
@@ -460,6 +461,9 @@ export async function createDeployment(
     };
     await saveState(state);
 
+    // T1014: 武装布置时限索引（sweeper 到期触发 startBattle）
+    await armDeploymentDeadline(battleId, Date.parse(state.deadline));
+
     // DB phase 标记（审计用；运行时以 Redis deployment key 为准）
     await execute(
       `UPDATE battles SET current_phase = 'deployment', updated_at = NOW() WHERE id = $1`,
@@ -686,11 +690,22 @@ export async function isDeploymentExpired(battleId: string): Promise<boolean> {
 }
 
 /**
+ * 读取布置状态原始数据（deadlineSweeper 判定用；不存在返回 null）
+ */
+export async function readDeploymentState(
+  battleId: string
+): Promise<DeploymentState | null> {
+  return loadState(battleId);
+}
+
+/**
  * 清理布置阶段 Redis 状态（battle 正式开始后调用）
  */
 export async function cleanupDeployment(battleId: string): Promise<void> {
   await redisClient.del(redisKey.deployment(battleId)).catch(() => undefined);
   await redisClient.del(redisKey.deployWriteLock(battleId)).catch(() => undefined);
+  // T1014: 清理布置时限索引条目
+  await clearDeploymentDeadline(battleId);
 }
 
 // ========================================

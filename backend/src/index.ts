@@ -19,6 +19,7 @@ import professionRoutes from './routes/professions';
 import characterRoutes from './routes/characters';
 import cardRoutes from './routes/cards';
 import { initializeGatheringConfig, processDueGatheringTasks } from './services/gatheringService';
+import { startDeadlineSweeper, stopDeadlineSweeper } from './services/deadlineSweeper';
 import { initializeSocketServer } from './socket/socketServer';
 import { checkMigrationsStatus } from './scripts/migrate';
 import { errorHandler } from './middleware/errorHandler';
@@ -145,6 +146,8 @@ httpServer.listen(PORT, () => {
   console.log(`HTTP+WS server running on port ${PORT}`);
   initializeApp();
   initializeSocketServer(io);
+  // T1014: 对局计时扫描器（布置 120s / 步时 90s 到期自动推进；时限存 Redis，重启不丢）
+  startDeadlineSweeper(io);
 });
 
 // 采集任务检查定时器（使用 Redis 队列）
@@ -169,6 +172,11 @@ async function gracefulShutdown(signal: string): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(`\n[shutdown] ${signal} received, closing server...`);
+  try {
+    stopDeadlineSweeper();
+  } catch (e) {
+    console.error('[shutdown] DeadlineSweeper stop error:', (e as Error).message);
+  }
   try {
     io.close();
   } catch (e) {

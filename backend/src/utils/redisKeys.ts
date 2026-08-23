@@ -26,4 +26,9 @@ export const redisKey = {
   deployWriteLock: (battleId: string) => `battle:${battleId}:deploy_write_lock`,
   /** T1012: 对局卡组快照（布置配卡结果；不存在则回落 character_deck） */
   deck: (battleId: string, characterId: string) => `battle:${battleId}:deck:${characterId}`,
+  // T1014: 对局计时（权威时限只在 Redis，sweeper 定时扫描；服务重启后从索引恢复）
+  /** 当前步时限记录（JSON: battleId/step/actorId/deadline；激活时写入） */
+  stepDeadline: (battleId: string) => `battle:${battleId}:step_deadline`,
+  /** 全局到期索引（ZSET: score=到期时间 ms, member=deploy:{id} / step:{id}） */
+  deadlineIndex: () => `battle:deadline_index`,
 } as const;

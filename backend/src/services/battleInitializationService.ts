@@ -337,28 +337,42 @@ export async function initDeployment(
  * - finalizeDeployment -> persistDeckSnapshots -> initBattleField(deployedPieces)
  * - 成功后清理布置 Redis 状态
  * @returns InitResult 与旧 initBattleField 相同
+ *
+ * T1014: in-flight 守卫 —— 双方确认（battleRoom）与到期 sweeper 可能同时触发，
+ * 同一 battleId 的 startBattle 只允许一个在跑（单进程内存 Set 即可）；
+ * 并发方收到 start_already_in_progress，由调用方决定重试/忽略（finalize 幂等）。
  */
+const startingBattles = new Set<string>();
+
 export async function startBattle(
   io: IOServer,
   battleId: string
 ): Promise<InitResult> {
-  // 0. finalize（幂等：双方确认 / sweeper 超时并发触发只算一次）
-  const fin = await finalizeDeployment(battleId);
-  if (!fin.success || !fin.finalized) {
-    return { success: false, failedStep: 0, error: `finalize: ${fin.error ?? 'unknown'}` };
+  if (startingBattles.has(battleId)) {
+    return { success: false, failedStep: 0, error: 'start_already_in_progress' };
   }
+  startingBattles.add(battleId);
+  try {
+    // 0. finalize（幂等：双方确认 / sweeper 超时并发触发只算一次）
+    const fin = await finalizeDeployment(battleId);
+    if (!fin.success || !fin.finalized) {
+      return { success: false, failedStep: 0, error: `finalize: ${fin.error ?? 'unknown'}` };
+    }
 
-  // 0.5 卡组快照落 Redis（必须在 initBattleField 步骤 4 抽牌之前）
-  await persistDeckSnapshots(battleId, fin.finalized);
+    // 0.5 卡组快照落 Redis（必须在 initBattleField 步骤 4 抽牌之前）
+    await persistDeckSnapshots(battleId, fin.finalized);
 
-  // 1. 原有初始化流程（步骤 1-7，棋子按布置配置放置）
-  const result = await initBattleField(io, battleId, fin.finalized);
-  if (!result.success) {
+    // 1. 原有初始化流程（步骤 1-7，棋子按布置配置放置）
+    const result = await initBattleField(io, battleId, fin.finalized);
+    if (!result.success) {
+      return result;
+    }
+
+    // 2. 清理布置状态（finalize 结果已审计落 battles.battle_data）
+    await cleanupDeployment(battleId);
+
     return result;
+  } finally {
+    startingBattles.delete(battleId);
   }
-
-  // 2. 清理布置状态（finalize 结果已审计落 battles.battle_data）
-  await cleanupDeployment(battleId);
-
-  return result;
 }

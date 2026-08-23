@@ -490,10 +490,14 @@ export async function executeEndStep(
     return { success: false, error: 'complete_phase_failed', detail: (err as Error).message };
   }
 
-  // 3. retain 手牌（自动保留 hand 第一张，如手牌为空传 null）
+  // 3. retain 手牌（自动保留，如手牌为空传 null）
+  //    ★ T1014 修正: 公共池卡不可保留（retainHandOnStepEnd 路径 3 会失败），
+  //    优先保留首张非公共池卡；全是公共池/空手牌 -> null（全弃）。
+  //    旧实现盲取 hand[0]，纯公共池手牌（空卡组棋子常态）下 skip/超时推进必失败
   try {
     const hand = await getActorHand(battleId, state.currentActorId!);
-    const retainDeckId = hand[0]?.deck_id ?? null;
+    const retainable = hand.find((c) => c.source !== 'public_pool');
+    const retainDeckId = retainable?.deck_id ?? null;
     const retainResult = await retainHandOnStepEnd(battleId, state.currentActorId!, retainDeckId);
     if (!retainResult.success) {
       return { success: false, error: 'retain_failed', detail: retainResult.error };
