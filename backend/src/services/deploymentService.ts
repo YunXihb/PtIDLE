@@ -692,3 +692,73 @@ export async function cleanupDeployment(battleId: string): Promise<void> {
   await redisClient.del(redisKey.deployment(battleId)).catch(() => undefined);
   await redisClient.del(redisKey.deployWriteLock(battleId)).catch(() => undefined);
 }
+
+// ========================================
+// T1012: 对局卡组快照
+// ========================================
+
+/** 快照存储的卡组行（与 handService.toHandCard 输入同构） */
+export interface DeckSnapshotRow {
+  deck_id: string;   // 快照行无 character_deck 行，合成 = card_id
+  card_id: string;
+  name: string;
+  type: string;
+  cost: number;
+  effect: Record<string, unknown>;
+  template_no: number;
+  card_sequence: number;
+}
+
+/**
+ * 把 finalize 结果中的卡组快照写入 Redis `battle:{id}:deck:{cid}`
+ *
+ * - 空卡组写 '[]'（显式快照：drawCards 直接走公共池，不再回落 character_deck）
+ * - 快照行按配置顺序存储（不重排），deck_id 合成为 card_id
+ * - 调用时机：startBattle 在 initBattleField 抽初始手牌**之前**
+ */
+export async function persistDeckSnapshots(
+  battleId: string,
+  finalized: FinalizedDeployment
+): Promise<void> {
+  const sides: Array<{ playerId: string; pieces: FinalizedPiece[] }> = [];
+
+  // 各 side 的 playerId 从部署状态取（快照行按 player_id 校验归属）
+  const state = await loadState(battleId);
+  if (state) {
+    sides.push({ playerId: state.p1.playerId, pieces: finalized.p1.pieces });
+    sides.push({ playerId: state.p2.playerId, pieces: finalized.p2.pieces });
+  } else {
+    // 状态已被清理（理论不发生），跳过归属过滤直接写
+    sides.push({ playerId: '', pieces: finalized.p1.pieces });
+    sides.push({ playerId: '', pieces: finalized.p2.pieces });
+  }
+
+  for (const { playerId, pieces } of sides) {
+    for (const piece of pieces) {
+      let rows: DeckSnapshotRow[] = [];
+      if (piece.deckCardIds.length > 0) {
+        const cardRows = playerId
+          ? await query<DeckSnapshotRow>(
+              `SELECT pc.id AS card_id, pc.name, pc.type, pc.cost, pc.effect,
+                      COALESCE(ct.template_no, 0) AS template_no,
+                      COALESCE(pc.card_sequence, 0) AS card_sequence
+               FROM player_cards pc
+               LEFT JOIN card_templates ct ON pc.card_template_id = ct.id
+               WHERE pc.player_id = $1 AND pc.id = ANY($2::uuid[])`,
+              [playerId, piece.deckCardIds]
+            )
+          : [];
+        // 保持配置顺序（player_cards 查询不保序）
+        const byId = new Map(cardRows.map(r => [r.card_id, r]));
+        rows = piece.deckCardIds
+          .map(id => byId.get(id))
+          .filter((r): r is DeckSnapshotRow => r !== undefined)
+          .map(r => ({ ...r, deck_id: r.card_id }));
+      }
+      await redisClient.set(
+        redisKey.deck(battleId, piece.characterId),
+        JSON.stringify(rows)
+      );
+    }
+  }
+}

@@ -22,6 +22,7 @@ const mockRedisClient = {
   hSet: jest.fn(),
 };
 const mockRedisDel = mockRedisClient.del;
+const mockBroadcastDeploymentState = jest.fn();
 
 jest.mock('./battleService', () => ({
   initializeBoard: mockInitializeBoard,
@@ -33,6 +34,17 @@ jest.mock('./handService', () => ({
 }));
 jest.mock('./battleActionService', () => ({
   activateActorForStep: mockActivateActor,
+}));
+const mockCreateDeployment = jest.fn();
+const mockFinalizeDeployment = jest.fn();
+const mockPersistDeckSnapshots = jest.fn();
+const mockCleanupDeployment = jest.fn();
+
+jest.mock('./deploymentService', () => ({
+  createDeployment: mockCreateDeployment,
+  finalizeDeployment: mockFinalizeDeployment,
+  persistDeckSnapshots: mockPersistDeckSnapshots,
+  cleanupDeployment: mockCleanupDeployment,
 }));
 jest.mock('./battleSessionService', () => ({
   initializeSession: mockInitSession,
@@ -52,13 +64,23 @@ jest.mock('../socket/battleStateBroadcaster', () => ({
   broadcastBoardState: jest.fn(),
   broadcastHandState: jest.fn(),
   broadcastCharacterStatus: jest.fn(),
+  broadcastDeploymentState: mockBroadcastDeploymentState,
 }));
 
-import { initBattleField, cleanupPartialInit } from './battleInitializationService';
+import { initBattleField, cleanupPartialInit, initDeployment, startBattle } from './battleInitializationService';
+import type { FinalizedDeployment } from './deploymentService';
 
 const mockBroadcastFullState = require('../socket/battleStateBroadcaster').broadcastFullState as jest.MockedFunction<any>;
 
 const mockBroadcast = jest.fn();
+
+// T1012: beforeEach 预排的 mockResolvedValueOnce 队列会让 ids 路径拿到旧值, 重置后自排
+function resetDbMocks(): void {
+  mockQuery.mockReset();
+  mockQueryOne.mockReset();
+  mockExecute.mockReset();
+  mockExecute.mockResolvedValue(1);
+}
 const FAKE_IO: any = { to: jest.fn().mockReturnThis(), emit: mockBroadcast };
 
 const P1_CHARS = [
@@ -295,5 +317,129 @@ describe('initBattleField failure paths', () => {
     }
     // battles 行未更新时不应激活首 actor
     expect(mockActivateActor).not.toHaveBeenCalled();
+  });
+});
+
+
+// ========================================
+// T1012: 布置阶段两段式
+// ========================================
+
+const DEPLOYED: FinalizedDeployment = {
+  p1: {
+    // 选择顺序与 created_at 顺序不同: c2 -> c1 -> c3 (验证按配置顺序出场)
+    pieces: [
+      { characterId: 'c2', x: 4, y: 0, deckCardIds: ['k2'] },
+      { characterId: 'c1', x: 7, y: 0, deckCardIds: [] },
+      { characterId: 'c3', x: 1, y: 0, deckCardIds: ['k3'] },
+    ],
+  },
+  p2: {
+    pieces: [
+      { characterId: 'c4', x: 8, y: 8, deckCardIds: [] },
+      { characterId: 'c5', x: 6, y: 8, deckCardIds: [] },
+      { characterId: 'c6', x: 7, y: 8, deckCardIds: [] },
+    ],
+  },
+};
+
+describe('T1012 initBattleField with deployedPieces', () => {
+  it('棋子按配置顺序出场 + 配置位置放置', async () => {
+    resetDbMocks();
+    mockQueryOne.mockResolvedValueOnce({ player1_id: 'p1', player2_id: 'p2' });
+    // loadSideCharacters(ids): 双方各一次 query, 返回乱序行(代码需按配置排序)
+    mockQuery.mockResolvedValueOnce([P1_CHARS[0], P1_CHARS[2], P1_CHARS[1]]); // c1,c3,c2 乱序
+    mockQuery.mockResolvedValueOnce([P2_CHARS[2], P2_CHARS[0], P2_CHARS[1]]);
+    mockQuery.mockResolvedValueOnce({ rowCount: 6 });
+    // 蛇形顺序按配置顺序: c2,c4,c1,c5,c3,c6
+    mockGetOrder.mockReturnValue(['c2', 'c4', 'c1', 'c5', 'c3', 'c6']);
+
+    const result = await initBattleField(FAKE_IO, 'b1', DEPLOYED);
+
+    expect(result.success).toBe(true);
+    // 位置 = 配置位置(按配置顺序)
+    expect(mockPlaceCharacter).toHaveBeenNthCalledWith(1, 'b1', 'c2', 4, 0);
+    expect(mockPlaceCharacter).toHaveBeenNthCalledWith(2, 'b1', 'c4', 8, 8);
+    expect(mockPlaceCharacter).toHaveBeenNthCalledWith(3, 'b1', 'c1', 7, 0);
+    expect(mockPlaceCharacter).toHaveBeenNthCalledWith(4, 'b1', 'c5', 6, 8);
+    expect(mockPlaceCharacter).toHaveBeenNthCalledWith(5, 'b1', 'c3', 1, 0);
+    expect(mockPlaceCharacter).toHaveBeenNthCalledWith(6, 'b1', 'c6', 7, 8);
+    // 蛇形顺序按配置顺序: c2,c4,c1,c5,c3,c6
+    expect(mockInitSession).toHaveBeenCalledWith('b1', ['c2', 'c1', 'c3'], ['c4', 'c5', 'c6']);
+    expect(result.success && result.actorId).toBe('c2');
+  });
+
+  it('配置棋子数不足 3 -> failedStep=2', async () => {
+    resetDbMocks();
+    mockQueryOne.mockResolvedValueOnce({ player1_id: 'p1', player2_id: 'p2' });
+    mockQuery.mockResolvedValueOnce(P1_CHARS.slice(0, 1)); // 只查到 1 个 alive
+    mockQuery.mockResolvedValueOnce(P2_CHARS);
+    mockQuery.mockResolvedValueOnce({ rowCount: 0 });
+
+    const result = await initBattleField(FAKE_IO, 'b1', DEPLOYED);
+    expect(result).toEqual({
+      success: false,
+      failedStep: 2,
+      error: 'Insufficient characters: p1=1, p2=3',
+    });
+  });
+});
+
+describe('T1012 initDeployment', () => {
+  it('创建部署状态 + 广播 deploy_state', async () => {
+    mockCreateDeployment.mockResolvedValueOnce({ success: true, state: {} });
+
+    const r = await initDeployment(FAKE_IO, 'b1');
+
+    expect(r.success).toBe(true);
+    expect(mockInitializeBoard).toHaveBeenCalledWith('b1');
+    expect(mockCreateDeployment).toHaveBeenCalledWith('b1');
+    expect(mockBroadcastDeploymentState).toHaveBeenCalledWith(FAKE_IO, 'b1');
+  });
+
+  it('createDeployment 失败 -> 透传 error', async () => {
+    mockCreateDeployment.mockResolvedValueOnce({ success: false, error: 'battle_not_pending' });
+
+    const r = await initDeployment(FAKE_IO, 'b1');
+
+    expect(r).toEqual({ success: false, error: 'battle_not_pending' });
+    expect(mockBroadcastDeploymentState).not.toHaveBeenCalled();
+  });
+});
+
+describe('T1012 startBattle', () => {
+  it('finalize -> 快照 -> initBattleField(带配置) -> cleanup', async () => {
+    resetDbMocks();
+    mockGetOrder.mockReturnValue(['c2', 'c4', 'c1', 'c5', 'c3', 'c6']);
+    mockFinalizeDeployment.mockResolvedValueOnce({ success: true, finalized: DEPLOYED });
+    mockPersistDeckSnapshots.mockResolvedValueOnce(undefined);
+    mockCleanupDeployment.mockResolvedValueOnce(undefined);
+    mockQueryOne.mockResolvedValueOnce({ player1_id: 'p1', player2_id: 'p2' });
+    mockQuery.mockResolvedValueOnce([P1_CHARS[0], P1_CHARS[2], P1_CHARS[1]]);
+    mockQuery.mockResolvedValueOnce([P2_CHARS[2], P2_CHARS[0], P2_CHARS[1]]);
+    mockQuery.mockResolvedValueOnce({ rowCount: 6 });
+    mockExecute.mockResolvedValue(1);
+
+    const result = await startBattle(FAKE_IO, 'b1');
+
+    expect(result.success).toBe(true);
+    expect(mockFinalizeDeployment).toHaveBeenCalledWith('b1');
+    // 快照必须先于抽牌写入
+    expect(mockPersistDeckSnapshots.mock.invocationCallOrder[0]).toBeLessThan(
+      mockDrawCards.mock.invocationCallOrder[0]
+    );
+    expect(mockPersistDeckSnapshots).toHaveBeenCalledWith('b1', DEPLOYED);
+    expect(mockPlaceCharacter).toHaveBeenNthCalledWith(1, 'b1', 'c2', 4, 0);
+    expect(mockCleanupDeployment).toHaveBeenCalledWith('b1');
+  });
+
+  it('finalize 失败 -> failedStep=0, 不进入初始化', async () => {
+    mockFinalizeDeployment.mockResolvedValueOnce({ success: false, error: 'deployment_not_found' });
+
+    const result = await startBattle(FAKE_IO, 'b1');
+
+    expect(result).toEqual({ success: false, failedStep: 0, error: 'finalize: deployment_not_found' });
+    expect(mockInitializeBoard).not.toHaveBeenCalled();
+    expect(mockCleanupDeployment).not.toHaveBeenCalled();
   });
 });

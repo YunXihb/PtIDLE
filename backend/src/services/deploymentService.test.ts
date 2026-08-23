@@ -38,6 +38,7 @@ jest.mock('./characterService', () => ({
 
 import { redisClient } from '../config/redis';
 import {
+  persistDeckSnapshots,
   createDeployment,
   updateDraft,
   confirmDeployment,
@@ -103,7 +104,15 @@ function routeQuery(sql: string): unknown[] {
   }
   if (sql.includes('player_cards')) {
     const ids = CURRENT_CARDS;
-    return P1_CARDS.filter(c => ids.includes(c.id));
+    // 同时携带 validateDraft 字段(id/profession)与 persistDeckSnapshots 字段(card_id/type/cost)
+    return P1_CARDS.filter(c => ids.includes(c.id)).map(c => ({
+      ...c,
+      card_id: c.id,
+      type: 'attack',
+      cost: 1,
+      effect: {},
+      card_sequence: 0,
+    }));
   }
   if (sql.includes('ORDER BY created_at ASC LIMIT 3')) {
     return CURRENT_DEFAULT_CHARS ?? P1_CHARS;
@@ -530,5 +539,48 @@ describe('getDeploymentView / isDeploymentExpired', () => {
       finalized: { p1: { pieces: [] }, p2: { pieces: [] } },
     });
     expect(await isDeploymentExpired(BATTLE_ID)).toBe(false);
+  });
+});
+
+
+describe('persistDeckSnapshots (T1012)', () => {
+  it('按配置顺序写入快照, deck_id 合成 = card_id, 空卡组写 []', async () => {
+    seedState(); // 提供 p1/p2 playerId
+    // query 路由: player_cards 查询按 CURRENT_CARDS 过滤
+    CURRENT_CARDS = ['k1', 'k3', 'k4'];
+    const finalized = {
+      p1: {
+        pieces: [
+          { characterId: 'c1', x: 2, y: 0, deckCardIds: ['k3', 'k1'] }, // 乱序, 快照应保持配置顺序
+          { characterId: 'c2', x: 1, y: 0, deckCardIds: [] },
+        ],
+      },
+      p2: { pieces: [{ characterId: 'c3', x: 8, y: 8, deckCardIds: ['k4'] }] },
+    };
+
+    await persistDeckSnapshots(BATTLE_ID, finalized);
+
+    // c1 快照: [k3, k1] 配置顺序
+    const c1 = JSON.parse(store.get(`battle:${BATTLE_ID}:deck:c1`)!);
+    expect(c1.map((r: any) => r.card_id)).toEqual(['k3', 'k1']);
+    expect(c1[0].deck_id).toBe('k3'); // deck_id 合成
+    expect(c1[0]).toMatchObject({ name: '轻甲', template_no: 2 });
+    // c2 空卡组显式 []
+    expect(store.get(`battle:${BATTLE_ID}:deck:c2`)).toBe('[]');
+    // c3 (p2)
+    const c3 = JSON.parse(store.get(`battle:${BATTLE_ID}:deck:c3`)!);
+    expect(c3.map((r: any) => r.card_id)).toEqual(['k4']);
+  });
+
+  it('配置中的卡不在本人库存 -> 该卡被剔除', async () => {
+    seedState();
+    CURRENT_CARDS = ['k1']; // k9 不在库存
+    const finalized = {
+      p1: { pieces: [{ characterId: 'c1', x: 0, y: 0, deckCardIds: ['k1', 'k9'] }] },
+      p2: { pieces: [] },
+    };
+    await persistDeckSnapshots(BATTLE_ID, finalized);
+    const c1 = JSON.parse(store.get(`battle:${BATTLE_ID}:deck:c1`)!);
+    expect(c1.map((r: any) => r.card_id)).toEqual(['k1']);
   });
 });

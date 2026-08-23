@@ -200,7 +200,20 @@ export async function drawCards(
   const retainedCard = await consumeRetainedCard(battleId, characterId);
 
   // 2. 查询牌库
-  const deckRows = await getCharacterDeckCards(characterId);
+  //    ★ T1012: 优先读对局卡组快照（布置配卡结果），无快照回落 character_deck。
+  //    快照 key 存在即权威（含 '[]' 空卡组 -> 直接走公共池补足）；
+  //    快照 JSON 损坏时静默回落默认卡组（防御）。
+  const snapshotRaw = await redisClient.get(redisKey.deck(battleId, characterId));
+  let deckRows: Awaited<ReturnType<typeof getCharacterDeckCards>>;
+  if (snapshotRaw !== null) {
+    try {
+      deckRows = JSON.parse(snapshotRaw);
+    } catch {
+      deckRows = await getCharacterDeckCards(characterId);
+    }
+  } else {
+    deckRows = await getCharacterDeckCards(characterId);
+  }
   const deckSize = deckRows.length;
 
   // 3. 牌库为空：整 count 张从公共池补

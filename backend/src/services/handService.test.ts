@@ -124,6 +124,62 @@ describe('handService', () => {
   }
 
   // ========================================
+  // T1012: 对局卡组快照优先
+  // ========================================
+  describe('drawCards battle deck snapshot (T1012)', () => {
+    it('快照存在 -> 从快照抽牌, 不回落 character_deck', async () => {
+      stringStore[`battle:${battleId}:deck:${characterId}`] = JSON.stringify([
+        makeDeckRow('k1', 'k1', '斩击', 'attack', 1, { damage: 2 }, 1),
+        makeDeckRow('k2', 'k2', '轻甲', 'defense', 1, { shield: 2 }, 2),
+      ]);
+      // 若误回落会拿到这张 d1
+      mockGetCharacterDeckCards.mockResolvedValueOnce([
+        makeDeckRow('d1', 'd1', '旧卡', 'attack', 9, { damage: 9 }, 9),
+      ]);
+
+      const result = await drawCards(battleId, characterId, 2);
+
+      expect(result.success).toBe(true);
+      expect(result.deck_size).toBe(2);
+      expect(result.drawn_count).toBe(2);
+      expect(mockGetCharacterDeckCards).not.toHaveBeenCalled();
+      // 手牌 card_id 全部来自快照
+      expect(result.cards!.every(c => ['k1', 'k2'].includes(c.card_id))).toBe(true);
+    });
+
+    it("快照为空数组 '[]' -> 全部走公共池, 不回落 character_deck", async () => {
+      stringStore[`battle:${battleId}:deck:${characterId}`] = '[]';
+      mockGetCharacterDeckCards.mockResolvedValueOnce([
+        makeDeckRow('d1', 'd1', '旧卡', 'attack', 9, { damage: 9 }, 9),
+      ]);
+      mockDrawFromPublicPool.mockResolvedValueOnce([
+        { deck_id: 'pool:1', card_id: 't1', name: '轻击', type: 'attack', cost: 1, effect: { damage: 2 }, template_no: 1, source: 'public_pool' },
+      ]);
+
+      const result = await drawCards(battleId, characterId, 1);
+
+      expect(result.success).toBe(true);
+      expect(result.deck_size).toBe(0);
+      expect(result.drawn_count).toBe(1);
+      expect(result.cards![0].card_id).toBe('t1');
+      expect(mockGetCharacterDeckCards).not.toHaveBeenCalled();
+    });
+
+    it('快照 JSON 损坏 -> 防御性回落 character_deck', async () => {
+      stringStore[`battle:${battleId}:deck:${characterId}`] = '{corrupted';
+      mockGetCharacterDeckCards.mockResolvedValueOnce([
+        makeDeckRow('d1', 'd1', '旧卡', 'attack', 1, { damage: 1 }, 1),
+      ]);
+
+      const result = await drawCards(battleId, characterId, 1);
+
+      expect(result.success).toBe(true);
+      expect(result.deck_size).toBe(1);
+      expect(mockGetCharacterDeckCards).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ========================================
   // drawCards
   // ========================================
   describe('drawCards', () => {

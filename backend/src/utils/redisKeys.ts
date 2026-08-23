@@ -24,4 +24,6 @@ export const redisKey = {
   // T1010 系列：布置阶段
   deployment: (battleId: string) => `battle:${battleId}:deployment`,
   deployWriteLock: (battleId: string) => `battle:${battleId}:deploy_write_lock`,
+  /** T1012: 对局卡组快照（布置配卡结果；不存在则回落 character_deck） */
+  deck: (battleId: string, characterId: string) => `battle:${battleId}:deck:${characterId}`,
 } as const;

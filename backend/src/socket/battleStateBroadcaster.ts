@@ -27,6 +27,8 @@ import { listCharactersInBattle } from '../services/battleService';
 import { getCharacterStatus, CharacterStatus } from '../services/characterStatusService';
 import { getActorHand, HandCard } from '../services/handService';
 import { getSessionState } from '../services/battleSessionService';
+import { getDeploymentView } from '../services/deploymentService';
+import { queryOne } from '../config/database';
 import { redisClient } from '../config/redis';
 
 // ========================================
@@ -384,4 +386,45 @@ export async function broadcastBattleEnd(
     p1UserId: payload.p1UserId,
     p2UserId: payload.p2UserId,
   });
+}
+
+// ========================================
+// T1012: 布置阶段状态广播
+// ========================================
+
+/**
+ * 广播布置阶段状态给双方（battle:deploy_state）
+ *
+ * - 每端各自视角：只含自己的草稿，对手仅暴露 confirmed 状态
+ *   （T1010 设计锁定：对手配置完全隐藏）
+ * - 调用方：initDeployment 创建时 / deploy_update / deploy_confirm 后
+ */
+export async function broadcastDeploymentState(
+  io: IOServer,
+  battleId: string
+): Promise<void> {
+  try {
+    const row = await queryOne<{ p1_user_id: string | null; p2_user_id: string | null }>(
+      `SELECT p1.user_id AS p1_user_id, p2.user_id AS p2_user_id
+       FROM battles b
+       LEFT JOIN players p1 ON p1.id = b.player1_id
+       LEFT JOIN players p2 ON p2.id = b.player2_id
+       WHERE b.id = $1`,
+      [battleId]
+    );
+    if (!row) {
+      return;
+    }
+    for (const userId of [row.p1_user_id, row.p2_user_id]) {
+      if (!userId) {
+        continue;
+      }
+      const view = await getDeploymentView(battleId, userId);
+      if (view) {
+        io.to(userRoom(userId)).emit('battle:deploy_state', view);
+      }
+    }
+  } catch (err) {
+    console.error(`[WS] broadcastDeploymentState failed: battleId=${battleId}`, err);
+  }
 }
