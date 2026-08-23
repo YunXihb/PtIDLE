@@ -21,4 +21,7 @@ export const redisKey = {
   rangerStatus: (battleId: string, characterId: string) => `battle:${battleId}:ranger_status:${characterId}`,
   initLock: (battleId: string) => `battle:${battleId}:init_lock`,
   drawRequest: (battleId: string) => `battle:${battleId}:draw_request`,
+  // T1010 系列：布置阶段
+  deployment: (battleId: string) => `battle:${battleId}:deployment`,
+  deployWriteLock: (battleId: string) => `battle:${battleId}:deploy_write_lock`,
 } as const;
