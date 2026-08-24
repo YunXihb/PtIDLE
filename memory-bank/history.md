@@ -2794,3 +2794,22 @@ T082 是横切性能批次，无单一归属章节，architecture.md 采用独�
 - **E2E 脚本时序坑×2**：撮合推送在第二次入队 await 期间到达，监听器必须先建好；login 响应是 {success, data:{token}} 包一层。dev PG 容器用户是 postgres（非 ptidle）。
 - 测试 microtask 刷新：sweep 链上多个 await，fake timers 用 jest.advanceTimersByTimeAsync、真实计时器用多次 setImmediate flush 才能断言到调用。
 - 验证：全量 47/47 suite 795/795 绿（+24 新单测）；E2E A(布置超时 0.5s 内自动开战 phase=move)/B(步时超时 step 0->1+新时限)/C(nodemon 重启后 step 1->2) 三项全过。E2E 脚本 /tmp/repro-t1014.js（/tmp 重启即丢，可按本条目重写）。
+
+## 2026-08-24 - 任务：T1015 前端布置界面（DeploymentPanel 三面板 + BattleView 接线）
+
+### Prompt
+继续 T1010 系列。前一会话 T1015 进行到一半(commit b80fea7 WIP): types+game store 已提交, DeploymentPanel.vue 未写、BattleView 接线未做。本会话恢复 dev 环境(docker start 两 dev 容器 + 前后端 dev 进程)后完成剩余部分, 用户浏览器双开验证通过。
+
+### 思考
+- **草稿同步只传合法态**: 后端 updateDraft 全量校验(恰好 3 棋子+3 摆位), 编辑中间态(选了 1-2 个)必被打回。设计为深度 watch 节流 600ms 后先跑与后端同规则的客户端预检, 合法才上传; 中间态期间服务端保留的是上一次合法快照, 超时兜底即用该快照(符合「用户最后同步的选择」语义)。
+- **echo 防回环**: deploy_update 成功后服务端会重播 deploy_state(含 myDraft)。lastSyncedJson 记录最后上传 JSON, 与到达的 myDraft 相等即自身 echo 跳过; 不等即外部变更(刷新恢复/另一端编辑)采纳。挂载 hydrate 用同一 watcher immediate 触发。
+- **确认时序**: 后端 confirm 要求草稿已存在且合法, 而 deploy_update 无 ack。confirm 前先冲刷节流中的未同步草稿, 再 emit confirm -- 同一 socket 事件顺序送达, 后端必先处理 update。
+- **一卡实例语义**: player_cards 行带 quantity, 同一 player_card_id 可在同一棋子卡组重复出现(每次占 1 张库存, persistDeckSnapshots 按 id 逐次 map 成快照行), 但禁入第二个棋子的卡组(card_in_multiple_decks)。前端 copiesAvailable=quantity-本组已用, 他组已用>0 整卡禁用。
+- **职业 join**: my/list API 的 PlayerCard 无 profession 字段, 需 cardApi.templates() 按 card_template_id join; 无模板/模板无职业 -> 'common'(对齐后端 COALESCE(ct.profession,'common'))。
+- 摆位 UX: 选中棋子自动分配初始列(P1 左起/P2 右起)使草稿尽早合法可同步; 手动调整=点棋子激活+点格放置, 点己方已占格交换列位。已确认/已终结锁定全部编辑。
+
+### 意外
+- architecture.md 此前完全无 T1010-T1014 章节(前会话只写了 progress/history), 本次补「对战布置与计时 (T1010-T1015)」一节并 v1.63->v1.64。
+- battle:join:ok 先于 battle:deploy_state emit(battleRoom join 流程顺序), store battleId 必已就绪, updateDeployDraft 不会因 battleId 未设丢事件 -- 接线前专门核对过。
+- dev DB 有上次 E2E 残留 ongoing 局会挡匹配唯一索引(pending 才挡, ongoing 恰好不挡, 但仍按惯例清场: UPDATE finished + DEL battle:*)。
+- 验证: vue-tsc 零错; vite build 通过(BattleView chunk 30KB); 浏览器双开(dev 测试用户两枚, 0 卡正好覆盖空卡组合法路径)用户确认无问题。

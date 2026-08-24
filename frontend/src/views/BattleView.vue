@@ -6,6 +6,7 @@ import { ref, computed, watch } from 'vue';
 import { useGameStore } from '@/stores/game';
 import BattleBoard from '@/components/BattleBoard.vue';
 import BattleHand from '@/components/BattleHand.vue';
+import DeploymentPanel from '@/components/DeploymentPanel.vue';
 import { computeReachableCells } from '@/utils/movement';
 import { cardNeedsTarget, cardIsAOE, computeCardTargets } from '@/utils/cards';
 import type { BoardStateEvent, CharacterStatus, BattlePhase, HandCard } from '@/types';
@@ -390,6 +391,9 @@ function onDrawReject() {
     </div>
 
     <template v-else>
+    <!-- T1015 布置阶段: 三面板(选子/摆位/配卡)+倒计时+确认; 认输放行, 求和隐藏 -->
+    <DeploymentPanel v-if="game.deployState && !previewMode" />
+
     <BattleBoard
       v-if="displayBoard"
       :board="displayBoard"
@@ -436,9 +440,10 @@ function onDrawReject() {
       />
     </div>
 
-    <!-- 对战互动：请求平局 + 退出对战（实战进行中） -->
-    <div v-if="displayBoard && !previewMode" class="mt interaction-row">
+    <!-- 对战互动：请求平局 + 退出对战（实战进行中；布置期仅认输，求和隐藏） -->
+    <div v-if="(displayBoard || game.deployState) && !previewMode" class="mt interaction-row">
       <button
+        v-if="displayBoard"
         type="button"
         class="secondary small"
         :disabled="game.drawRequestSent"
@@ -473,7 +478,7 @@ function onDrawReject() {
       </div>
     </div>
 
-    <div v-else-if="!displayBoard" class="panel mt match-panel">
+    <div v-else-if="!displayBoard && !game.deployState" class="panel mt match-panel">
       <!-- T077 匹配队列: 已匹配(auto-join 后等 battle:state:full) / 匹配中 / 空闲 -->
       <div v-if="game.matched" class="match-status">
         <p>✅ 已匹配到对手，正在进入战斗…</p>

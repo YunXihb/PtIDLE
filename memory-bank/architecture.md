@@ -3213,7 +3213,8 @@ frontend/
     │   ├── CraftingPanel.vue  # 制造面板: 3分类(卡牌/装备/消耗品) + 替代料 + 职业门槛 + 预算校验 (T066)
     │   ├── BattleBoard.vue   # 战棋棋盘: 9x9 CSS Grid + 基地(2,2/6,6) + 状态条 + cell-click + 格子内渲染 BattlePiece + 可移动格/可目标高亮 (T068/T069/T071/T072)
     │   ├── BattlePiece.vue   # 战棋棋子: 职业字+血量条(护盾)+能量pips+效果点+当前行动者环+敌我边框+选中脉冲环+可目标准星环 (T069/T071/T072)
-    │   └── BattleHand.vue    # 战棋手牌: 角色头标+卡牌横排(类型色/费用/来源/效果摘要)+可出牌判定+card-click (T070)
+    │   ├── BattleHand.vue    # 战棋手牌: 角色头标+卡牌横排(类型色/费用/来源/效果摘要)+可出牌判定+card-click (T070)
+    │   └── DeploymentPanel.vue # 布置阶段三面板: 选子/摆位/配卡+倒计时+草稿同步确认 (T1015)
     └── views/                  # Login/Register/HomeLayout/Home/Workshop(tab壳)/Warehouse/Characters/Cards/Battle(T068-T072渲染交互+T073 WS auto-join+T077 匹配面板)
 ```
 
@@ -3268,5 +3269,23 @@ frontend/
 
 后端 jest 40/43 suite 681/709(3 env-fail suite 不变: socketServer/authController/wsValidation.integration, ECONNREFUSED 环境非代码); 前端 build + typecheck 全过。
 
-*文档版本：v1.63*
-*最后更新：2026-08-15*
+## 对战布置与计时 (T1010-T1015, 2026-08-24)
+
+对战前置布置环节 + 全程计时。设计决策(用户拍板): 布置 120s 双方并行三层配置(选 3 出战棋子/本方行摆位/每棋子配卡), 超时方自动配置, 对手配置完全隐藏, 步时 90s 总时限不重置, 到期服务端自动推进(executeEndStep)。任务链 T1010-T1017 见 implementation-plan.md 阶段6。
+
+### 后端
+
+- **migration 013 (T1010)**: battles.current_phase CHECK 加 'deployment'; battles.battle_data JSONB(布置审计)。
+- **deploymentService (T1011)**: 布置核心。Redis `battle:{id}:deployment` 存 DeploymentState{deadline, p1/p2{playerId,confirmed,draft}, finalized}; 写锁 `battle:{id}:deploy:write_lock`(SET NX EX 5 + 重试 5 次)串行化 create/update/confirm/finalize。**validateDraft** 结构校验(恰好 3 棋子/摆位 x 0-8 不重叠/卡组键⊆选中/总≤12/同名≤3[键 template_no>0?t{no}:n{name}]/一卡实例禁入多棋子卡组)+DB 归属校验(characters 归属+存活, player_cards 归属+职业匹配 common 通用)。**finalizeDeployment** 幂等: 已确认方用草稿(防御性再校验, 失败回落默认), 未确认方 buildDefaultSideConfig(前 3 alive+职业固定位+character_deck 默认卡组), 结果写 state.finalized + battles.battle_data 审计。**DeploymentView**(battle:deploy_state 单播): 只含 myDraft, 对手仅 confirmed 状态。**persistDeckSnapshots (T1012)**: finalize 结果的卡组写 Redis `battle:{id}:deck:{charId}`(空卡组显式 '[]'), handService.drawCards 优先读快照无快照回落 character_deck。
+- **battleInitializationService 拆分 (T1012)**: initDeployment(棋盘初始化+建布置状态+武装 120s 时限, 幂等-重连重播 deploy_state) / startBattle(configs)(原步骤 3-7, 位置从布置结果写入, 开战置 ongoing+清布置 Redis, 先写快照再抽初始手牌)。
+- **Socket 事件 (T1013)**: `battle:deploy_update`{battleId,draft} 全量草稿同步(已确认方拒改/超时拒收), `battle:deploy_confirm`(要求草稿存在且合法, 双方确认触发 finalize+startBattle), `battle:deploy_state` 按 userId 单播双方各自视角。surrender 布置阶段放行(判负), 求和禁用。
+- **deadlineSweeper (T1014)**: 权威时限只在 Redis(防 nodemon 重启丢失)。`battleDeadlineService`(arm/clear, 常量 90s 步时): `battle:{id}:step_deadline` JSON{step,actorId,deadline} + 全局 ZSET `battle:deadline_index`(score=到期ms, member=deploy:{id}/step:{id})。sweeper 1s 扫描: 布置到期->startBattle(前置校验, 失败退避 10s); 步时到期->认领(zScore 自检+ZREM)后比对记录 step/actor 与 session, 匹配才 executeEndStep(与手动 skip_play 同路径), 失配仅清记录。武装点=activateCurrentUnit(所有步骤激活唯一汇聚点, 单点覆盖); startBattle in-flight Set 守卫防 sweeper 与双方确认并发双跑。battle:state:session 加 stepDeadline 字段(T1016 前端用)。
+
+### 前端
+
+- **game store (T1015)**: deployState(DeploymentStateEvent) + stepDeadline(随 battle:state:session 更新, T1016 用); handlers battle:deploy_state/deploy_update:error/deploy_confirm:error; battle:state:full 与 battle:end 清空 deployState; updateDeployDraft/confirmDeploy 操作。
+- **DeploymentPanel.vue (T1015)**: 三面板=①出战棋子选择(恰好 3, 选中自动分配初始列) ②本方行 9 格摆位(激活+点格放置, 占位格交换) ③每棋子配卡(tab+职业过滤+加减张数); 120s 倒计时本地 tick; 确认按钮。**草稿同步**: 深度 watch 节流 600ms 全量同步, 仅合法草稿上传(中间态不传); lastSyncedJson 与 deploy_state.myDraft 对比采纳外部变更(刷新恢复/另一端), echo 不回环。**客户端预检与后端 validateDraft 同规则**(同名键/copiesAvailable=quantity-本组已用, 他组已用>0 整卡禁用); 空卡组合法走公共池。职业数据: cardApi.templates() 按 card_template_id join(无模板/无职业='common')。
+- **BattleView**: deployState 非空渲染 DeploymentPanel; 布置期认输放行+求和隐藏; 匹配等待面板不再误显。
+
+*文档版本：v1.64*
+*最后更新：2026-08-24*
