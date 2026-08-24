@@ -3286,6 +3286,7 @@ frontend/
 - **game store (T1015)**: deployState(DeploymentStateEvent) + stepDeadline(随 battle:state:session 更新, T1016 用); handlers battle:deploy_state/deploy_update:error/deploy_confirm:error; battle:state:full 与 battle:end 清空 deployState; updateDeployDraft/confirmDeploy 操作。
 - **DeploymentPanel.vue (T1015)**: 三面板=①出战棋子选择(恰好 3, 选中自动分配初始列) ②本方行 9 格摆位(激活+点格放置, 占位格交换) ③每棋子配卡(tab+职业过滤+加减张数); 120s 倒计时本地 tick; 确认按钮。**草稿同步**: 深度 watch 节流 600ms 全量同步, 仅合法草稿上传(中间态不传); lastSyncedJson 与 deploy_state.myDraft 对比采纳外部变更(刷新恢复/另一端), echo 不回环。**客户端预检与后端 validateDraft 同规则**(同名键/copiesAvailable=quantity-本组已用, 他组已用>0 整卡禁用); 空卡组合法走公共池。职业数据: cardApi.templates() 按 card_template_id join(无模板/无职业='common')。
 - **BattleView**: deployState 非空渲染 DeploymentPanel; 布置期认输放行+求和隐藏; 匹配等待面板不再误显。
+- **步时倒计时条 (T1016)**: BattleView 按 game.stepDeadline(服务端 ISO 时间戳)本地 500ms tick 渲染进度条+文字; 我方行动 accent/<15s danger/到 0 显示等待服务器推进(前端不截断操作, sweeper 兜底)。
 
-*文档版本：v1.64*
+*文档版本：v1.65*
 *最后更新：2026-08-24*

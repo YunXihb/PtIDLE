@@ -2,7 +2,7 @@
 // T068 战棋对战界面 -- 棋盘渲染 + T069 棋子渲染 + T070 手牌渲染 + T071 移动交互 + T072 打牌交互
 // 实时棋盘状态来自 game store (WS 推送, T073 接入); WS 未接前用预览 mock 验证渲染+交互
 // 后续 T073(WS)/T077(匹配) 在此扩展
-import { ref, computed, watch } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import { useGameStore } from '@/stores/game';
 import BattleBoard from '@/components/BattleBoard.vue';
 import BattleHand from '@/components/BattleHand.vue';
@@ -253,6 +253,41 @@ function togglePreviewPhase() {
   previewNotice.value = null;
 }
 
+// ---------- T1016 步时倒计时 ----------
+// 权威时限在服务端(sweeper 到期自动推进), 前端仅按 battle:state:session 下发的
+// stepDeadline ISO 本地渲染; 到 0 后等待服务器推进(不本地截断操作, 服务端兜底)
+const STEP_DURATION_MS = 90 * 1000;
+const nowTs = ref(Date.now());
+let tickTimer: ReturnType<typeof setInterval> | null = null;
+onMounted(() => {
+  tickTimer = setInterval(() => { nowTs.value = Date.now(); }, 500);
+});
+onUnmounted(() => {
+  if (tickTimer) clearInterval(tickTimer);
+});
+
+const stepRemainingMs = computed<number | null>(() => {
+  const dl = game.stepDeadline ? Date.parse(game.stepDeadline) : 0;
+  return dl ? Math.max(0, dl - nowTs.value) : null;
+});
+const stepRemainingLabel = computed(() => {
+  if (stepRemainingMs.value === null) return '';
+  const s = Math.ceil(stepRemainingMs.value / 1000);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+});
+const stepTimerPercent = computed(() => {
+  if (stepRemainingMs.value === null) return 0;
+  return Math.min(100, (stepRemainingMs.value / STEP_DURATION_MS) * 100);
+});
+const stepTimerUrgent = computed(
+  () => stepRemainingMs.value !== null && stepRemainingMs.value > 0 && stepRemainingMs.value < 15000
+);
+// 对局进行中且有步时限才渲染(finished 阶段服务端已清时限)
+const showStepTimer = computed(() => {
+  const b = displayBoard.value;
+  return !!b && !!game.stepDeadline && b.currentPhase !== 'finished';
+});
+
 // ---------- T077 匹配队列 ----------
 function onStartMatch() {
   previewMode.value = false;
@@ -405,6 +440,21 @@ function onDrawReject() {
       @piece-click="onPieceClick"
     />
 
+    <!-- T1016 步时倒计时条(90s, 服务端 deadline 时间戳本地渲染; 到 0 等服务器推进) -->
+    <div
+      v-if="showStepTimer"
+      class="step-timer"
+      :class="{ urgent: stepTimerUrgent, mine: game.isMyTurn }"
+    >
+      <div class="timer-bar">
+        <div class="timer-fill" :style="{ width: `${stepTimerPercent}%` }"></div>
+      </div>
+      <span class="timer-text">
+        {{ game.isMyTurn ? '⏱ 本方行动' : '⏱ 对方行动' }}
+        {{ stepRemainingMs === 0 ? '已超时，等待服务器推进…' : stepRemainingLabel }}
+      </span>
+    </div>
+
     <!-- T071/T072 交互提示 -->
     <p v-if="selectedCard" class="hint">
       选择高亮敌方棋子打出「{{ selectedCard.card.name }}」，或点击空白/其他处取消。
@@ -546,6 +596,22 @@ function onDrawReject() {
 .match-status p { margin: 0 0 8px; }
 .match-status .matching { color: var(--accent); }
 .match-idle p { margin: 0 0 10px; }
+
+/* T1016 步时倒计时条 */
+.step-timer { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.timer-bar {
+  flex: 1; height: 8px; border-radius: 4px; overflow: hidden;
+  background: var(--bg-panel-2); border: 1px solid var(--border);
+}
+.timer-fill {
+  height: 100%; border-radius: 4px;
+  background: var(--text-dim); transition: width 0.5s linear;
+}
+.step-timer.mine .timer-fill { background: var(--accent); }
+.step-timer.urgent .timer-fill { background: var(--danger); }
+.timer-text { font-size: 12px; color: var(--text-dim); white-space: nowrap; }
+.step-timer.mine .timer-text { color: var(--accent); }
+.step-timer.urgent .timer-text { color: var(--danger); font-weight: 600; }
 
 /* T078 结算面板 */
 .settlement-panel { display: flex; flex-direction: column; gap: 12px; }

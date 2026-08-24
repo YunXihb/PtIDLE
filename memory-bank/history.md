@@ -2813,3 +2813,16 @@ T082 是横切性能批次，无单一归属章节，architecture.md 采用独�
 - battle:join:ok 先于 battle:deploy_state emit(battleRoom join 流程顺序), store battleId 必已就绪, updateDeployDraft 不会因 battleId 未设丢事件 -- 接线前专门核对过。
 - dev DB 有上次 E2E 残留 ongoing 局会挡匹配唯一索引(pending 才挡, ongoing 恰好不挡, 但仍按惯例清场: UPDATE finished + DEL battle:*)。
 - 验证: vue-tsc 零错; vite build 通过(BattleView chunk 30KB); 浏览器双开(dev 测试用户两枚, 0 卡正好覆盖空卡组合法路径)用户确认无问题。
+
+## 2026-08-24 - 任务：T1016 前端行动倒计时条
+
+### Prompt
+T1015 完成后继续 T1016: 当前行动棋子 90s 倒计时条(服务器 deadline 时间戳下发, 本地渲染)。stepDeadline 已在 game store(T1014 时随 battle:state:session 接好), 本任务纯渲染。
+
+### 思考
+- 权威时限在服务端 Redis(sweeper 到期 executeEndStep), 前端只渲染不做裁判: 到 0 显示「已超时, 等待服务器推进…」, 不本地禁用操作(服务端兜底非法时点操作)。
+- 渲染条件收紧为 对局中+stepDeadline 非空+phase!=finished, 避免终局/布置期误显; 进度条分母用常量 90s(与后端 STEP_DURATION_MS 对齐), width 过渡 0.5s linear 与 500ms tick 同拍。
+- 我方行动 accent 色/对方行动中性色/<15s danger, 文字前缀区分「本方行动/对方行动」(game.isMyTurn)。
+
+### 意外
+- 无。vue-tsc 零错; build 通过(BattleView 30.86KB)。dev vite HMR 即时生效, 用户下次开一局即可在棋盘下方看到倒计时条。
