@@ -2826,3 +2826,21 @@ T1015 完成后继续 T1016: 当前行动棋子 90s 倒计时条(服务器 deadl
 
 ### 意外
 - 无。vue-tsc 零错; build 通过(BattleView 30.86KB)。dev vite HMR 即时生效, 用户下次开一局即可在棋盘下方看到倒计时条。
+
+## 2026-08-24 - 任务：T1016 步时倒计时条 + T1017 布置与计时测试收口
+
+### Prompt
+用户浏览器双开验证 T1015 布置界面通过后, 继续完成 T1016(前端行动倒计时条)与 T1017(单测+E2E 收口, 一次性交付), 至此 T1010 布置与计时系列全部完成。
+
+### 思考
+- T1016 纯渲染: stepDeadline 已在 game store(T1014 随 battle:state:session 接好), BattleView 加本地 500ms tick + 进度条(分母常量 90s 对齐后端 STEP_DURATION_MS)+文字(本方/对方行动); 渲染条件收紧为 对局中+stepDeadline 非空+phase!=finished 防终局/布置期误显。
+- T1017 单测不补: 校验矩阵/finalize 幂等/sweeper 均已随 T1011/T1014 交付(31+7+17), 重复补写无增量价值; 收口工作=系统化 E2E。
+- E2E 场景矩阵对齐 implementation-plan T1017 条目: 双方确认/单边超时/双边超时/非法配置/断线恢复/90s 自动结束(并入 S3 步时复验)/布置阶段认输。
+- 每场景独立清场(UPDATE battles finished + DEL battle:* + idle:matchmaking:* 锁/队列), 否则 pending 唯一索引与用户锁(SET NX EX 600)会挡下一场匹配。
+- 双方确认时序: 确认 A 后专门断言 B 端收到 opponentConfirmed=true(跨端状态可见性), 再确认 B 触发开战; 开战断言同时覆盖 位置(按双方草稿)/phase=move/公共池抽牌(空卡组)/DB ongoing。
+- 默认配置断言按职业映射(P1 法0/猎1/战2 y=0, P2 法8/猎7/战6 y=8), 与 AUTO_PLACEMENT 常量对齐; 单边超时还验 battle_data.deployment 审计落库。
+
+### 意外
+- 无翻车项, 28/28 一次通过。唯一注意点: E2E「提前到期」必须同时改记录 key(GET->JSON 改 deadline->SET)与 ZSET 索引 score, 只改其一会被 sweeper 自愈分支拒发(T1014 已踩过, 本次直接双改)。
+- E2E 脚本持久化到 ~/diffs/repro-t1017.js(/tmp 副本重启即丢), 与历次 repro-* 约定一致。
+- 验证: 后端全量 47/47 suite 795/795; 前端 vue-tsc 零错 + build 通过。
