@@ -26,6 +26,8 @@ export const redisKey = {
   deployWriteLock: (battleId: string) => `battle:${battleId}:deploy_write_lock`,
   /** T1012: 对局卡组快照（布置配卡结果；不存在则回落 character_deck） */
   deck: (battleId: string, characterId: string) => `battle:${battleId}:deck:${characterId}`,
+  /** T1018: 本局实际消耗的卡牌清单（SET，member = player_cards.id；对局结束时据此扣库存） */
+  consumedCards: (battleId: string) => `battle:${battleId}:consumed_cards`,
   // T1014: 对局计时（权威时限只在 Redis，sweeper 定时扫描；服务重启后从索引恢复）
   /** 当前步时限记录（JSON: battleId/step/actorId/deadline；激活时写入） */
   stepDeadline: (battleId: string) => `battle:${battleId}:step_deadline`,

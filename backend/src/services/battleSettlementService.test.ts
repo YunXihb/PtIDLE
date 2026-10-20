@@ -15,6 +15,8 @@ const mockQuery = jest.fn();
 const mockQueryOne = jest.fn();
 const mockClientQuery = jest.fn();
 const mockWithTransaction = jest.fn();
+// ★ T1018: 卡牌库存扣减兜底
+const mockSettleCardConsumption = jest.fn();
 
 jest.mock('../config/redis', () => ({
   redisClient: {
@@ -30,6 +32,11 @@ jest.mock('../config/database', () => ({
   query: mockQuery,
   queryOne: mockQueryOne,
   withTransaction: mockWithTransaction,
+}));
+
+// ★ T1018: 卡牌消耗服务（结算侧兜底扣库存）
+jest.mock('./cardConsumptionService', () => ({
+  settleCardConsumption: mockSettleCardConsumption,
 }));
 
 // 默认 mockClient：query 方法可被每个 case override
@@ -396,5 +403,57 @@ describe('settleBattle - transaction rollback', () => {
     );
     expect(pbhInserts.length).toBe(0);
     expect(battlesUpdates.length).toBe(0);
+  });
+});
+
+// ========================================
+// ★ T1018: 卡牌库存扣减兜底
+// ========================================
+describe('settleBattle - card consumption fallback (T1018)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (mockWithTransaction as jest.Mock).mockImplementation(
+      async (fn: (client: any) => Promise<any>) => fn(mockClient)
+    );
+    mockSettleCardConsumption.mockResolvedValue({
+      ok: true,
+      deducted: 3,
+      alreadySettled: false,
+    });
+  });
+
+  it('T1018-1: 结算时调用 settleCardConsumption（兜底 recordVictory 未扣成功的情况）', async () => {
+    setupHappyPathMocks();
+
+    const result = await settleBattle('b1', 'user-1');
+
+    expect(result.ok).toBe(true);
+    expect(mockSettleCardConsumption).toHaveBeenCalledTimes(1);
+    expect(mockSettleCardConsumption).toHaveBeenCalledWith('b1', 'player-1', 'player-2');
+  });
+
+  it('T1018-2: 扣减必须早于 Redis key 清理（清理会删掉 battle:{id}:* 含消耗清单）', async () => {
+    setupHappyPathMocks();
+
+    await settleBattle('b1', 'user-1');
+
+    const consumeOrder = mockSettleCardConsumption.mock.invocationCallOrder[0];
+    const cleanupOrder = mockRedisKeys.mock.invocationCallOrder[0];
+    expect(consumeOrder).toBeLessThan(cleanupOrder);
+  });
+
+  it('T1018-3: 扣减抛错 — best-effort，结算仍成功', async () => {
+    const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    setupHappyPathMocks();
+    mockSettleCardConsumption.mockRejectedValue(new Error('redis down'));
+
+    const result = await settleBattle('b1', 'user-1');
+
+    expect(result.ok).toBe(true);
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[T1018] settleBattle: settleCardConsumption failed'),
+      expect.any(Error)
+    );
+    consoleErrorSpy.mockRestore();
   });
 });

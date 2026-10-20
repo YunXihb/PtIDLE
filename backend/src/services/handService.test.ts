@@ -11,6 +11,7 @@ const mockRedisClient = {
 
 const mockGetCharacterDeckCards = jest.fn();
 const mockDrawFromPublicPool = jest.fn();
+const mockGetConsumedCardIdSet = jest.fn();
 
 jest.mock('../config/redis', () => ({
   redisClient: mockRedisClient,
@@ -23,6 +24,11 @@ jest.mock('./characterService', () => ({
 jest.mock('./publicPoolService', () => ({
   drawFromPublicPool: mockDrawFromPublicPool,
   isPublicPoolDeckId: (id: string) => id.startsWith('pool:'),
+}));
+
+// ★ T1018: 本局已消耗卡牌清单（drawCards 用它过滤，防止一张牌被多次消耗）
+jest.mock('./cardConsumptionService', () => ({
+  getConsumedCardIdSet: mockGetConsumedCardIdSet,
 }));
 
 import {
@@ -57,6 +63,9 @@ describe('handService', () => {
 
     // T1001 default: public pool returns empty array unless a test sets it up explicitly
     mockDrawFromPublicPool.mockResolvedValue([]);
+
+    // T1018 default: 本局未消耗任何卡
+    mockGetConsumedCardIdSet.mockResolvedValue(new Set<string>());
 
     // redisClient.get reads STRING store (hand + retained share namespace by key prefix)
     mockRedisClient.get.mockImplementation((key: string) =>
@@ -176,6 +185,68 @@ describe('handService', () => {
       expect(result.success).toBe(true);
       expect(result.deck_size).toBe(1);
       expect(mockGetCharacterDeckCards).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ========================================
+  // T1018: 过滤本局已消耗的卡（防一张牌被多次消耗）
+  // ========================================
+  describe('drawCards consumed-card filter (T1018)', () => {
+    it('已消耗的卡不再被抽到（快照路径）', async () => {
+      stringStore[`battle:${battleId}:deck:${characterId}`] = JSON.stringify([
+        makeDeckRow('k1', 'k1', '斩击', 'attack', 1, { damage: 2 }, 1),
+        makeDeckRow('k2', 'k2', '轻甲', 'defense', 1, { shield: 2 }, 2),
+      ]);
+      mockGetConsumedCardIdSet.mockResolvedValueOnce(new Set(['k1']));
+
+      const result = await drawCards(battleId, characterId, 2);
+
+      expect(result.success).toBe(true);
+      // k1 被消耗 -> 牌库只剩 1 张
+      expect(result.deck_size).toBe(1);
+      expect(result.cards!.every(c => c.card_id === 'k2')).toBe(true);
+    });
+
+    it('已消耗的卡不再被抽到（character_deck 回落路径同样生效）', async () => {
+      mockGetCharacterDeckCards.mockResolvedValueOnce([
+        makeDeckRow('d1', 'c1', '旧卡', 'attack', 1, { damage: 1 }, 1),
+        makeDeckRow('d2', 'c2', '旧卡2', 'attack', 1, { damage: 1 }, 2),
+      ]);
+      mockGetConsumedCardIdSet.mockResolvedValueOnce(new Set(['c1']));
+
+      const result = await drawCards(battleId, characterId, 1);
+
+      expect(result.success).toBe(true);
+      expect(result.deck_size).toBe(1);
+      expect(result.cards![0].card_id).toBe('c2');
+    });
+
+    it('牌库被消耗殆尽 -> 走公共池补足', async () => {
+      stringStore[`battle:${battleId}:deck:${characterId}`] = JSON.stringify([
+        makeDeckRow('k1', 'k1', '斩击', 'attack', 1, { damage: 2 }, 1),
+      ]);
+      mockGetConsumedCardIdSet.mockResolvedValueOnce(new Set(['k1']));
+      mockDrawFromPublicPool.mockResolvedValueOnce([
+        { deck_id: 'pool:1', card_id: 't1', name: '轻击', type: 'attack', cost: 1, effect: { damage: 2 }, template_no: 1, source: 'public_pool' },
+      ]);
+
+      const result = await drawCards(battleId, characterId, 1);
+
+      expect(result.success).toBe(true);
+      expect(result.deck_size).toBe(0);
+      expect(result.cards![0].source).toBe('public_pool');
+    });
+
+    it('清单读取失败（返回空集合）-> 不阻塞抽牌', async () => {
+      mockGetConsumedCardIdSet.mockResolvedValueOnce(new Set<string>());
+      mockGetCharacterDeckCards.mockResolvedValueOnce([
+        makeDeckRow('d1', 'c1', '旧卡', 'attack', 1, { damage: 1 }, 1),
+      ]);
+
+      const result = await drawCards(battleId, characterId, 1);
+
+      expect(result.success).toBe(true);
+      expect(result.deck_size).toBe(1);
     });
   });
 

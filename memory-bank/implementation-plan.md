@@ -548,6 +548,19 @@
   - 依赖：T1014, T1015, T1016
   - 验证：全量 suite 绿 + 浏览器双开 E2E 通过
 
+- [x] **T1018** - 卡牌消耗重构（两级扣减模型）+ T1000-001 销账
+  - 上下文：T053 的出牌时实时删库恒 ROLLBACK（两条 DELETE 同事务顺序执行 + 第二条子查询引用第一条刚删的行），
+    且 T1012 快照制后 `deck_id` 语义漂移、部署配卡不再写 `character_deck` → 牌库消耗从未实现。
+    按用户决策重建：①**对局内**出牌时扣对局牌库（Redis 快照移除 + 记消耗清单 SET，公共池卡跳过）；
+    ②**对局外**对局结束时按实际消耗量扣玩家库存（`DELETE player_cards WHERE id=ANY AND player_id=?`）。
+  - 依赖：T1011, T1012, T1013, T1014（库存扣减挂在终局漏斗 recordVictory + 结算兜底 settleBattle）
+  - 新增：migration 014（`battles.cards_settled_at` 幂等标记）+ `cardConsumptionService`
+  - 验证：16 个新单测 + 5 个**真库**集成测试（真实 PG + Redis，断言「行真的消失」而非「调用了 DELETE」）；
+    真库实证旧 SQL 在两条路径下都是「什么都没删」；全量 48/49 suite 823/826 绿（剩余 3 个为 Windows 平台问题，基线即红）
+
+> **T1000-001 销账**（2026-10-20）：「禁止制造」方案沿用不变，但其前提「卡牌消耗会释放库存」经 T1018 修复后成立。
+> 详见 `memory-bank/T1000-deferred.md` 的「已完成搁置事项」与 `architecture.md` §T1018。
+
 ---
 
 ## 任务依赖关系总览

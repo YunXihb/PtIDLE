@@ -3288,5 +3288,100 @@ frontend/
 - **BattleView**: deployState 非空渲染 DeploymentPanel; 布置期认输放行+求和隐藏; 匹配等待面板不再误显。
 - **步时倒计时条 (T1016)**: BattleView 按 game.stepDeadline(服务端 ISO 时间戳)本地 500ms tick 渲染进度条+文字; 我方行动 accent/<15s danger/到 0 显示等待服务器推进(前端不截断操作, sweeper 兜底)。
 
-*文档版本：v1.65*
-*最后更新：2026-08-24*
+---
+
+## T1018 卡牌消耗重构（两级扣减模型，2026-10-20）
+
+> 关联：T1000-001（卡牌溢出处理方案）销账；T053 原实现存在 SQL 缺陷导致消耗从未生效。
+
+### 背景：T053 的实现恒 ROLLBACK
+
+T053 在出牌时实时 `DELETE FROM character_deck + player_cards`，两条 DELETE 同一事务顺序执行，
+且第二条的子查询引用了第一条**刚删掉**的 `character_deck` 行：
+
+```sql
+S1: DELETE FROM character_deck WHERE id = $1 AND character_id = $2
+S2: DELETE FROM player_cards   WHERE id = $1
+    AND id = (SELECT player_card_id FROM character_deck WHERE id = $2 AND character_id = $3)
+```
+
+PostgreSQL READ COMMITTED 下后续语句能看到本事务前序语句的删除效果 → 子查询无行 → `id = NULL`
+永不成立 → S2 影响 0 行 → `PartialDeleteError` → **整体 ROLLBACK**（连 S1 也被撤销）。
+
+叠加 T1012 快照制的语义漂移：`deck_id` 从 `character_deck.id` 变成 `player_cards.id`
+（`deploymentService.persistDeckSnapshots`），而 T1011 之后的部署配卡**根本不写 `character_deck` 表**
+（`deploymentService.ts` 注释「对局快照，不修改持久 character_deck」）→ S1 直接匹配 0 行。
+
+且牌库快照 `battle:{id}:deck:{cid}` 自写入起只读不删 → **「牌库消耗」这个动作从未被实现**。
+
+> 真库实证（PostgreSQL 18.4，2026-10-20）：
+> 场景 A（deck_id=character_deck.id）S1 rowCount=1 / S2 rowCount=0 → ROLLBACK → 两表均未变；
+> 场景 B（deck_id=player_cards.id）S1 rowCount=0 → 两表均未变；
+> 场景 C（本文档新实现）单条 DELETE rowCount=1 → `player_cards` 已删 + `character_deck` 级联清除。
+
+### 新模型：两级扣减（用户 T1018 决策）
+
+| 层级 | 时机 | 扣什么 | 实现 |
+|------|------|--------|------|
+| 对局内 | 出牌时（实时） | **对局牌库** | 从 Redis 快照 `battle:{id}:deck:{cid}` 移除该牌 + 记入消耗清单 `battle:{id}:consumed_cards`(SET) |
+| 对局外 | 对局结束时 | **玩家库存** | 按消耗清单 `DELETE FROM player_cards WHERE id = ANY($1::uuid[]) AND player_id = $2` |
+
+- 公共池卡（`source='public_pool'`）两级都不扣 —— 无限复用，不入 `player_cards`（specs §3.5）
+- 对局内扣牌库 = 「一张卡本局只能被打出一次」的**硬保证**；`drawCards` 另按消耗清单兜一层过滤
+- 库存延后到对局结束扣，扣减量 = 本局**实际消耗量**（而非尝试消耗量）
+
+### Redis 键
+
+| 键 | 类型 | 用途 |
+|----|------|------|
+| `battle:{battleId}:consumed_cards` | SET (member=`player_cards.id`) | 本局实际消耗的卡牌清单；SET 天然去重。24h 兜底 TTL（玩家不调结算接口时防止 key 堆积） |
+
+### 幂等
+
+| 标记 | 语义 | 与谁独立 |
+|------|------|---------|
+| `battles.settled_at` | 玩家胜负战绩 + `player_battle_history` 入账（T054） | — |
+| `battles.cards_settled_at` | 本局卡牌库存扣减（migration 014） | 与 `settled_at` **相互独立** |
+
+`cards_settled_at` 不复用 `settled_at`，因为两者触发时机不同：前者由服务端终局漏斗
+（`recordVictory`）置位，后者由客户端调用 `POST /api/battle/result` 置位，共用标记会导致其中一方被误跳过。
+
+扣减函数 `settleCardConsumption` 事务内 `SELECT ... FOR UPDATE` 行锁 + `cards_settled_at` 复核 → 幂等。
+两个调用点共用该函数，谁先到谁扣：
+1. `recordVictory`（`battleOutcomeService`）—— 服务端权威终局漏斗（胜/负/平/认输全走这里）
+2. `settleBattle`（`battleSettlementService`）—— 兜底补扣；**必须早于 `cleanupAllBattleRedisKeys`**
+   （后者会清掉 `battle:{id}:*`，含消耗清单）
+
+### 归属复核
+
+DELETE 内联 `AND player_id = $2`，双方各删一次自己名下的卡。清单里若混入**非本局玩家**的
+`card_id`，影响 0 行，不会误删。`character_deck` 关联行由 `ON DELETE CASCADE` 连带清理
+（`001_initial_schema.sql`：`character_deck.player_card_id REFERENCES player_cards(id) ON DELETE CASCADE`）。
+
+### 快照消耗的坑
+
+快照被抽空后**必须保留 `'[]'`，不能 DEL**。`handService.drawCards` 用 `snapshotRaw !== null`
+区分「快照权威」与「回落 `character_deck`」；DEL 会让已消耗的牌被重新抽到。
+
+### 文件清单
+
+| 文件 | 变更 |
+|------|------|
+| `src/services/cardConsumptionService.ts` | **新增**：消耗清单读写 + 库存扣减（`consumeDeckCardOnPlay` / `getConsumedCardIdSet` / `settleCardConsumption`） |
+| `src/services/cardConsumptionService.test.ts` | **新增**：16 个单测（内存 Redis + 内存 SET 语义） |
+| `src/services/cardConsumption.integration.test.ts` | **新增**：5 个**真库**集成测试（真实 PG + Redis，验证「行真的消失」） |
+| `src/services/battleActionService.ts` | 出牌步骤 9.5 改为调 `consumeDeckCardOnPlay`（不再动 PG）；移除 `PartialDeleteError` 与双删逻辑 |
+| `src/services/handService.ts` | `drawCards` 按消耗清单过滤已消耗的卡 |
+| `src/services/battleOutcomeService.ts` | `recordVictory` 接入 `settleCardConsumption`（best-effort） |
+| `src/services/battleSettlementService.ts` | `settleBattle` 接入兜底扣减（早于 Redis 清理） |
+| `src/utils/redisKeys.ts` | 新增 `consumedCards` key |
+| `src/migrations/014_battles_cards_settled_at.sql` | **新增**：`battles.cards_settled_at` |
+
+### 测试策略（为什么必须有真库测试）
+
+T053 的 bug 存活 4 个月，根因是**纯 mock 测试永远测不出这类缺陷** —— 断言的是「调用了 DELETE 语句」
+而不是「行真的消失了」。T1018 补真库集成测试验证后者；本地无 PG/Redis 时优雅跳过并打印告警，
+但 `CI=true` 时依赖缺失会**显式失败**，保证 CI 一定真正跑到断言。
+
+*文档版本：v1.66*
+*最后更新：2026-10-20*

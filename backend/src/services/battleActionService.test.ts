@@ -84,6 +84,13 @@ jest.mock('../config/database', () => ({
   testConnection: jest.fn(),
 }));
 
+// ★ T1018: 卡牌消耗（对局内扣牌库 + 记消耗清单）
+jest.mock('./cardConsumptionService', () => ({
+  consumeDeckCardOnPlay: jest.fn(),
+  getConsumedCardIdSet: jest.fn(),
+  settleCardConsumption: jest.fn(),
+}));
+
 import { getSessionState, getDbSessionState, completeMovePhase, completePlayPhase, endCurrentStep, activateCurrentUnit, completeDrawPhase, endCurrentRound, finishSession } from './battleSessionService';
 import {
   listCharactersInBattle,
@@ -102,7 +109,8 @@ import { tickBurnDamageOnTarget } from './professionMechanicService';
 import { tickEffects } from './statusEffectService';
 import { applyKillStars, applyBaseStars, checkWinCondition, recordVictory } from './battleOutcomeService';
 import { redisClient } from '../config/redis';
-import { withTransaction } from '../config/database';
+import { withTransaction, execute } from '../config/database';
+import { consumeDeckCardOnPlay } from './cardConsumptionService';
 import type { Server as IOServer } from 'socket.io';
 
 const mockGetSessionState = getSessionState as jest.MockedFunction<any>;
@@ -144,6 +152,10 @@ const mockCheckWinCondition = checkWinCondition as jest.MockedFunction<typeof ch
 const mockRecordVictory = recordVictory as jest.MockedFunction<typeof recordVictory>;
 const mockFinishSession = finishSession as jest.MockedFunction<typeof finishSession>;
 const mockWithTransaction = withTransaction as jest.MockedFunction<typeof withTransaction>;
+const mockExecute = execute as jest.MockedFunction<typeof execute>;
+const mockConsumeDeckCardOnPlay = consumeDeckCardOnPlay as jest.MockedFunction<
+  typeof consumeDeckCardOnPlay
+>;
 
 function createMockIO(): IOServer {
   return {
@@ -192,6 +204,12 @@ beforeEach(() => {
     valid: true,
     targets: ['t1'],
     energyCost: 1,
+  });
+  // T1018 默认桩：对局内消耗成功
+  mockConsumeDeckCardOnPlay.mockResolvedValue({
+    ok: true,
+    deckRemoved: true,
+    recorded: true,
   });
   mockSetCharacterEnergy.mockResolvedValue(undefined);
   mockCompletePlayPhase.mockResolvedValue({ success: true, state: undefined as any });
@@ -823,29 +841,22 @@ describe('executePlayCard', () => {
   });
 
   // ========================================
-  // ★ T053: 卡牌消耗 (consumePlayerCard)
+  // ★ T1018: 卡牌消耗 (对局内扣牌库 + 记本局消耗清单)
   // ========================================
-  describe('T053: card consumption (step 9.5)', () => {
+  // T053 的旧实现（出牌时实时删 character_deck + player_cards）恒 ROLLBACK，
+  // 已由 T1018 改为「对局内扣牌库 / 对局外扣库存」两级模型。
+  describe('T1018: card consumption (step 9.5)', () => {
     beforeEach(() => {
-      // 默认 withTransaction 模拟：把传入的 fn 直接执行（透传 mockClient）
-      // 这里的 mockClient 形参对应 withTransaction 内部传给 fn 的 client
-      mockWithTransaction.mockImplementation(async (fn: any) => {
-        const fakeClient = { query: jest.fn() };
-        return await fn(fakeClient);
+      mockConsumeDeckCardOnPlay.mockResolvedValue({
+        ok: true,
+        deckRemoved: true,
+        recorded: true,
       });
     });
 
-    it('T053-1: source=deck happy path — calls DELETE character_deck + DELETE player_cards, returns success', async () => {
-      // 模拟 DELETE 返回 rowCount=1
-      const fakeClient = { query: jest.fn().mockResolvedValue({ rowCount: 1, rows: [] }) };
-      mockWithTransaction.mockImplementation(async (fn: any) => fn(fakeClient));
-
+    it('T1018-1: source=deck — 调用 consumeDeckCardOnPlay，参数含 battleId/charId/cardId/deckId/source', async () => {
       mockGetSessionState.mockResolvedValue({
-        battleId: 'b1',
-        currentRound: 1,
-        currentStep: 1,
-        currentActorId: 'c1',
-        currentPhase: 'play',
+        battleId: 'b1', currentRound: 1, currentStep: 1, currentActorId: 'c1', currentPhase: 'play',
       } as any);
       mockListCharactersInBattle.mockResolvedValue([
         { characterId: 'c1', userId: 'u1', playerId: 'p1', side: 'p1' },
@@ -866,17 +877,13 @@ describe('executePlayCard', () => {
       const result = await executePlayCard(io, 'b1', 'c1', handCard, 'u1');
 
       expect(result.success).toBe(true);
-      // withTransaction 被调一次
-      expect(mockWithTransaction).toHaveBeenCalledTimes(1);
-      // fn 内 fakeClient.query 调过 2 次（2 个 DELETE）
-      expect(fakeClient.query).toHaveBeenCalledTimes(2);
-      expect(fakeClient.query.mock.calls[0][0]).toContain('DELETE FROM character_deck');
-      expect(fakeClient.query.mock.calls[1][0]).toContain('DELETE FROM player_cards');
-      // 不应有 query('BEGIN') / query('COMMIT') 直接调用
-      // （事务由 withTransaction 包，本测试不直接验 — Task 1 覆盖）
+      expect(mockConsumeDeckCardOnPlay).toHaveBeenCalledTimes(1);
+      expect(mockConsumeDeckCardOnPlay).toHaveBeenCalledWith(
+        'b1', 'c1', 'pc1', 'd1', 'deck'
+      );
     });
 
-    it('T053-2: source=public_pool — does NOT call withTransaction, no DELETE', async () => {
+    it('T1018-2: source=public_pool — 交给 service 内部跳过（无限复用，不扣牌库不入清单）', async () => {
       mockGetSessionState.mockResolvedValue({
         battleId: 'b1', currentRound: 1, currentStep: 1, currentActorId: 'c1', currentPhase: 'play',
       } as any);
@@ -899,63 +906,15 @@ describe('executePlayCard', () => {
       const result = await executePlayCard(io, 'b1', 'c1', handCard, 'u1');
 
       expect(result.success).toBe(true);
-      // 公共池卡 → withTransaction 不被调
-      expect(mockWithTransaction).toHaveBeenCalledTimes(0);
+      expect(mockConsumeDeckCardOnPlay).toHaveBeenCalledWith(
+        'b1', 'c1', 'pt1', 'pool:1', 'public_pool'
+      );
     });
 
-    it('T053-3: DELETE throws inside withTransaction — best-effort, executePlayCard still success', async () => {
-      // withTransaction 的 fn 抛错 → withTransaction 内部 ROLLBACK + 重新抛错
-      // → executePlayCard 步骤 9.5 应当不返错（吞掉）
-      const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
-      mockWithTransaction.mockRejectedValue(new Error('DB connection lost'));
-
-      mockGetSessionState.mockResolvedValue({
-        battleId: 'b1', currentRound: 1, currentStep: 1, currentActorId: 'c1', currentPhase: 'play',
-      } as any);
-      mockListCharactersInBattle.mockResolvedValue([
-        { characterId: 'c1', userId: 'u1', playerId: 'p1', side: 'p1' },
-      ] as any);
-      mockGetActorHand.mockResolvedValue([
-        { deck_id: 'd1', card_id: 'pc1', source: 'deck', type: 'attack', name: 'X', cost: 1, effect: {}, template_no: 1 },
-      ] as any);
-      mockValidateAttack.mockResolvedValue({ valid: true, energyCost: 1, damage: 2 } as any);
-      (redisClient.hGet as jest.Mock).mockResolvedValue(JSON.stringify({ energy: 3 }));
-      (redisClient.lRem as jest.Mock).mockResolvedValue(1);
-
-      const handCard = {
-        deck_id: 'd1', card_id: 'pc1', source: 'deck' as const,
-        type: 'attack' as const, name: 'X', cost: 1, effect: {}, template_no: 1,
-      };
-      const io = {} as any;
-      const { executePlayCard } = await import('./battleActionService');
-      const result = await executePlayCard(io, 'b1', 'c1', handCard, 'u1');
-
-      // best-effort: 仍然 success（步骤 9.5 失败不影响上层）
-      expect(result.success).toBe(true);
-      // console.error 被调（[consumePlayerCard] failed）
-      expect(consoleErrorSpy).toHaveBeenCalled();
-      const errorMsg = consoleErrorSpy.mock.calls.flat().join(' ');
-      expect(errorMsg).toMatch(/consumePlayerCard.*failed/);
-      consoleErrorSpy.mockRestore();
-    });
-
-    it('T053-4: DELETE returns rowCount=0 — ROLLBACK + warn, executePlayCard still success', async () => {
+    it('T1018-3: 消耗返回 redis_error — best-effort，executePlayCard 仍 success + 记 warn', async () => {
       const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
-      // 新实现: fn 内部检测 rowCount=0 → 抛 PartialDeleteError
-      // withTransaction 接 throw → 自动 ROLLBACK → rethrow → 外层 catch 识别 sentinel → warn
-      const fakeClient = {
-        query: jest.fn()
-          .mockResolvedValueOnce({ rowCount: 0, rows: [] })   // DELETE character_deck 返回 0 行
-          .mockResolvedValueOnce({ rows: [] }),               // ROLLBACK (被 withTransaction 调)
-      };
-      mockWithTransaction.mockImplementation(async (fn: any) => {
-        try {
-          return await fn(fakeClient);
-        } catch (err) {
-          // 模拟真实 withTransaction: ROLLBACK 后 rethrow
-          await fakeClient.query('ROLLBACK');
-          throw err;
-        }
+      mockConsumeDeckCardOnPlay.mockResolvedValue({
+        ok: false, reason: 'redis_error', detail: 'conn lost',
       });
 
       mockGetSessionState.mockResolvedValue({
@@ -981,19 +940,67 @@ describe('executePlayCard', () => {
 
       expect(result.success).toBe(true);
       expect(consoleWarnSpy).toHaveBeenCalled();
-      const warnMsg = consoleWarnSpy.mock.calls.flat().join(' ');
-      expect(warnMsg).toMatch(/partial delete/);
-      // ROLLBACK was called by withTransaction (not by fn)
-      expect(fakeClient.query).toHaveBeenCalledWith('ROLLBACK');
+      expect(consoleWarnSpy.mock.calls.flat().join(' ')).toMatch(/consumePlayerCard.*redis_error/);
       consoleWarnSpy.mockRestore();
     });
 
-    it('T053-5: T050 existing 18 tests still pass (regression check via test file run)', async () => {
-      // 这个 case 实质上是"跑整个 describe('executePlayCard') 块全绿"
-      // 不写额外 mock — 依赖 beforeEach 默认值
-      // 跑测试时这个 it 会跟其他 4 个一起跑，全部 pass 即说明 18+5 兼容性
-      // 本 it 本身不做事（仅占位），验证靠 jest run
-      expect(true).toBe(true);
+    it('T1018-4: 消耗抛异常 — best-effort 兜底，executePlayCard 仍 success + 记 error', async () => {
+      const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+      mockConsumeDeckCardOnPlay.mockRejectedValue(new Error('boom'));
+
+      mockGetSessionState.mockResolvedValue({
+        battleId: 'b1', currentRound: 1, currentStep: 1, currentActorId: 'c1', currentPhase: 'play',
+      } as any);
+      mockListCharactersInBattle.mockResolvedValue([
+        { characterId: 'c1', userId: 'u1', playerId: 'p1', side: 'p1' },
+      ] as any);
+      mockGetActorHand.mockResolvedValue([
+        { deck_id: 'd1', card_id: 'pc1', source: 'deck', type: 'attack', name: 'X', cost: 1, effect: {}, template_no: 1 },
+      ] as any);
+      mockValidateAttack.mockResolvedValue({ valid: true, energyCost: 1, damage: 2 } as any);
+      (redisClient.hGet as jest.Mock).mockResolvedValue(JSON.stringify({ energy: 3 }));
+      (redisClient.lRem as jest.Mock).mockResolvedValue(1);
+
+      const handCard = {
+        deck_id: 'd1', card_id: 'pc1', source: 'deck' as const,
+        type: 'attack' as const, name: 'X', cost: 1, effect: {}, template_no: 1,
+      };
+      const io = {} as any;
+      const { executePlayCard } = await import('./battleActionService');
+      const result = await executePlayCard(io, 'b1', 'c1', handCard, 'u1');
+
+      expect(result.success).toBe(true);
+      expect(consoleErrorSpy).toHaveBeenCalled();
+      expect(consoleErrorSpy.mock.calls.flat().join(' ')).toMatch(/consumePlayerCard.*failed/);
+      consoleErrorSpy.mockRestore();
+    });
+
+    it('T1018-5: 出牌不再直接写 PG 库存（库存扣减延后到对局结束）', async () => {
+      mockGetSessionState.mockResolvedValue({
+        battleId: 'b1', currentRound: 1, currentStep: 1, currentActorId: 'c1', currentPhase: 'play',
+      } as any);
+      mockListCharactersInBattle.mockResolvedValue([
+        { characterId: 'c1', userId: 'u1', playerId: 'p1', side: 'p1' },
+      ] as any);
+      mockGetActorHand.mockResolvedValue([
+        { deck_id: 'd1', card_id: 'pc1', source: 'deck', type: 'attack', name: 'X', cost: 1, effect: {}, template_no: 1 },
+      ] as any);
+      mockValidateAttack.mockResolvedValue({ valid: true, energyCost: 1, damage: 2 } as any);
+      (redisClient.hGet as jest.Mock).mockResolvedValue(JSON.stringify({ energy: 3 }));
+      (redisClient.lRem as jest.Mock).mockResolvedValue(1);
+
+      const handCard = {
+        deck_id: 'd1', card_id: 'pc1', source: 'deck' as const,
+        type: 'attack' as const, name: 'X', cost: 1, effect: {}, template_no: 1,
+      };
+      const io = {} as any;
+      const { executePlayCard } = await import('./battleActionService');
+      await executePlayCard(io, 'b1', 'c1', handCard, 'u1');
+
+      // 出牌路径不碰 PG —— 库存扣减由 cardConsumptionService.settleCardConsumption
+      // 在对局结束时统一执行（recordVictory / settleBattle）
+      expect(mockWithTransaction).toHaveBeenCalledTimes(0);
+      expect(mockExecute).toHaveBeenCalledTimes(0);
     });
   });
 });

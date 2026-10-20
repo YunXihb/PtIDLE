@@ -25,6 +25,7 @@ import { query, queryOne, execute } from '../config/database';
 import { redisClient } from '../config/redis';
 import { listCharactersInBattle } from './battleService';
 import { finishSession } from './battleSessionService';
+import { settleCardConsumption } from './cardConsumptionService';
 import { broadcastBattleEnd } from '../socket/battleStateBroadcaster';
 import { redisKey } from '../utils/redisKeys';
 // 注：query/execute/redisClient/listCharactersInBattle/finishSession 将在 Task 3-6 实现中使用，
@@ -461,6 +462,27 @@ export async function recordVictory(
      WHERE id = $3`,
     [winnerSide === 'p1' ? p1?.id : (winnerSide === 'p2' ? p2?.id : null), victoryType, battleId]
   );
+
+  // 2.5 ★ T1018: 卡牌库存扣减（对局外，一局一次性）
+  //     按本局消耗清单（Redis battle:{id}:consumed_cards）扣 player_cards，
+  //     释放玩家的卡牌数量上限额度（card_templates.max_quantity）。
+  //     幂等：battles.cards_settled_at + 事务内行锁。
+  //     best-effort：胜负已定，扣减失败不阻断终局流程（settleBattle 侧有兜底重试）。
+  if (p1?.id && p2?.id) {
+    try {
+      const consumed = await settleCardConsumption(battleId, p1.id, p2.id);
+      if (consumed.ok && consumed.deducted > 0) {
+        console.log(
+          `[T1018] recordVictory: deducted ${consumed.deducted} card(s) for battle ${battleId}`
+        );
+      }
+    } catch (err) {
+      console.error(
+        `[T1018] recordVictory: settleCardConsumption failed: battleId=${battleId}`,
+        err
+      );
+    }
+  }
 
   // 3. finishSession (best-effort)
   try {

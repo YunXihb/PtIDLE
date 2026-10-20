@@ -19,6 +19,8 @@ const mockListCharactersInBattle = jest.fn();
 const mockFinishSession = jest.fn();
 const mockBroadcastBattleEnd = jest.fn();
 const mockBroadcastBasesState = jest.fn();
+// ★ T1018: 卡牌库存扣减（对局结束时按消耗清单扣 player_cards）
+const mockSettleCardConsumption = jest.fn();
 
 jest.mock('../config/redis', () => ({
   redisClient: {
@@ -41,6 +43,11 @@ jest.mock('../config/database', () => ({
 
 jest.mock('./battleService', () => ({
   listCharactersInBattle: mockListCharactersInBattle,
+}));
+
+// ★ T1018: 卡牌消耗服务
+jest.mock('./cardConsumptionService', () => ({
+  settleCardConsumption: mockSettleCardConsumption,
 }));
 
 jest.mock('./battleSessionService', () => ({
@@ -459,6 +466,11 @@ describe('recordVictory', () => {
     jest.resetAllMocks();
     mockFinishSession.mockResolvedValue({ success: true, state: undefined as any });
     mockBroadcastBattleEnd.mockResolvedValue(undefined);
+    mockSettleCardConsumption.mockResolvedValue({
+      ok: true,
+      deducted: 2,
+      alreadySettled: false,
+    });
   });
 
   // Helper: mockQuery 根据 SQL 字符串返回不同结果
@@ -585,6 +597,60 @@ describe('recordVictory', () => {
     );
     expect(mockBroadcastBattleEnd).toHaveBeenCalled();
 
+    consoleErrorSpy.mockRestore();
+  });
+
+  // ========================================
+  // ★ T1018: 终局时扣卡牌库存（对局外）
+  // ========================================
+  it('T1018: 终局时调用 settleCardConsumption 传入双方 playerId', async () => {
+    mockExecuteDb.mockResolvedValue({ rowCount: 1 });
+    setupRecordVictoryMocks();
+
+    const io = createMockIO();
+    await recordVictory(io, 'b1', {
+      status: 'win',
+      winnerSide: 'p1',
+      p1Stars: 6,
+      p2Stars: 2,
+    });
+
+    expect(mockSettleCardConsumption).toHaveBeenCalledTimes(1);
+    expect(mockSettleCardConsumption).toHaveBeenCalledWith('b1', 'player-1', 'player-2');
+  });
+
+  it('T1018: 平局同样扣库存（draw 也算终局）', async () => {
+    mockExecuteDb.mockResolvedValue({ rowCount: 1 });
+    setupRecordVictoryMocks();
+
+    const io = createMockIO();
+    await recordVictory(io, 'b1', { status: 'draw', p1Stars: 6, p2Stars: 6 });
+
+    expect(mockSettleCardConsumption).toHaveBeenCalledWith('b1', 'player-1', 'player-2');
+  });
+
+  it('T1018: 扣减失败 — 不影响终局流程（best-effort，仍 finishSession + broadcast）', async () => {
+    mockExecuteDb.mockResolvedValue({ rowCount: 1 });
+    setupRecordVictoryMocks();
+    const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    mockSettleCardConsumption.mockRejectedValue(new Error('redis down'));
+
+    const io = createMockIO();
+    await expect(
+      recordVictory(io, 'b1', {
+        status: 'win',
+        winnerSide: 'p1',
+        p1Stars: 6,
+        p2Stars: 2,
+      })
+    ).resolves.not.toThrow();
+
+    expect(mockFinishSession).toHaveBeenCalledWith('b1');
+    expect(mockBroadcastBattleEnd).toHaveBeenCalled();
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[T1018] recordVictory: settleCardConsumption failed'),
+      expect.any(Error)
+    );
     consoleErrorSpy.mockRestore();
   });
 });

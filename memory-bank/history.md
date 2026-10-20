@@ -2844,3 +2844,64 @@ T1015 完成后继续 T1016: 当前行动棋子 90s 倒计时条(服务器 deadl
 - 无翻车项, 28/28 一次通过。唯一注意点: E2E「提前到期」必须同时改记录 key(GET->JSON 改 deadline->SET)与 ZSET 索引 score, 只改其一会被 sweeper 自愈分支拒发(T1014 已踩过, 本次直接双改)。
 - E2E 脚本持久化到 ~/diffs/repro-t1017.js(/tmp 副本重启即丢), 与历次 repro-* 约定一致。
 - 验证: 后端全量 47/47 suite 795/795; 前端 vue-tsc 零错 + build 通过。
+
+---
+
+## 2026-10-20 - 任务：T1018 卡牌消耗重构（两级扣减模型）+ T1000-001 销账
+
+### Prompt
+排查并修复 T1000-001「卡牌溢出处理方案」。用户先要求说明现状，确认「牌库是会消耗的，打出一张牌就消耗一张」，
+随后明确设计：**对局内在出牌时扣**（卡池不满时补足的无限量基础攻击卡除外），防止一张牌被多次消耗；
+**对局外的库存在一场对局结束后按对局的卡牌实际消耗量扣除**。按此逻辑修缮，并把顺带发现的问题一并处理。
+
+### 思考
+- **现状**：`T1000-deferred.md` 里 T1000-001 挂着「待处理」，但 2026-03-19 T031 时用户已选定「禁止制造」方案且已实现
+  （`card_templates.max_quantity` + 制造时校验 + 超限不扣料）。真正的问题不是「方案没定」，而是**方案的前提不成立**：
+  「禁止制造」依赖「卡牌打出后被消耗、库存能腾出空间」，而这个消耗从未真正发生。
+- **根因（三层叠加）**：
+  1. T053 的双 DELETE 同事务顺序执行，第二条的子查询引用第一条刚删掉的 `character_deck` 行 →
+     READ COMMITTED 下可见前序删除 → 恒 0 行 → `PartialDeleteError` → 整体 ROLLBACK（连第一条也被撤销）。
+  2. T1012 快照制把 `deck_id` 从 `character_deck.id` 改成 `player_cards.id`，而 T053 仍按前者使用；
+     且 T1011 之后部署配卡**根本不写 `character_deck` 表**（注释明写「对局快照，不修改持久 character_deck」），
+     新流程下第一条 DELETE 匹配 0 行。
+  3. 牌库快照 `battle:{id}:deck:{cid}` 自写入起只读不删 —— 「牌库消耗」这个动作在代码里根本不存在。
+- **新模型（按用户决策的两级扣减）**：
+  - 对局内：出牌时从 Redis 快照移除该牌 + 记入消耗清单 `battle:{id}:consumed_cards`(SET)；
+    `drawCards` 再按清单过滤一次，构成「一张牌本局只能消耗一次」的硬保证。公共池卡两级都跳过。
+  - 对局外：对局结束时按消耗清单 `DELETE FROM player_cards WHERE id = ANY($1) AND player_id = $2`，
+    归属复核内联在 WHERE（比原先靠 `character_deck` 间接校验更严密），`character_deck` 关联行由 `ON DELETE CASCADE` 连带清理。
+- **幂等标记独立**：`battles.settled_at`（T054 战绩入账，客户端驱动）与 `battles.cards_settled_at`
+  （库存扣减，服务端终局漏斗驱动）触发时机不同，共用标记会互相误跳过 → 新开 migration 014。
+- **两个调用点共用一个幂等函数**：`recordVictory`（服务端权威终局漏斗，胜/负/平/认输全走这里）先扣，
+  `settleBattle` 兜底补扣 —— 后者必须早于 `cleanupAllBattleRedisKeys`（会清掉 `battle:{id}:*` 含消耗清单）。
+
+### 意外
+- **上一轮我误报了一处「顺带问题」**：说 `validateTauntCard` 缺卡牌归属校验。实际动手前复核发现它**有**该校验
+  （`battleService.ts:1111-1113`）—— 上一轮是 grep 上下文截断导致的误读，教训：grep 命中片段要看全，
+  尤其要确认上下文边界再下结论。本次未作多余修改。
+- **纯 mock 测试测不出这次的 bug**：T053 的 5 个用例全是 `mockResolvedValueOnce` 伪造 rowCount，
+  断言的是「调用了 DELETE 语句」而非「行真的消失了」→ 该 bug 从 2026-06-18 存活到 2026-10-20 才发现。
+  补了 5 个**真库**集成测试（真实 PG + Redis），本地无依赖时优雅跳过 + 告警，但 `CI=true` 时依赖缺失显式失败，
+  保证 CI 一定真正跑到断言。
+- **本机无 Docker / 无本地 PG**：为验证 SQL 真实性，临时用 npm 包 `embedded-postgres`（PG 18.4）起实例。
+  踩了三个坑：① `initdb` 因 Windows 中文 locale（GBK）失败 → 需 `initdbFlags: ['--locale=C','-E','UTF8','--no-locale']`；
+  ② 数据目录路径含中文用户名 → PG 按本地代码页读文件报 `invalid byte sequence for encoding "UTF8": 0xba` → 数据目录必须用纯 ASCII 路径；
+  ③ 后台 worker 间歇性 `0xC0000142`(DLL 初始化失败) 崩溃 → 需把 PG 的 `bin` 目录加进 PATH 再启动，
+  且 `-c autovacuum=off` 规避 autovacuum worker 崩溃引发的服务重启。Redis 用 `redis-memory-server`（127.0.0.1:56379）。
+- **真库测试当场抓出我自己 fixture 的 3 个 bug**：`battles.id`/`characters.id` 是 UUID 类型而我用了字符串常量；
+  `player_cards` INSERT 留了一个未使用的参数位（PG 报 `could not determine data type of parameter $5`）；
+  `card_templates.template_no` 有 UNIQUE 约束而我硬编码 901 撞了前一个用例的残留。**这正是真库测试的价值**。
+- **一个测试预期写错**：I4「归属复核」原以为把 p2 的卡塞进清单不会被删 —— 但 p2 本就是本局参与者，删掉才是对的。
+  改为构造**局外第三方玩家**的卡混进清单，验证它一张都不会被删。
+- **旧 SQL 的行为在真库上得到实证**（不是推理）：场景A（deck_id=character_deck.id）S1 rc=1 / S2 rc=0 → ROLLBACK → 两表均未变；
+  场景B（快照路径，deck_id=player_cards.id）S1 rc=0 → 两表均未变；场景C（新 SQL）rc=1 → player_cards 已删 + character_deck 级联清除。
+- **剩余 3 个失败用例与本次改动无关**：`migrate.test.ts` 的 3 个用例在 Windows 上失败（测试假设 POSIX 路径 +
+  fixture 目录），用 `git stash` 在原始代码上复跑确认同样红。已用 stash 验证过两次基线（无 PG/Redis 时 4 套件 31 用例红、
+  有 PG/Redis 时同样这 3 个红）。
+- **快照删空不能 DEL**：`drawCards` 用 `snapshotRaw !== null` 区分「快照权威」与「回落 character_deck」，
+  若 DEL 会让已消耗的牌被重新抽到 —— 抽空后必须保留 `'[]'`。这条在实现和测试里都加了注释与断言。
+- 顺带项「棋子牌组上限 10 vs 12 不一致」经复核属不同层次（预设默认牌组 vs 单局布置配卡），不是 bug，
+  已在 `T1000-deferred.md` 销账说明里记录为「相邻但不在本项范围」的问题，未改代码。
+- 验证: 后端全量 48/49 suite **823/826** 绿（剩余 3 个为 Windows 平台问题，基线即红）；tsc 零错；
+  5 个真库集成测试 + 16 个新单测全绿；migration 014/14 应用成功。
+

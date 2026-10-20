@@ -4,10 +4,12 @@
 > 核心特色：「所玩即所造」—— 玩家通过挂机系统深度定制卡牌与装备，在公平的战棋对局中比拼策略。
 
 [![CI](https://github.com/YunXihb/PtIDLE/actions/workflows/ci.yml/badge.svg)](https://github.com/YunXihb/PtIDLE/actions/workflows/ci.yml)
-[![Jest](https://img.shields.io/badge/tests-701%20passing-brightgreen)](backend/)
-[![Migrations](https://img.shields.io/badge/migrations-9%20applied-brightgreen)](backend/src/migrations/)
+[![Jest](https://img.shields.io/badge/tests-823%20passing-brightgreen)](backend/)
+[![Migrations](https://img.shields.io/badge/migrations-14%20applied-brightgreen)](backend/src/migrations/)
 
-**项目状态**：PvP 3v3 战棋闭环已通（T042-T055 撮合→战场初始化→移动/打牌→回合→胜负→结算）。CI 全自动跑 T055 + T-FOLLOW-1/2/3。
+**项目状态**：PvP 3v3 战棋闭环已通（T042-T055 撮合→战场初始化→移动/打牌→回合→胜负→结算），
+对战布置与计时已通（T1010-T1017），卡牌消耗重建为「对局内扣牌库 / 对局外扣库存」两级模型（T1018）。
+CI 全自动跑全量 49 suite / 826 test。
 
 ## 技术栈
 
@@ -57,7 +59,7 @@ PtIDLE/
 ├── backend/              # Node.js + Express + TypeScript 后端
 │   ├── src/
 │   │   ├── scripts/migrate.ts    # 迁移 runner (npm run db:migrate)
-│   │   ├── migrations/           # 9 个 SQL 迁移文件 (001-010, 004 故意空缺)
+│   │   ├── migrations/           # 14 个 SQL 迁移文件 (001-014)
 │   │   ├── config/               # PG/Redis/Env 配置
 │   │   ├── controllers/          # Express controllers
 │   │   ├── services/             # 业务逻辑 (battle / gathering / matchmaking ...)
@@ -83,7 +85,7 @@ PtIDLE/
 
 - Workflow: [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
 - 步骤：`npm ci` → `npm run db:migrate` → `npx jest --forceExit` → coverage 上传
-- 当前基线：**42 suite / 701 test**（T-FOLLOW-2 收尾）
+- 当前基线：**49 suite / 826 test**（T1018 卡牌消耗重构）
 - Coverage artifact：每次跑成功后保留 30 天
 
 本地跑同套测试：
@@ -119,7 +121,7 @@ npm run lint                      # ESLint
 
 1. `docker compose up -d` ← PG/Redis 在线
 2. `cd backend && npm install` ← 依赖装好
-3. `npm run db:migrate` ← 9/9 applied, 0 pending
+3. `npm run db:migrate` ← 14/14 applied, 0 pending
 4. `npm run dev` ← 看到 `HTTP+WS server running on port 3000`
 5. `curl http://localhost:3000/health` ← 返回 ok
 

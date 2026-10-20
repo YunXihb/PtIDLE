@@ -19,8 +19,8 @@ import { tickBurnDamageOnTarget } from './professionMechanicService';
 import { tickEffects } from './statusEffectService';
 import { broadcastBoardState, broadcastHandState, broadcastCharacterStatus, broadcastSessionState } from '../socket/battleStateBroadcaster';
 import { applyKillStars, applyBaseStars, checkWinCondition, recordVictory } from './battleOutcomeService';
+import { consumeDeckCardOnPlay } from './cardConsumptionService';
 import { redisClient } from '../config/redis';
-import { withTransaction } from '../config/database';
 import { redisKey } from '../utils/redisKeys';
 
 /**
@@ -163,86 +163,59 @@ export type PlayCardResult =
   | { success: false; error: PlayCardError; detail?: string };
 
 /**
- * 内部 sentinel: 至少一行已被别的路径删除（幂等边界）
- * 抛出让 withTransaction 走 ROLLBACK 路径, 外层 catch 区分 partial vs error
- */
-class PartialDeleteError extends Error {
-  constructor(
-    public readonly deckRows: number,
-    public readonly cardRows: number
-  ) {
-    super('partial_delete');
-    this.name = 'PartialDeleteError';
-  }
-}
-
-/**
- * T053: 卡牌消耗 - DB 实时删除 character_deck + player_cards 行
+ * T1018: 出牌时的「对局内消耗」——扣对局牌库 + 记本局消耗清单
  *
- * - source='public_pool' → 跳过（不调事务）
- * - source='deck' → withTransaction(fn) 内:
- *     1. DELETE FROM character_deck WHERE id = $1
- *     2. DELETE FROM player_cards   WHERE id = $1
- *     3. 任一 rowCount=0 → 抛 PartialDeleteError → withTransaction 自动 ROLLBACK
- *        外层 catch 识别 sentinel → console.warn + return { consumed: false, reason: 'partial' }
- *     4. 全成功 → withTransaction 自动 COMMIT
- *     5. 任何真实 SQL 抛错 → withTransaction 自动 ROLLBACK + 重新抛错 → 外层 catch → console.error
+ * 与 T053 的差异（T053 的实现恒 ROLLBACK，实际什么都没删）：
+ *   - T053 在出牌时实时 DELETE character_deck + player_cards，两条 DELETE 同事务
+ *     顺序执行，且第二条的子查询引用了第一条刚删掉的 character_deck 行
+ *     → 恒 0 行 → PartialDeleteError → 整体 ROLLBACK（连第一条也被撤销）
+ *   - T1012 快照制把 deck_id 语义从 character_deck.id 漂移为 player_cards.id，
+ *     而 T053 仍按 character_deck.id 使用 → 第一条就匹配 0 行
+ *   - 牌库快照 battle:{id}:deck:{cid} 从写入起就只读不删，「牌库消耗」从未实现
  *
- * best-effort: 不抛错给上层；返回值仅用于日志/调试
+ * 现在的语义（用户 T1018 决策，两级扣减）：
+ *   - 对局内：扣对局牌库（Redis 快照）+ 记消耗清单 → 防止同一张牌本局被多次消耗
+ *   - 对局外：对局结束时按消耗清单扣 player_cards 库存（cardConsumptionService）
  *
+ * best-effort: 不抛错给上层（出牌效果已结算，不能因扣减失败回滚整个操作）
+ *
+ * @param battleId 对局 id
+ * @param characterId 当前 actor characterId
  * @param handCard 客户端传的手牌对象 (含 card_id / deck_id / source)
- * @param characterId 当前 actor characterId (仅日志用)
- * @returns { consumed: boolean, reason?: 'public_pool' | 'partial' | 'error' }
+ * @returns { consumed: boolean, reason?: string }
  */
 async function consumePlayerCard(
-  handCard: HandCard,
-  characterId: string
+  battleId: string,
+  characterId: string,
+  handCard: HandCard
 ): Promise<{ consumed: boolean; reason?: string }> {
-  // 1. 公共池卡：跳过事务
-  if (handCard.source === 'public_pool') {
-    return { consumed: false, reason: 'public_pool' };
-  }
-
-  // 2. deck 卡：单事务双删（带归属复核，防客户端伪造他人 card_id/deck_id）
-  //    - character_deck.id = deck_id AND character_id = 当前 actor → 防删他人牌库
-  //    - player_cards.id = card_id AND 该 card 是 character_deck 引用 → 防删他人卡牌
   try {
-    const result = await withTransaction(async (client) => {
-      const deckRes = await client.query(
-        `DELETE FROM character_deck
-         WHERE id = $1 AND character_id = $2`,
-        [handCard.deck_id, characterId]
-      );
-      const cardRes = await client.query(
-        `DELETE FROM player_cards
-         WHERE id = $1
-           AND id = (SELECT player_card_id FROM character_deck WHERE id = $2 AND character_id = $3)`,
-        [handCard.card_id, handCard.deck_id, characterId]
-      );
+    const result = await consumeDeckCardOnPlay(
+      battleId,
+      characterId,
+      handCard.card_id,
+      handCard.deck_id,
+      handCard.source
+    );
 
-      // 幂等边界：双删任一返回 0 行（已被别的路径删了 / 归属不匹配）
-      // 抛 PartialDeleteError → withTransaction 自动 ROLLBACK
-      if (deckRes.rowCount === 0 || cardRes.rowCount === 0) {
-        throw new PartialDeleteError(
-          deckRes.rowCount ?? 0,
-          cardRes.rowCount ?? 0
-        );
-      }
-
-      return { consumed: true as const };
-    });
-    return result;
-  } catch (err) {
-    if (err instanceof PartialDeleteError) {
-      // partial: withTransaction 已 ROLLBACK, 这里只记 warn
-      console.warn(
-        `[consumePlayerCard] partial delete: charId=${characterId} ` +
-          `deckRows=${err.deckRows} cardRows=${err.cardRows} ` +
-          `deckId=${handCard.deck_id} cardId=${handCard.card_id}`
-      );
-      return { consumed: false, reason: 'partial' };
+    if (result.ok) {
+      return {
+        consumed: true,
+        reason: result.deckRemoved ? 'deck_removed' : 'recorded_only',
+      };
     }
-    // 真实错误: withTransaction 已 ROLLBACK, 这里记 error
+    if (result.reason === 'public_pool') {
+      // 公共池卡：无限复用，不入库存、不扣牌库（specs.md §3.5）
+      return { consumed: false, reason: 'public_pool' };
+    }
+    console.warn(
+      `[consumePlayerCard] ${result.reason}: charId=${characterId} ` +
+        `deckId=${handCard.deck_id} cardId=${handCard.card_id} ` +
+        `detail=${result.detail ?? ''}`
+    );
+    return { consumed: false, reason: result.reason };
+  } catch (err) {
+    // best-effort 兜底：出牌效果已结算，扣减失败不能冒泡打断整个操作
     console.error(
       `[consumePlayerCard] failed: charId=${characterId} ` +
         `deckId=${handCard.deck_id} cardId=${handCard.card_id} ` +
@@ -379,8 +352,9 @@ export async function executePlayCard(
     return { success: false, error: 'side_effect_failed', detail: (err as Error).message };
   }
 
-  // 9.5 ★ T053: DB 实时消耗（best-effort，失败不返错）
-  await consumePlayerCard(handCard, characterId);
+  // 9.5 ★ T1018: 对局内消耗（扣对局牌库 + 记本局消耗清单，best-effort，失败不返错）
+  //     库存（player_cards）的扣减延后到对局结束时统一执行，见 cardConsumptionService
+  await consumePlayerCard(battleId, characterId, handCard);
 
   // 10. 广播
   await broadcastHandState(io, battleId, userId, characterId);

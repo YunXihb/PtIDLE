@@ -33,6 +33,7 @@ import {
 } from '../config/database';
 import type { PoolClient } from 'pg';
 import { redisClient } from '../config/redis';
+import { settleCardConsumption } from './cardConsumptionService';
 
 // ========================================
 // 常量
@@ -153,6 +154,29 @@ export async function settleBattle(
       }
       await applySettlementInTransaction(client, battle);
     });
+  }
+
+  // 4.5 ★ T1018: 卡牌库存扣减兜底
+  //     recordVictory（服务端终局漏斗）已在对局结束时扣过一次，
+  //     幂等标记 battles.cards_settled_at 保证不会重复扣。
+  //     这里再调一次是兜底：若 recordVictory 的扣减因瞬时故障失败，此处补扣。
+  //     ★ 必须在 cleanupAllBattleRedisKeys 之前执行 —— 它会清掉 battle:{id}:*（含消耗清单）。
+  try {
+    const consumed = await settleCardConsumption(
+      battleId,
+      battle.p1PlayerId,
+      battle.p2PlayerId
+    );
+    if (consumed.ok && consumed.deducted > 0) {
+      console.log(
+        `[T1018] settleBattle: deducted ${consumed.deducted} card(s) for battle ${battleId}`
+      );
+    }
+  } catch (err) {
+    console.error(
+      `[T1018] settleBattle: settleCardConsumption failed: battleId=${battleId}`,
+      err
+    );
   }
 
   // 5. 读双方最新 stats + 6. 清理 Redis battle:{id}:*（best-effort）— 两者独立,并行执行

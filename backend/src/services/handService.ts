@@ -1,6 +1,7 @@
 import { redisClient } from '../config/redis';
 import { getCharacterDeckCards } from './characterService';
 import { drawFromPublicPool } from './publicPoolService';
+import { getConsumedCardIdSet } from './cardConsumptionService';
 import { redisKey } from '../utils/redisKeys';
 
 // ========================================
@@ -214,6 +215,16 @@ export async function drawCards(
   } else {
     deckRows = await getCharacterDeckCards(characterId);
   }
+
+  // 2.5 ★ T1018: 过滤本局已消耗的卡
+  //     硬保证「一张卡本局只能被消耗一次」：出牌时已从快照移除，
+  //     这里再按消耗清单兜一层（旧 character_deck 回落路径下快照不存在，
+  //     单靠快照移除不足以防止重复抽到）。
+  const consumedIds = await getConsumedCardIdSet(battleId);
+  if (consumedIds.size > 0) {
+    deckRows = deckRows.filter((r) => !consumedIds.has(r.card_id));
+  }
+
   const deckSize = deckRows.length;
 
   // 3. 牌库为空：整 count 张从公共池补
