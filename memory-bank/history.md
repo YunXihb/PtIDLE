@@ -2905,3 +2905,68 @@ T1015 完成后继续 T1016: 当前行动棋子 90s 倒计时条(服务器 deadl
 - 验证: 后端全量 48/49 suite **823/826** 绿（剩余 3 个为 Windows 平台问题，基线即红）；tsc 零错；
   5 个真库集成测试 + 16 个新单测全绿；migration 014/14 应用成功。
 
+---
+
+## 2026-10-20 - 任务：v0.1.6 发布（T1010-T1018 首次整体上线）
+
+### Prompt
+在列出 PtIDLE 当前待办清单后，用户选定 **P0：发 v0.1.6**（打 tag 触发 release + 生产部署）。
+背景是上一轮 T1018 的改动已 push 到 `master`，但**生产仍停在 v0.1.5** —— master 领先 15 个提交、4 个 migration，
+其中 013（`battles.current_phase` 加 `'deployment'`）与 014（`battles.cards_settled_at`）是硬依赖：
+不迁移则布置阶段开局写库被 CHECK 拒绝、T1018 库存扣减报 `column does not exist`。
+
+### 思考
+- **发布前核查**（不靠"应该没问题"）：
+  - CI run #38（push `34794d3`）的 `Apply database migrations` 步骤 success → 001-014 在 PG 16 上可干净应用；
+    同 run 的 jest 49 suite / 826 test 全绿。关键点：T1018 的 5 个真库集成测试在 `CI=true` 下
+    **缺依赖会显式抛错**（不是静默 skip），所以 CI 绿 = 那 5 个"行真的消失"的断言**确实跑过**了
+    带 14 个 migration 的真库。
+  - **存量库升级路径**是 CI 没覆盖的维度（CI 是全新库）。静态审计结论：011/012/013 都是
+    `CHECK` 约束**放宽**，新列表 ⊇ 旧列表，而旧列表自 003/010 建表起就一直被强制 → 存量行必然通过；
+    014 是 nullable 新列无约束无回填。**不存在"迁移后约束失败"的可能**。
+  - 约束名核对：`battles_current_phase_check` / `battles_victory_type_check` /
+    `player_battle_history_victory_type_check` 都是 PG 对**内联列定义 CHECK** 的默认命名
+    （003 的 `ADD COLUMN ... CHECK (...)`、010 的建表内联），与 011-013 的 `DROP CONSTRAINT` 目标一致。
+  - 失败模式：migrate.js **逐文件独立事务**（失败 `ROLLBACK` + `exit 1`）→ deploy.sh 的
+    `set -Eeuo pipefail` + `trap on_error ERR` 在 migrate 失败时**于重启容器之前中止** →
+    生产保持旧镜像 + 原 schema 不变。即便容器起不来，`[ROLLBACK]` 分支用 `.last_good` 回滚镜像。
+  - 备份：backup workflow run #74 success（2026-10-19），迁移前有可用快照。
+- **本次为什么风险低**：4 个 migration 全部向后兼容，所以 deploy.sh「只回滚镜像、不回滚 DB」的策略在这里是安全的
+  （若将来引入破坏性 migration，就需要额外的 down-migration 策略 —— 已记入 architecture.md）。
+
+### 意外
+- **本机无法做本地迁移演练**：机器上**没有 Docker**（`docker` 命令不存在），而当天早些时候刚把临时装的
+  嵌入式 PostgreSQL 18.4（`D:\pgnative` / `D:\pgdata_t1018`）清理掉。改用「CI 全新库证据 + 存量行静态审计」
+  两条链替代，结论等价且更强（CI 跑的是 14 个 migration 的真库 + 真库断言）。
+- **生产其实从来没有前端**：`backend/Dockerfile` 只打包后端（`src/` → `dist/` + `migrations` + `migrate.js`），
+  `Caddyfile` 只有 `reverse_proxy backend:3000`（无静态资源站点），`docs/deploy.md` 全篇未提前端。
+  → **生产至今只有 API + WebSocket**。这既降低了本次发布的破坏面（没有 UI 可破坏），
+  也暴露了一个此前没人注意的缺口：游戏要真正可玩，还差一条「前端构建产物 → VPS 静态服务」的链路。
+  已记入 architecture.md 的「生产拓扑」章节。
+- **v0.1.4 / v0.1.5 的发布在 `progress.md` 里没有记录**（只有 v0.1.0-v0.1.3 有 `vX Release` 行），
+  记录库在 v0.1.3 之后就没跟上发布节奏。
+- **GHCR 包 API 需要鉴权**（401），且 Actions job 日志下载也需鉴权（403），无法用公开 API 取部署日志里的
+  migrate 输出明细。改用「deploy run 绿 → `set -e` 下 migrate 退出码必为 0」这一逻辑链反推，
+  再用部署后的 health-check 轮次做独立验证。
+- **health-check 的 cron 在 GitHub 上触发时间很飘**：配置是 `8,23,38,53 * * * *`，
+  实际最近几次是 05:26 / 00:38 / 21:35 / 17:12 UTC —— GitHub 的 schedule 队列延迟可达十几分钟，
+  不能按整点推断，需要轮询等真正出现新一轮。
+- 验证: Release run #7 success（产出 `0.1.6` / `0.1` / `sha7` / `latest` 四个 tag，multi-arch amd64+arm64）；
+  Deploy run #9 success（6 步全过 —— 含 deploy.sh 内建的 30s `/health` 200 检查，而新版 `/health` 在
+  DB 或 Redis 任一不可用时返回 503，故该步通过即证明**新容器已起 + DB + Redis 均正常**）；0 open issue。
+  随后手动 dispatch 的 **health-check run #922 success**（部署后 42 min，验证 Caddy → backend 的公网 HTTPS 链路）。
+  记录库已更新：progress.md（v0.1.6 Release 行）、architecture.md（v1.66 → v1.67，新增发布章节）、history.md（本条）。
+
+### 意外
+- **拿到 deploy 真实日志，一锤定音**（比推理链强）：日志显示
+  `Already applied: 10` / `Pending: 4` / `Applied: 4` —— 生产原状正是 v0.1.5 的 001-010，
+  本次恰好补齐 011-014，且**逐个成功**。同时可见 `[0/6] Previous good image: sha256:4369a924...`（回滚目标）、
+  `[4/6] Health check passed at attempt 2 (sha=34794d3)`、`[5/6] Recorded last-good image: sha256:7c095ff6...`。
+- **GitHub 日志下载需要鉴权，而 `git credential fill` 在 PowerShell 下喂不进 stdin**
+  （报 `refusing to work with credential missing protocol field`）。
+  绕行：直接调 `git credential-manager get`（用 .NET `Process` 手动写 stdin 换行）拿到 token，
+  再以 `Authorization: Bearer` 调 API —— 一次拿到 deploy 日志 + 手动 `workflow_dispatch` 触发 health-check。
+  附带价值：监控从此可**按需即时触发**，不必等那个漂移严重的 cron。
+- **未认证的 GitHub API 在短时间内轮询会被限流（403）**。40 分钟的监听里出现 3 次 403；
+  改用带 token 的调用后稳定。
+

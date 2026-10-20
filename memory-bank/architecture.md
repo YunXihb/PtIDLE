@@ -3383,5 +3383,69 @@ T053 的 bug 存活 4 个月，根因是**纯 mock 测试永远测不出这类�
 而不是「行真的消失了」。T1018 补真库集成测试验证后者；本地无 PG/Redis 时优雅跳过并打印告警，
 但 `CI=true` 时依赖缺失会**显式失败**，保证 CI 一定真正跑到断言。
 
-*文档版本：v1.66*
+---
+
+## v0.1.6 发布（2026-10-20）
+
+> 关联：T1010-T1018 首次整体上线。生产从 v0.1.5（= T082 提交）推进到 v0.1.6。
+
+### 发布范围
+
+`v0.1.5..34794d3`，15 个提交，新增 4 个 migration（011/012/013/014）。
+
+| 组 | 内容 |
+|----|------|
+| 布置环节 | T1010 migration 013 / T1011 deploymentService / T1012 两段式 + 卡组快照 / T1013 布置 Socket 事件 / T1014 deadline sweeper / T1015 前端三面板 / T1016 步时倒计时条 / T1017 E2E 6 场景 28 断言 |
+| 卡牌消耗 | T1018 两级扣减 + `cardConsumptionService` + migration 014 |
+| 对战互动 | phase 状态机死锁修复 / 开局卡死·认输失败·求和失败三连修复 / 退出对战认输 + 请求平局 |
+
+### 生产拓扑（当前形态）
+
+```
+浏览器 ──HTTPS──> Caddy ──reverse_proxy──> backend:3000 (GHCR 镜像)
+                                                   │
+                                        ┌──────────┴──────────┐
+                                   postgres:16            redis:7
+```
+
+**镜像内容边界（重要）**：`backend/Dockerfile` 只打包后端（`src/` → `dist/` + `src/migrations` →
+`/app/migrations` + `migrate.js`），**不含前端**。`Caddyfile` 也只做 `reverse_proxy backend:3000`，
+没有静态资源站点。因此**生产当前只有 API + WebSocket，前端从未上线** —— `docs/deploy.md` 亦无前端部署章节。
+后续要把游戏真正跑起来，需要单独补一条「前端构建产物 → VPS 静态服务」链路。
+
+### 迁移的向后兼容性
+
+本次 4 个 migration 全部**只放宽约束 / 只加可空列**，存量行必然通过：
+
+| migration | 操作 | 兼容性 |
+|-----------|------|--------|
+| 011 | `player_battle_history.victory_type` CHECK 放宽（加 `'surrender'`） | 新 CHECK ⊇ 旧 CHECK |
+| 012 | `battles.victory_type` CHECK 放宽（加 `'surrender'`） | 同上 |
+| 013 | `battles.current_phase` CHECK 放宽（加 `'deployment'`） | 同上 |
+| 014 | `battles.cards_settled_at` 新增 nullable 列 | 无约束、无回填 |
+
+约束名 `*_victory_type_check` / `battles_current_phase_check` 均由 PG 对内联列定义 CHECK 的
+默认命名规则生成，与 003/010 建的约束名一致。
+
+### 失败模式
+
+`migrate.js` **逐文件独立事务**（`BEGIN` → 执行 → `INSERT schema_migrations` → `COMMIT`，
+失败 `ROLLBACK` + `exit 1`）→ `deploy.sh` 的 `set -Eeuo pipefail` + `trap on_error ERR`
+在 migrate 失败时**于重启容器之前中止** → 生产保持旧镜像 + 原 schema 不变。
+即使容器起不来，`[ROLLBACK]` 分支会用 `.last_good` 的旧 digest 回滚镜像。
+
+> 注意：回滚只回滚**镜像**，不回滚**数据库**。本次 4 个 migration 向后兼容，镜像回滚后 schema 仍兼容；
+> 若未来引入破坏性 migration，需要额外的 down-migration 策略。
+
+### 验证
+
+| 项 | 结果 |
+|----|------|
+| CI | run #38（push `34794d3`）**success**；`Apply database migrations` + `jest` 全绿，49 suite / 826 test |
+| Release | run #7（tag `v0.1.6`）**success**；产出 `0.1.6` / `0.1` / `sha7` / `latest` 四个镜像 tag（multi-arch amd64+arm64） |
+| Deploy | run #9（`workflow_run` 自动触发）**success**；6 步全过（pull → migrate → up → 30s health check → 写 `.last_good`） |
+| 备份 | backup workflow run #74 success（2026-10-19），迁移前有可用快照 |
+| 监控 | Deploy run #9 内建的 30s `/health` 检查通过（新版 `/health` 在 DB 或 Redis 任一 down 时返回 503，故通过即证明新容器 + DB + Redis 正常）；随后手动 dispatch 的 health-check run #922 **success**（部署后 42 min，验证 Caddy → backend 的公网 HTTPS 链路）；0 open issue |
+
+*文档版本：v1.67*
 *最后更新：2026-10-20*
