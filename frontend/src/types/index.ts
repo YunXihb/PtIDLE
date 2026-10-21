@@ -24,7 +24,9 @@ export interface PlayerProfile {
   id: string; user_id: string; username: string;
   resources: StringMap; materials: StringMap;
   production_gear: Record<string, unknown>;
-  warehouse_limits: StringMap; idle_queue: unknown[];
+  // 采集队列：连续采集下保留最近两轮（[本轮 completed, 下一轮 active]），
+  // completed 那条带 result.resources / result.overflowed
+  warehouse_limits: StringMap; idle_queue: GatheringTask[];
   last_offline: string | null;
   characters: CharacterSummary[];
 }

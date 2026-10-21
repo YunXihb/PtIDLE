@@ -3,7 +3,7 @@ import { onMounted, onUnmounted, computed, ref } from 'vue';
 import { useGatheringStore } from '@/stores/gathering';
 import { usePlayerStore } from '@/stores/player';
 import { resourceName } from '@/utils/resources';
-import type { SkillType, GatheringEfficiency } from '@/types';
+import type { SkillType, GatheringEfficiency, GatheringTask } from '@/types';
 
 const store = useGatheringStore();
 const player = usePlayerStore();
@@ -52,7 +52,7 @@ function startPolling() {
     if (lastRound !== null && round > lastRound) {
       lastRound = round;
       await player.fetchProfile();
-      showNotice(`第 ${round} 轮采集已开始`);
+      showNotice(roundNotice(round));
     } else {
       lastRound = round;
     }
@@ -72,6 +72,44 @@ function effOf(type: SkillType): GatheringEfficiency | undefined {
 }
 function pct(n: number): string {
   return `${Math.round(n * 100)}%`;
+}
+
+/**
+ * 取最近一轮已结算任务的产出。
+ * 连续采集下 idle_queue 只保留最近两轮：[本轮 completed, 下一轮 active]，
+ * completed 那条带 result.resources / result.overflowed。
+ */
+function lastRoundResult(): GatheringTask['result'] | null {
+  const queue = player.profile?.idle_queue ?? [];
+  const completed = [...queue].reverse().find((t) => t.status === 'completed');
+  return completed?.result ?? null;
+}
+
+/**
+ * 轮次推进提示：把这一轮实际入账多少、有没有溢出说清楚。
+ * 仓库满时产出会全部溢出（不超上限），玩家看不到资源变化，
+ * 若不提示就会以为"连续采集在跑但什么都没给"。
+ */
+function roundNotice(round: number): string {
+  const result = lastRoundResult();
+  if (!result) return `第 ${round} 轮采集已开始`;
+
+  const gained = Object.entries(result.resources)
+    .filter(([, v]) => v > 0)
+    .map(([k, v]) => `${resourceName(k)} +${v}`)
+    .join('，');
+  const overflow = Object.entries(result.overflowed)
+    .filter(([, v]) => v > 0)
+    .map(([k, v]) => `${resourceName(k)} 溢出 ${v}`)
+    .join('，');
+
+  if (!gained && overflow) {
+    return `第 ${round} 轮已开始，仓库已满（${overflow}，未入账）`;
+  }
+  if (gained) {
+    return `第 ${round} 轮已开始，获得 ${gained}${overflow ? `（${overflow}）` : ''}`;
+  }
+  return `第 ${round} 轮采集已开始`;
 }
 
 async function onStart(type: SkillType) {
