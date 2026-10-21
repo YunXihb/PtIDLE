@@ -6,6 +6,7 @@ import {
   getDueGatheringTasks,
   acquireGatheringLock,
   releaseGatheringLock,
+  isGatheringTaskQueued,
 } from './idleQueueService';
 import { ApiError } from '../utils/ApiError';
 
@@ -22,6 +23,11 @@ export interface GatheringTask {
     resources: Record<string, number>;
     overflowed: Record<string, number>;
   };
+  // 轮次：第 1 轮是玩家手动发起的首次采集，之后每轮自动 +1（连续采集）
+  round?: number;
+  // 入队时间戳：Redis 有序集合 member 的组成部分，
+  // 必须与 removeGatheringTask 使用的值一致，否则取消任务时 zRem 匹配不上
+  enqueuedAt?: number;
   // 进度信息（仅在查询状态时返回）
   progress?: number;
   elapsedSeconds?: number;
@@ -59,6 +65,52 @@ async function getConfig(): Promise<Record<SkillType, {
 
 // 默认采集时长（秒）
 const DEFAULT_GATHERING_DURATION = 60; // 1 minute for testing
+
+// idle_queue 只保留最近这么多条（连续采集时避免无限增长）
+const IDLE_QUEUE_KEEP = 2;
+
+// 下一轮允许"回拨"的最大秒数。
+// 定时器每 10s 扫一次队列，完成时刻最晚会比计划结束晚约 10s；
+// 允许小幅回拨可以把这段延迟还给玩家，但限制回拨幅度以防玩家离线后
+// 被一口气补发多轮（刷收益）。
+const MAX_BACKDATE_SECONDS = 15;
+
+/**
+ * 生成采集任务 id
+ */
+function newTaskId(): string {
+  return `gathering_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+}
+
+/**
+ * 取任务的 Redis 队列键（member 里的 enqueuedAt）。
+ * 兼容本功能上线前创建的历史任务：它们没有 enqueuedAt 字段，回退到 startedAt。
+ */
+function queueKeyOf(task: GatheringTask): number {
+  return task.enqueuedAt ?? new Date(task.startedAt).getTime();
+}
+
+/**
+ * idle_queue 只保留最近 IDLE_QUEUE_KEEP 条
+ */
+function trimIdleQueue(queue: GatheringTask[]): GatheringTask[] {
+  return queue.length > IDLE_QUEUE_KEEP ? queue.slice(-IDLE_QUEUE_KEEP) : queue;
+}
+
+/**
+ * 确保活跃任务在 Redis 队列中（幂等）。
+ * member 由 {userId, skillType, enqueuedAt} 唯一确定，
+ * 重复入队只会覆盖同一条，不会产生重复条目。
+ */
+async function ensureQueued(userId: string, task: GatheringTask): Promise<void> {
+  const enqueuedAt = queueKeyOf(task);
+  const queued = await isGatheringTaskQueued(userId, task.skillType, enqueuedAt);
+  if (queued) {
+    return;
+  }
+  const completionTime = new Date(task.startedAt).getTime() + task.duration * 1000;
+  await enqueueGatheringTask(userId, task.skillType, completionTime, enqueuedAt);
+}
 
 /**
  * 开始采集任务
@@ -99,24 +151,26 @@ export async function startGathering(
   const config = (await getConfig())[skillType];
   const now = new Date();
   const task: GatheringTask = {
-    id: `gathering_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+    id: newTaskId(),
     skillType,
     characterId,
     startedAt: now.toISOString(),
     duration: DEFAULT_GATHERING_DURATION,
     status: 'active',
+    round: 1,
+    enqueuedAt: Date.now(),
   };
 
-  // 4. 更新 idle_queue
-  idleQueue.push(task);
+  // 4. 更新 idle_queue（只保留最近两轮，避免连续采集时无限增长）
+  const newIdleQueue = trimIdleQueue([...idleQueue, task]);
   await execute(
     'UPDATE players SET idle_queue = $1, updated_at = NOW() WHERE user_id = $2',
-    [JSON.stringify(idleQueue), userId]
+    [JSON.stringify(newIdleQueue), userId]
   );
 
-  // 5. 添加到 Redis 队列
+  // 5. 添加到 Redis 队列（enqueuedAt 必须与任务里记录的一致，否则无法正确移除）
   const completionTime = now.getTime() + (DEFAULT_GATHERING_DURATION * 1000);
-  await enqueueGatheringTask(userId, skillType, completionTime);
+  await enqueueGatheringTask(userId, skillType, completionTime, task.enqueuedAt);
 
   return task;
 }
@@ -146,6 +200,10 @@ export async function getGatheringStatus(
   if (!activeTask) {
     return null;
   }
+
+  // Redis 自愈：队列条目丢失（Redis 重启/数据丢失）时补回，
+  // 否则定时器看不到任务，连续采集会在这一轮停住。
+  await ensureQueued(userId, activeTask);
 
   // 计算进度
   const startTime = new Date(activeTask.startedAt).getTime();
@@ -199,12 +257,17 @@ async function calculateGatheringYield(
 
 /**
  * 完成采集任务
+ *
+ * 连续采集：结算本轮的同时，在同一个事务里创建下一轮 active 任务
+ * （同技能、同角色、轮次 +1），事务提交后再把下一轮放进 Redis 队列。
+ * 这样无论玩家是否开着页面，采集都会一轮接一轮地跑下去。
+ *
  * @param userId 用户ID
  */
 export async function completeGathering(userId: string): Promise<GatheringTask | null> {
   // 单事务 + 行锁（SELECT ... FOR UPDATE）保证并发 complete 幂等：
   //   两个并发请求同时进来时，第二个会等第一个 COMMIT，读到已 completed 的任务 → 返回 null
-  return withTransaction(async (client) => {
+  const outcome = await withTransaction(async (client) => {
     // 1. 行锁读玩家数据
     const playerResult = await client.query<{
       id: string;
@@ -273,8 +336,8 @@ export async function completeGathering(userId: string): Promise<GatheringTask |
       updatedResources[resource] = (updatedResources[resource] || 0) + amount;
     }
 
-    // 7. 更新任务状态为完成
-    idleQueue[activeTaskIndex] = {
+    // 7. 本轮标记完成
+    const completedTask: GatheringTask = {
       ...activeTask,
       status: 'completed',
       result: {
@@ -283,13 +346,50 @@ export async function completeGathering(userId: string): Promise<GatheringTask |
       },
     };
 
+    // 8. 连续采集：开启下一轮
+    //    计划结束时刻 = 本轮开始 + 时长；允许小幅回拨（抵消定时器的扫描延迟），
+    //    但回拨幅度受限，避免玩家长时间离线后被一口气补发多轮。
+    const scheduledEnd = startTime + activeTask.duration * 1000;
+    const nextStart = Math.max(scheduledEnd, now - MAX_BACKDATE_SECONDS * 1000);
+    const nextTask: GatheringTask = {
+      id: newTaskId(),
+      skillType: activeTask.skillType,
+      characterId: activeTask.characterId,
+      startedAt: new Date(nextStart).toISOString(),
+      duration: activeTask.duration,
+      status: 'active',
+      round: (activeTask.round ?? 1) + 1,
+      enqueuedAt: Date.now(),
+    };
+
+    // 9. idle_queue 只保留最近两轮（本轮 completed + 下一轮 active）
+    const newIdleQueue = trimIdleQueue([
+      ...idleQueue.filter((_, index) => index !== activeTaskIndex),
+      completedTask,
+      nextTask,
+    ]);
+
     await client.query(
       'UPDATE players SET resources = $1, idle_queue = $2, updated_at = NOW() WHERE user_id = $3',
-      [JSON.stringify(updatedResources), JSON.stringify(idleQueue), userId]
+      [JSON.stringify(updatedResources), JSON.stringify(newIdleQueue), userId]
     );
 
-    return idleQueue[activeTaskIndex];
+    return { completedTask, nextTask };
   });
+
+  if (!outcome) {
+    return null;
+  }
+
+  const { completedTask, nextTask } = outcome;
+
+  // 10. 事务提交后再动 Redis（事务内做外部 IO 有回滚风险）
+  //     本轮条目出队 + 下一轮入队
+  await removeGatheringTask(userId, completedTask.skillType, queueKeyOf(completedTask));
+  const nextCompletionTime = new Date(nextTask.startedAt).getTime() + nextTask.duration * 1000;
+  await enqueueGatheringTask(userId, nextTask.skillType, nextCompletionTime, nextTask.enqueuedAt);
+
+  return completedTask;
 }
 
 /**
@@ -315,16 +415,21 @@ export async function cancelGathering(userId: string): Promise<boolean> {
     return false;
   }
 
-  idleQueue[activeTaskIndex].status = 'cancelled';
+  const cancelledTask = idleQueue[activeTaskIndex];
+  cancelledTask.status = 'cancelled';
+
+  // 只保留最近两轮
+  const newIdleQueue = trimIdleQueue(idleQueue);
 
   await execute(
     'UPDATE players SET idle_queue = $1, updated_at = NOW() WHERE user_id = $2',
-    [JSON.stringify(idleQueue), userId]
+    [JSON.stringify(newIdleQueue), userId]
   );
 
   // 从 Redis 队列移除
-  const cancelledTask = idleQueue[activeTaskIndex];
-  await removeGatheringTask(userId, cancelledTask.skillType, new Date(cancelledTask.startedAt).getTime());
+  // 注意：member 里的 enqueuedAt 必须和入队时一致，否则 zRem 匹配不上，
+  // 被取消的任务会永远残留在队列里（僵尸条目）。
+  await removeGatheringTask(userId, cancelledTask.skillType, queueKeyOf(cancelledTask));
 
   return true;
 }

@@ -2970,3 +2970,75 @@ T1015 完成后继续 T1016: 当前行动棋子 90s 倒计时条(服务器 deadl
 - **未认证的 GitHub API 在短时间内轮询会被限流（403）**。40 分钟的监听里出现 3 次 403；
   改用带 token 的调用后稳定。
 
+---
+
+## 2026-10-21 - 任务：T1019 连续采集 + 采集进度条 2s→1s
+
+### Prompt
+用户在本地测试后反馈两条：
+1. "我测试观察到我工坊采集的进度是2s一跳，需要改成 1s一跳让看起来很舒适。"
+2. "还有为什么不会连续采集"
+
+### 思考
+- **第 2 条不是 UI 问题，是真实功能缺口**。顺着「谁负责把任务推进到下一轮」这个问题读代码，
+  找到 4 个彼此独立的断点（证据强度：**已读代码**）：
+
+  | # | 位置 | 断点 |
+  |---|------|------|
+  | 1 | `gatheringService.ts:61` | `DEFAULT_GATHERING_DURATION = 60`，注释还写着 "1 minute for testing"；一轮结束后 `status='completed'`，**不创建后继任务** |
+  | 2 | `index.ts:154-166` | `processDueGatheringTasks`（每 10s）只做"到期完成"，**从不 re-enqueue 下一轮** |
+  | 3 | `gatheringService.ts:95` | `startGathering` 遇到已有 active 任务直接 `throw ApiError(400)`，每玩家只有 1 个任务槽 |
+  | 4 | `GatheringPanel.vue:39-43` | 检测到 `status` 变 `null` 就 `stopPolling()`，玩家必须手动再点"开始采集" |
+
+- **关键澄清：离线收益是另一条独立通道**，不能当作"其实它在连续采集"的解释。
+  `offlineService.calculateOfflineEarnings(lastOffline)` 按固定速率表结算（iron_ore 1/min、coal 0.5/min、
+  wood 1/min、sap 0.3/min、herb 1/min、mushroom 0.3/min），上限 24h（`MAX_OFFLINE_MINUTES`），
+  **与玩家当前在采什么技能、采了多久完全无关**。也就是说作者当时用"离线收益"承担了挂机主循环，
+  在线采集退化成手动单次任务 —— 这解释了"为什么不会连续采集"。
+- **方案选型：后端驱动自动续采，而不是前端续采**。理由：挂机游戏的本质是"设置好然后它自己跑"；
+  前端续采关页面即停，且会和服务端 10s 定时器两边同时写 `idle_queue` 打架。
+  具体落在 `completeGathering`：**同一个事务内**创建下一轮 active 任务（同技能、同 characterId、round+1），
+  事务提交后再入 Redis 队列 —— 事务内不做外部 IO，避免回滚时队列与 DB 不一致。
+- **顺手挖出 2 个真实缺陷**（都靠"把 member 的构成写清楚"才看出来）：
+  1. `cancelGathering` 的 Redis 移除用错时间戳：入队时 member 存 `enqueuedAt: Date.now()`，
+     取消时却用 `new Date(startedAt).getTime()` → 差几毫秒 → `zRem` member 不匹配 →
+     **被取消的任务永远残留在队列**（僵尸条目）。修法：任务对象新增 `enqueuedAt` 字段，
+     enqueue / remove / cancel 三处统一用它，旧任务（无该字段）回退 `startedAt` 保持兼容。
+  2. `idle_queue` 永不清理：每完成一轮 push 一条，completed 任务无限累积。
+     先确认**前端无人读取历史**（`frontend/src/types/index.ts:27` 只声明了 `idle_queue: unknown[]`），
+     才敢裁剪成只保留最近 2 条（`[本轮 completed, 下一轮 active]`）。
+- **一个容易漏的公平性问题：回拨窗口**。定时器 10s 扫一次，完成时刻最晚比计划结束晚约 10s；
+  若下一轮严格从"结算时刻"起算，玩家每轮都白丢 ~10s。所以下一轮 `startedAt` 允许**回拨**到本轮计划结束时刻，
+  但**回拨幅度封顶 15s** —— 否则玩家长时间离线后"计划结束时刻"仍远在过去，会被一口气连发多轮刷收益。
+  这是我在实现中主动加的约束，不是用户提的。
+- **加 Redis 队列自愈**：`getGatheringStatus` 发现 active 任务不在队列时（`zScore` 检查）幂等补一次 `zAdd`。
+  member 由 `{userId, skillType, enqueuedAt}` 唯一确定 → 重复入队只覆盖同一条，不会产生重复条目。
+  → Redis 重启 / 数据丢失后，采集不会就此停摆。
+- **前端节奏**：轮询 2000ms → 1000ms（用户明确要求）；轮次号推进时刷 profile + 提示"第 N 轮采集已开始"；
+  手动领取后**不再 `stopPolling()`**（改为 store 内补一次 `fetchStatus()` 接上新一轮），取消仍停轮询。
+
+### 意外
+- **"为什么不会连续采集" 是个功能缺口，不是 bug 报告**。用户用疑问句提出来，但底下是
+  "挂机游戏的核心循环根本不存在"。这类需求如果当成 UI 调优去做，会做出"前端自动重开任务"这种
+  关页面即失效的假连续 —— 必须在**后端**补后继任务。
+- **上一轮记过"生产从未上线前端"**（后端镜像不含前端 + Caddyfile 只反代 backend:3000），
+  这次用户却能在本地浏览器里看到采集进度条 —— 说明用户一直在**本地**环境测试，
+  与之前"我只需要在本地进行测试"的口径一致。本轮交付仍**不推远端**。
+- **本机没有 Docker**，沿用上一轮的嵌入式方案：`embedded-postgres@18.4.0-beta.17`（PG 18.4，
+  数据目录 `D:\ptidle-pgdata`，纯 ASCII 路径）+ `redis-memory-server@0.17.1`（Windows 走 memurai 二进制）。
+  端口/口令与 `backend/.env` 完全一致（5433 / 6379 / `your_password`），**不需要改任何项目配置**。
+  4 个常驻服务用 `Start-Process` 脱离会话后台任务启动 —— 之前踩过：用会话后台任务跑会占满并发槽位，
+  导致**新任务连带把旧任务的进程一起 cancel**，4 个服务会莫名其妙集体消失。
+- **本地实测脚本又抓出一个"想当然"的点**：`login.data.user.id` 才是 userId（不是 `userId`），
+  DB 名是 `ptidle`（不是 `ptidle_game`）。第一次写脚本时凭印象填错了，
+  是脚本直接报错才暴露 —— 这种"猜字段名"的错误，靠读代码是读不出来的，得真跑。
+- **TS strict 模式在测试里也会拦人**：新写的断言 `call[1][1]` 报 `TS2532: Object is possibly 'undefined'`，
+  ts-jest 直接让整个 suite 起不来。加 `!` 非空断言后通过。**tsc 零错 ≠ 测试能跑**，两边都要过。
+- **既有基线红用例确认与本次改动无关**：全量 48/49 suite **835/838** 绿，
+  剩 3 个失败全在 `migrate.test.ts`（`MIGRATIONS_DIR` 环境变量 + 两个 ROLLBACK/process.exit 用例），
+  是 Windows 平台问题，与上一轮 T1018 的基线完全一致（48/49、823/826）。
+- 验证: 后端全量 **835/838** 绿（基线同红）；新增 12 个用例（11 单测 + 1 集成）全绿；tsc 零错；vue-tsc 零错；build 通过；
+  **本地真库实测 17/17 全绿** —— 第 1 轮 66s 后自动完成并开出第 2 轮（round 1→2），
+  `iron_ore` 300→301 入账，队列恒为 1 条无累积，`idle_queue=[completed/r1, active/r2]`，
+  取消后队列归零无僵尸条目。
+

@@ -3447,5 +3447,115 @@ T053 的 bug 存活 4 个月，根因是**纯 mock 测试永远测不出这类�
 | 备份 | backup workflow run #74 success（2026-10-19），迁移前有可用快照 |
 | 监控 | Deploy run #9 内建的 30s `/health` 检查通过（新版 `/health` 在 DB 或 Redis 任一 down 时返回 503，故通过即证明新容器 + DB + Redis 正常）；随后手动 dispatch 的 health-check run #922 **success**（部署后 42 min，验证 Caddy → backend 的公网 HTTPS 链路）；0 open issue |
 
-*文档版本：v1.67*
-*最后更新：2026-10-20*
+## T1019 连续采集与采集进度条节奏（2026-10-21）
+
+> 关联：T1019。采集系统从「一次性任务」改造为「后端驱动的连续采集」，
+> 同时把前端进度条轮询从 2 秒改成 1 秒。
+
+### 改造前：为什么"不会连续采集"
+
+采集任务模型是**一次性**的，链路上有 4 个独立的断点：
+
+| # | 位置 | 问题 |
+|---|------|------|
+| 1 | `gatheringService.DEFAULT_GATHERING_DURATION = 60` | 一轮 60s 结束后 `status='completed'`，**不创建后继任务**（注释写的还是 "1 minute for testing"） |
+| 2 | `index.ts` 的 `processDueGatheringTasks`（每 10s） | 只做"到期完成"，**从不 re-enqueue 下一轮** |
+| 3 | `startGathering` | 已有 active 任务时直接 `throw ApiError(400, 'Already has active gathering task')`，每玩家只有 1 个任务槽 |
+| 4 | 前端 `GatheringPanel.vue` | 检测到 `status` 变 `null` 就 `stopPolling()`，玩家必须手动再点"开始采集" |
+
+**离线收益是独立通道**（`offlineService.calculateOfflineEarnings`）：按固定速率表结算、
+上限 24h（`MAX_OFFLINE_MINUTES`），**与玩家当前在采什么技能、采了多久完全无关**。
+也就是说作者当时用"离线收益"承担了挂机主循环，在线采集退化成手动单次任务。
+
+### 数据模型变更
+
+`GatheringTask`（`backend/src/services/gatheringService.ts`）新增两个字段：
+
+| 字段 | 类型 | 作用 |
+|------|------|------|
+| `round` | `number` | 轮次。第 1 轮由玩家手动发起，之后每轮自动 +1（前端显示 + 轮次推进检测） |
+| `enqueuedAt` | `number` | Redis 有序集合 member 的组成部分，**enqueue / remove / cancel 三处必须统一用它** |
+
+`enqueuedAt` 存在的原因：Redis 里采集队列是 Sorted Set，member = `JSON.stringify({userId, skillType, enqueuedAt})`。
+**旧实现的 `cancelGathering` 用 `new Date(startedAt).getTime()` 去 `zRem`**，而入队时 member 里存的是
+`Date.now()` —— 两者相差几毫秒 → member 匹配不上 → **被取消的任务永远残留在队列里（僵尸条目）**。
+旧任务（无 `enqueuedAt` 字段）回退到 `startedAt` 保持兼容。
+
+### 轮次推进流程
+
+```
+定时器（10s）                         completeGathering（单事务）
+  │                                          │
+  ├─ getDueGatheringTasks(now)                ├─ SELECT ... FOR UPDATE players
+  ├─ acquireGatheringLock(userId)             ├─ 找到 active 任务，判是否到期
+  ├─ checkAndCompleteGathering ──────────────►├─ 算产出 → 应用仓储上限（溢出记 overflowed）
+  │                                          ├─ 本轮任务 → status='completed'
+  │                                          ├─ ★ 同事务创建下一轮：
+  │                                          │    active / round+1 / 同技能同角色
+  │                                          ├─ idle_queue 重写为 [本轮 completed, 下一轮 active]
+  │                                          └─ UPDATE players (resources + idle_queue)
+  │                                          │
+  │                          事务提交后 ◄────┘
+  │                          ├─ removeGatheringTask(本轮)   ← 出队
+  │                          └─ enqueueGatheringTask(下一轮) ← 入队
+  └─ removeGatheringTask(本轮)（冗余但幂等）
+```
+
+**为什么由后端驱动而不是前端续采**：挂机游戏的本质是"设置好然后它自己跑"。
+前端续采在关页面即停，且会与服务端 10s 定时器打架（两方都在写 `idle_queue`）。
+
+### 关键设计点
+
+**回拨窗口（`MAX_BACKDATE_SECONDS = 15`）**
+定时器每 10s 扫一次队列，完成时刻最晚比计划结束晚约 10s。若下一轮严格从"结算时刻"起算，
+玩家每轮都会白丢约 10s。所以下一轮的 `startedAt` 允许**回拨**到本轮计划结束时刻
+（把定时器延迟还给玩家），但**回拨幅度封顶 15s** —— 否则玩家长时间离线后，
+下一轮的"计划结束时刻"仍远在过去，会被一口气连发多轮刷收益。
+
+**`idle_queue` 只保留最近 2 条**
+连续采集每轮都 push 一条，不裁剪则 `players.idle_queue` 无限膨胀。
+已确认前端**无人读取历史**（`frontend/src/types/index.ts:27` 仅声明 `idle_queue: unknown[]`），
+故可安全裁剪为 `[本轮 completed, 下一轮 active]`。
+
+**Redis 队列自愈**
+`getGatheringStatus` 发现有 active 任务时，检查该任务是否还在队列中
+（`isGatheringTaskQueued` → `zScore`），不在就幂等补一次 `zAdd`。
+member 由 `{userId, skillType, enqueuedAt}` 唯一确定，重复入队只会覆盖同一条。
+→ Redis 重启 / 数据丢失后，采集不会就此停摆。
+
+**仓储满时继续采集**
+沿用 `completeGathering` 原有的 overflow 语义（超出部分记入 `overflowed`，资源不超上限），
+连续采集不因为仓库满而中断。
+
+### 前端节奏
+
+| 项 | 改造前 | 改造后 |
+|----|--------|--------|
+| 轮询间隔 | 2000ms | **1000ms** |
+| 任务结束 | `status` 变 `null` → `stopPolling()` | 轮次号推进 → 刷 profile + 提示"第 N 轮采集已开始"，**轮询继续** |
+| 手动领取 | `stopPolling()` | **不中断**（`store.complete()` 内补一次 `fetchStatus()` 接上新一轮） |
+| 取消 | `stopPolling()` | `stopPolling()`（不变） |
+| 面板显示 | 仅技能名 + 秒数 | 增加"第 N 轮" + "本轮结束后自动开始下一轮" |
+
+### 边界与失败模式
+
+| 情况 | 行为 |
+|------|------|
+| 玩家点"取消采集" | active → `cancelled` → 无 complete → **不续采**，自然终止；Redis 条目正确出队（修键后无僵尸） |
+| 玩家关掉页面 | 后端照常轮转（这是后端驱动方案的主要收益） |
+| Redis 重启丢队列 | `getGatheringStatus` 自愈补回；定时器继续推进 |
+| 两个并发 `complete` | 行锁（`SELECT ... FOR UPDATE`）保证只有一个成功，另一个读到已 completed → 返回 `null` |
+| 玩家离线很久后回来 | 不会连发多轮（回拨封顶 15s），每轮仍按 60s 结算 |
+| 仓储已满 | 溢出记 `overflowed`，采集继续 |
+
+### 验证
+
+| 项 | 结果 |
+|----|------|
+| 后端全量 jest | 48/49 suite **835/838** 绿（剩 `migrate.test.ts` 3 用例为 Windows 平台问题，**基线即红**，与本次改动无关） |
+| 新增单测 | 12 个用例（11 个单测：自动续采 / round 递增 / idle_queue 只留 2 条 / cancel 修键 / legacy 回退 / status 自愈 + 1 个集成用例） |
+| `tsc` / `vue-tsc` / `vite build` | 均零错 |
+| 本地真库实测 | **17/17** 全绿：真实 PG18.4 + Redis，第 1 轮 66s 后自动完成并开出第 2 轮（round 1→2），`iron_ore` 300→301 入账，队列恒为 1 条无累积，`idle_queue=[completed/r1, active/r2]`，取消后队列归零无僵尸条目 |
+
+*文档版本：v1.68*
+*最后更新：2026-10-21*

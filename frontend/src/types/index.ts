@@ -67,6 +67,8 @@ export interface GatheringTask {
   id: string; skillType: SkillType; characterId?: string;
   startedAt: string; duration: number; status: 'active' | 'completed' | 'cancelled';
   result?: { resources: StringMap; overflowed: StringMap };
+  // 轮次：第 1 轮为手动发起，之后每完成一轮自动 +1（连续采集）
+  round?: number;
   progress?: number; elapsedSeconds?: number;
 }
 export interface GatheringEfficiency {

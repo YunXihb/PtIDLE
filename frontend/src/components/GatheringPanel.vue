@@ -24,24 +24,39 @@ function showNotice(msg: string) {
   noticeTimer = window.setTimeout(() => { notice.value = null; }, 4000);
 }
 
-// 轮询
+// 轮询（1 秒一跳，让进度条看起来更顺）
 let pollTimer: number | null = null;
+// 已展示过的轮次，用于检测"后端完成一轮并自动开启下一轮"
+let lastRound: number | null = null;
+
 function startPolling() {
   stopPolling();
+  lastRound = store.activeTask?.round ?? 1;
   pollTimer = window.setInterval(async () => {
-    const wasActive = !!store.activeTask;
+    const hadTask = !!store.activeTask;
     try {
       await store.fetchStatus();
     } catch {
       return; // 网络抖动等：静默，下个 tick 重试
     }
-    // 活跃任务被后端定时器自动完成 -> status 变 null
-    if (wasActive && !store.activeTask) {
-      stopPolling();
-      await player.fetchProfile();
-      showNotice('采集已完成，资源已入账');
+
+    const task = store.activeTask;
+    if (!task) {
+      // 任务没了（玩家点了"取消采集"或在其他标签页取消）-> 停掉轮询
+      if (hadTask) stopPolling();
+      return;
     }
-  }, 2000);
+
+    // 连续采集：轮次号推进 = 上一轮已结算且后端自动开了新一轮
+    const round = task.round ?? 1;
+    if (lastRound !== null && round > lastRound) {
+      lastRound = round;
+      await player.fetchProfile();
+      showNotice(`第 ${round} 轮采集已开始`);
+    } else {
+      lastRound = round;
+    }
+  }, 1000);
 }
 function stopPolling() {
   if (pollTimer !== null) { clearInterval(pollTimer); pollTimer = null; }
@@ -66,7 +81,11 @@ async function onStart(type: SkillType) {
 
 async function onComplete() {
   const result = await store.complete();
-  stopPolling();
+  // 连续采集：后端已自动开启下一轮，轮询不中断
+  // 同步一次轮次号，避免下一个 tick 再弹一次"第 N 轮已开始"
+  if (store.activeTask) {
+    lastRound = store.activeTask.round ?? 1;
+  }
   if (result?.result) {
     const gained = Object.entries(result.result.resources)
       .map(([k, v]) => `${resourceName(k)} +${v}`)
@@ -108,11 +127,15 @@ onUnmounted(() => {
       <div v-if="store.activeTask" class="panel active-task">
         <div class="task-head">
           <h3>{{ skillName[store.activeTask.skillType] }} · 采集中</h3>
-          <span class="dim">{{ store.activeTask.elapsedSeconds ?? 0 }}/{{ store.activeTask.duration }}秒</span>
+          <span class="dim">
+            第 {{ store.activeTask.round ?? 1 }} 轮 ·
+            {{ store.activeTask.elapsedSeconds ?? 0 }}/{{ store.activeTask.duration }}秒
+          </span>
         </div>
         <div class="progress">
           <div class="progress-bar" :style="{ width: progressPct + '%' }"></div>
         </div>
+        <p class="dim auto-next">本轮结束后自动开始下一轮</p>
         <p v-if="isDue" class="due">已可领取</p>
         <div class="row">
           <button v-if="isDue" :disabled="store.actionLoading" @click="onComplete">领取收获</button>
@@ -181,5 +204,6 @@ onUnmounted(() => {
   height: 100%; background: var(--accent); transition: width 0.3s ease;
 }
 .due { color: var(--success); font-size: 13px; margin: 0; }
+.auto-next { font-size: 13px; margin: 0; }
 .row { display: flex; gap: 10px; }
 </style>

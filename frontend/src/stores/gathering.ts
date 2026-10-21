@@ -79,14 +79,22 @@ export const useGatheringStore = defineStore('gathering', () => {
    * 领取收获（手动完成）。
    * @returns 完成的任务（含 result.resources/overflowed）；若已被定时器自动完成或尚未到期则返回 null。
    * 两种情况都刷新玩家资源。
+   *
+   * 连续采集：后端在结算本轮时会自动开启下一轮，
+   * 所以这里完成后要重新拉一次状态，把新一轮接上（前端继续轮询即可）。
    */
   async function complete(): Promise<GatheringTask | null> {
     actionLoading.value = true;
     error.value = null;
     try {
       const res = await gatheringApi.complete();
-      activeTask.value = null;
       await usePlayerStore().fetchProfile();
+      // 拉取后端自动开启的下一轮（拉取失败不影响本次领取结果，下个轮询周期会重试）
+      try {
+        await fetchStatus();
+      } catch {
+        /* ignore */
+      }
       return res.data;
     } catch (e) {
       // 400: 未到期 或 已被定时器自动完成 -> 同步状态 + 资源

@@ -14,16 +14,20 @@ const LOCK_TTL = 60;
  * @param userId User ID
  * @param skillType Skill type (mining, woodcutting, herbalism)
  * @param completionTime Timestamp when the task will be completed
+ * @param enqueuedAt 入队时间戳（可选，默认当前时间）。
+ *        必须与 removeGatheringTask 使用的值一致，否则 zRem 的 member 匹配不上，
+ *        队列里会残留永远不会被清理的僵尸条目。
  */
 export async function enqueueGatheringTask(
   userId: string,
   skillType: string,
-  completionTime: number
+  completionTime: number,
+  enqueuedAt: number = Date.now()
 ): Promise<void> {
   const taskData = JSON.stringify({
     userId,
     skillType,
-    enqueuedAt: Date.now(),
+    enqueuedAt,
   });
 
   // Add to sorted set with completion time as score
@@ -31,6 +35,29 @@ export async function enqueueGatheringTask(
     score: completionTime,
     value: taskData,
   });
+}
+
+/**
+ * 检查某个采集任务是否仍在队列中
+ * 用于状态查询时自愈：Redis 重启/数据丢失后把任务补回队列。
+ * @param userId User ID
+ * @param skillType Skill type
+ * @param enqueuedAt 入队时间戳（与入队时一致）
+ * @returns true 表示该任务在队列中
+ */
+export async function isGatheringTaskQueued(
+  userId: string,
+  skillType: string,
+  enqueuedAt: number
+): Promise<boolean> {
+  const taskData = JSON.stringify({
+    userId,
+    skillType,
+    enqueuedAt,
+  });
+
+  const score = await redisClient.zScore(GATHERING_QUEUE_KEY, taskData);
+  return score !== null && score !== undefined;
 }
 
 /**

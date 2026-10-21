@@ -25,6 +25,7 @@ jest.mock('../config/redis', () => ({
   redisClient: {
     zAdd: jest.fn(),
     zRem: jest.fn(),
+    zScore: jest.fn().mockResolvedValue(1),
     zRangeByScore: jest.fn(),
     zRange: jest.fn(),
     zCard: jest.fn(),
@@ -250,6 +251,43 @@ describe('Gathering API Integration Tests', () => {
 
       expect(response.status).toBe(400);
       expect(response.body.error).toContain('not yet completed');
+    });
+
+    it('should settle the round and open the next one for continuous gathering', async () => {
+      mockedQuery.mockResolvedValueOnce([{
+        id: 'player-1',
+        resources: { iron_ore: 100 },
+        warehouse_limits: { resource: 1000 },
+        idle_queue: [{
+          id: 'task-1',
+          skillType: 'mining',
+          startedAt: new Date(Date.now() - 120000).toISOString(),
+          duration: 60,
+          status: 'active',
+          round: 1,
+          enqueuedAt: 1700000000000,
+        }],
+        production_gear: {}
+      }]);
+
+      const response = await request(app)
+        .post('/api/gathering/complete');
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.data.status).toBe('completed');
+      expect(response.body.data.result.resources).toBeDefined();
+
+      // 写回的 idle_queue：本轮 completed + 下一轮 active（轮次 +1）
+      const updateCall = mockedQuery.mock.calls.find(c =>
+        String(c[0]).includes('UPDATE players SET resources')
+      );
+      expect(updateCall).toBeDefined();
+      const queue = JSON.parse(String(updateCall![1]![1]));
+      expect(queue).toHaveLength(2);
+      expect(queue[0].status).toBe('completed');
+      expect(queue[1].status).toBe('active');
+      expect(queue[1].round).toBe(2);
     });
   });
 });

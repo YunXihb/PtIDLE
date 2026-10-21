@@ -4,12 +4,13 @@
 > 核心特色：「所玩即所造」—— 玩家通过挂机系统深度定制卡牌与装备，在公平的战棋对局中比拼策略。
 
 [![CI](https://github.com/YunXihb/PtIDLE/actions/workflows/ci.yml/badge.svg)](https://github.com/YunXihb/PtIDLE/actions/workflows/ci.yml)
-[![Jest](https://img.shields.io/badge/tests-823%20passing-brightgreen)](backend/)
+[![Jest](https://img.shields.io/badge/tests-838%20passing-brightgreen)](backend/)
 [![Migrations](https://img.shields.io/badge/migrations-14%20applied-brightgreen)](backend/src/migrations/)
 
 **项目状态**：PvP 3v3 战棋闭环已通（T042-T055 撮合→战场初始化→移动/打牌→回合→胜负→结算），
-对战布置与计时已通（T1010-T1017），卡牌消耗重建为「对局内扣牌库 / 对局外扣库存」两级模型（T1018）。
-CI 全自动跑全量 49 suite / 826 test。
+对战布置与计时已通（T1010-T1017），卡牌消耗重建为「对局内扣牌库 / 对局外扣库存」两级模型（T1018），
+采集系统改造为**后端驱动的连续采集**（T1019：每轮结束自动开启下一轮，前端进度条 1 秒一跳）。
+CI 全自动跑全量 49 suite / 838 test。
 **生产**：v0.1.6（2026-10-20 发布，含 T1010-T1018 全部内容 + migration 011-014）。
 > ⚠️ 生产当前只部署了后端（API + WebSocket）—— 镜像不含前端、`Caddyfile` 也只反代 `backend:3000`，
 > 前端静态资源尚无部署链路。详见 `memory-bank/architecture.md` § v0.1.6 发布。
