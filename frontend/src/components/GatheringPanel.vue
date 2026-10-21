@@ -24,14 +24,58 @@ function showNotice(msg: string) {
   noticeTimer = window.setTimeout(() => { notice.value = null; }, 4000);
 }
 
-// 轮询（1 秒一跳，让进度条看起来更顺）
+// 轮询（1 秒一跳，用于对齐服务端状态：轮次推进 / 任务消失 / 结算结果）
 let pollTimer: number | null = null;
 // 已展示过的轮次，用于检测"后端完成一轮并自动开启下一轮"
 let lastRound: number | null = null;
 
+// ---- 平滑进度条 ----
+// 服务端 1 秒才给一个采样点，直接拿它渲染会变成"停 0.7 秒 + 蹿 0.3 秒"的一顿一顿。
+// 改为：采样点只做锚点，中间用 requestAnimationFrame 在本地连续插值。
+// 服务端 progress 是精确小数，所以每次重新对齐的偏差只有一次请求的延迟（约 10ms），肉眼不可见。
+const smoothPct = ref(0);
+let sampleProgress = 0;   // 最近一次服务端采样的 progress
+let sampleAt = 0;         // 收到该采样时的本地时间（performance.now()）
+let rafId: number | null = null;
+
+/** 用服务端最新采样重新锚定插值 */
+function applySample() {
+  const task = store.activeTask;
+  if (!task) return;
+  sampleProgress = task.progress ?? 0;
+  sampleAt = performance.now();
+}
+
+/** rAF 循环：把采样点之间的进度连续补齐 */
+function smoothStep() {
+  const task = store.activeTask;
+  if (!task) {
+    // 没有任务就停掉循环，等下一次 startPolling 再启
+    smoothPct.value = 0;
+    rafId = null;
+    return;
+  }
+  const duration = task.duration || 1;
+  const drift = (performance.now() - sampleAt) / 1000;   // 采样后经过的秒数
+  const p = Math.min(sampleProgress + drift / duration, 1);
+  smoothPct.value = p * 100;
+  rafId = requestAnimationFrame(smoothStep);
+}
+
+function startSmoothLoop() {
+  if (rafId !== null) return;
+  applySample();
+  rafId = requestAnimationFrame(smoothStep);
+}
+
+function stopSmoothLoop() {
+  if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
+}
+
 function startPolling() {
   stopPolling();
   lastRound = store.activeTask?.round ?? 1;
+  startSmoothLoop();
   pollTimer = window.setInterval(async () => {
     const hadTask = !!store.activeTask;
     try {
@@ -47,6 +91,9 @@ function startPolling() {
       return;
     }
 
+    // 重新锚定插值（服务端 progress 是精确小数，对齐误差只有请求延迟）
+    applySample();
+
     // 连续采集：轮次号推进 = 上一轮已结算且后端自动开了新一轮
     const round = task.round ?? 1;
     if (lastRound !== null && round > lastRound) {
@@ -60,11 +107,18 @@ function startPolling() {
 }
 function stopPolling() {
   if (pollTimer !== null) { clearInterval(pollTimer); pollTimer = null; }
+  stopSmoothLoop();
 }
 
-const progressPct = computed(() =>
-  Math.min(100, Math.floor((store.activeTask?.progress ?? 0) * 100))
-);
+// 标签页切回前台时立刻补一次状态（后台标签页的定时器会被浏览器节流）
+function onVisibilityChange() {
+  if (document.visibilityState === 'visible' && store.activeTask) {
+    store.fetchStatus().then(applySample).catch(() => { /* 静默，下个 tick 重试 */ });
+  }
+}
+
+const progressPct = computed(() => Math.min(100, smoothPct.value));
+// 是否可领取：以服务端进度为准（本地插值只用于渲染）
 const isDue = computed(() => (store.activeTask?.progress ?? 0) >= 1);
 
 function effOf(type: SkillType): GatheringEfficiency | undefined {
@@ -146,9 +200,12 @@ async function onCancel() {
 onMounted(async () => {
   await store.loadAll();
   if (store.activeTask) startPolling();
+  document.addEventListener('visibilitychange', onVisibilityChange);
 });
 onUnmounted(() => {
   stopPolling();
+  stopSmoothLoop();
+  document.removeEventListener('visibilitychange', onVisibilityChange);
   if (noticeTimer !== null) clearTimeout(noticeTimer);
 });
 </script>
@@ -239,7 +296,9 @@ onUnmounted(() => {
   border: 1px solid var(--border);
 }
 .progress-bar {
-  height: 100%; background: var(--accent); transition: width 0.3s ease;
+  /* 宽度由 rAF 本地插值连续驱动，这里只做极短的线性过渡兜住掉帧。
+     不能用 ease/0.3s —— 那会让进度变成"停 0.7 秒再缓动蹿一段"，看着一顿一顿。 */
+  height: 100%; background: var(--accent); transition: width 0.1s linear;
 }
 .due { color: var(--success); font-size: 13px; margin: 0; }
 .auto-next { font-size: 13px; margin: 0; }

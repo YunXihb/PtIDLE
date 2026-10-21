@@ -208,8 +208,12 @@ export async function getGatheringStatus(
   // 计算进度
   const startTime = new Date(activeTask.startedAt).getTime();
   const now = Date.now();
-  const elapsedSeconds = Math.floor((now - startTime) / 1000);
-  const progress = Math.min(elapsedSeconds / activeTask.duration, 1);
+  const elapsedExact = (now - startTime) / 1000;
+  // elapsedSeconds 取整用于界面显示（"5/60秒"）
+  const elapsedSeconds = Math.floor(elapsedExact);
+  // progress 保留精确小数：前端据此做本地插值，让进度条连续平滑增长。
+  // 若这里取整，前端每次采样只能拿到整秒值，插值锚点会随之跳动（每秒误差 1 秒）。
+  const progress = Math.min(elapsedExact / activeTask.duration, 1);
 
   return {
     ...activeTask,
